@@ -1,0 +1,757 @@
+# PROACTIVE CO-CREATOR — COMPLETE APPLICATION MODERNIZATION
+
+## 1. Role and Mission
+
+Act as a coordinated senior software engineering team consisting of:
+
+- Principal Software Architect
+- Senior React and TypeScript Engineer
+- Google Gemini API Integration Specialist
+- Application Security Engineer
+- Dependency and Migration Specialist
+- QA and Test Automation Engineer
+- UI/UX and Accessibility Engineer
+- Independent Code Reviewer
+
+**Mission:** Transform the uploaded legacy Proactive Co-Creator application into a modern, secure, reliable, maintainable, production-ready application using the latest appropriate stable technologies.
+
+You must perform an actual codebase modernization—not merely write recommendations, generate sample code, or rebuild an unrelated application.
+
+The supplied project files are the authoritative starting point. Preserve all working functionality and the application's original purpose.
+
+**Guiding principle: Maximize correctness, compatibility, security, and maintainability—not the number of dependencies upgraded or lines of code rewritten.**
+
+## 2. Superpowers Engineering Methodology
+
+Apply the following Superpowers-inspired development practices throughout the project.
+
+If the actual Superpowers skills are available in your execution environment, read and invoke the relevant instructions. Otherwise, follow the equivalent procedures defined below. Never claim to have invoked an unavailable skill.
+
+### Brainstorming
+
+Before choosing an architecture:
+
+1. Understand the application's existing purpose, workflows, and technical constraints.
+2. Identify the most consequential architectural weaknesses.
+3. Challenge assumptions, including whether a complete rewrite or framework migration is necessary.
+4. Compare two or three technically viable modernization approaches.
+5. Evaluate their compatibility, security, maintenance burden, implementation risk, and expected benefits.
+6. Recommend the least disruptive approach capable of meeting the requirements.
+
+Treat this as an engineering design exercise, not an opportunity to add unnecessary features.
+
+### Writing Plans
+
+Create an actionable implementation plan before modifying production code.
+
+Each task must specify:
+
+- The problem being addressed.
+- The exact relevant files and components.
+- The proposed change and its dependencies.
+- Its expected behavior.
+- The tests or checks proving completion.
+- Its risk level and recovery strategy.
+
+Separate independent subsystems into manageable, verifiable tasks.
+
+### Test-Driven Development
+
+For behavior changes and confirmed bugs:
+
+1. Define the intended behavior.
+2. Create a failing test that demonstrates the missing behavior or reproduces the defect.
+3. Confirm that the test fails for the expected reason.
+4. Implement the smallest robust change.
+5. Verify the test passes.
+6. Refactor without changing behavior.
+7. Rerun relevant regression tests.
+
+For legacy behavior without existing tests, establish characterization tests before replacing major implementation details.
+
+### Systematic Debugging
+
+Never patch errors through random experimentation.
+
+Reproduce the problem, inspect the relevant execution path, identify the root cause, formulate a hypothesis, and verify the hypothesis before implementing the fix.
+
+If repeated fixes fail, reconsider the underlying architecture rather than accumulating additional patches.
+
+### Code Review and Verification
+
+After each meaningful implementation task, review the actual code changes for:
+
+- Requirement compliance.
+- Security and correctness.
+- Regressions.
+- Unnecessary complexity.
+- Type safety and error handling.
+- Test coverage and maintainability.
+
+Use independent review agents only if supported and genuinely beneficial. Never invent agents or parallel execution capabilities.
+
+Do not declare a task completed without fresh verification evidence.
+
+## 3. Mandatory Improved Six-Cycle Iterative Refinement
+
+Apply six cumulative refinement passes to the **technical design, modernization plan, and acceptance criteria before major implementation**.
+
+These six cycles are quality-control passes—not six complete application rewrites.
+
+For every cycle:
+
+- Evaluate the latest version of the plan against the original application and my requirements.
+- Identify substantive weaknesses, omissions, inconsistencies, and unsupported assumptions.
+- Correct only what can be improved with a clear technical justification.
+- Preserve valid decisions from earlier cycles.
+- Do not introduce speculative requirements or unnecessary complexity.
+- Check whether revisions invalidate earlier assumptions.
+
+### Cycle 1 — Scope, Requirements, and Preservation
+
+Determine what the application does today and what must not change.
+
+Establish a complete feature inventory, behavioral baseline, dependency map, and list of modernization objectives.
+
+Identify unsupported assumptions and distinguish existing functionality from proposed enhancements.
+
+### Cycle 2 — Technical Accuracy and Dependency Compatibility
+
+Challenge proposed package upgrades, API migrations, configuration changes, and runtime choices.
+
+Verify recommendations against authoritative, current technical documentation and the actual project files.
+
+Reject incompatible upgrades and invented APIs.
+
+### Cycle 3 — Architecture, Security, and Reliability
+
+Critically assess architectural boundaries, secrets management, asynchronous operations, data validation, error handling, and performance.
+
+Compare minimally invasive improvements with more substantial refactoring.
+
+Favor solutions that eliminate root causes without unnecessary infrastructure.
+
+### Cycle 4 — Feature Preservation and User Experience
+
+Review every proposed change from the perspective of an existing user.
+
+Check that important workflows, interactions, visual behavior, and outputs remain available.
+
+Challenge UI redesigns that introduce complexity or remove useful capabilities.
+
+### Cycle 5 — Execution Feasibility and Testability
+
+Evaluate task dependencies, implementation order, rollback possibilities, environment constraints, test coverage, and API costs.
+
+Convert vague tasks into independently verifiable deliverables.
+
+Eliminate unnecessary steps and avoid repeated work.
+
+### Cycle 6 — Independent Adversarial Review
+
+Critically challenge the entire revised plan.
+
+Ask:
+
+- Could this migration break working functionality?
+- Are any recommendations based on unverified assumptions?
+- Are security changes genuinely secure in the target runtime?
+- Could an apparently successful build conceal broken user workflows?
+- Could external API calls create unexpected charges?
+- Are the acceptance criteria sufficient to detect regressions?
+- Can the project be restored if a migration fails?
+- Are any planned changes unnecessarily complex?
+
+Resolve material weaknesses before implementation.
+
+If no further improvement is justified, use the remaining review work for consistency and regression-risk verification rather than cosmetic rewriting.
+
+**Keep the six-cycle review concise. Produce one consolidated implementation plan instead of six repetitive reports.**
+
+## 4. Source Code Audit and Baseline
+
+Inspect the entire uploaded application, including all files, imports, dependencies, UI components, services, configuration, and application logic.
+
+The supplied archive contains an application built around:
+
+- React and React DOM
+- TypeScript
+- Vite
+- Google GenAI SDK
+- Tailwind CSS
+- Gemini text and image generation
+- Veo video generation
+- Interactive belief graphs
+- Prompt refinement and clarification workflows
+
+Important files include:
+
+- `App.tsx`
+- `components/BeliefGraph.tsx`
+- `components/ClarificationCard.tsx`
+- `components/Header.tsx`
+- `components/OutputGallery.tsx`
+- `components/PromptInput.tsx`
+- `services/geminiService.ts`
+- `types.ts`
+- `index.html`
+- `index.css`
+- `package.json`
+- `tsconfig.json`
+- `vite.config.ts`
+
+These are starting references, not a substitute for examining the entire actual project.
+
+Audit the application systematically.
+
+Determine:
+
+1. Which functions currently work.
+2. Which functions are broken or unverified.
+3. Which dependencies are outdated or deprecated.
+4. Which architectural choices are unsafe or obsolete.
+5. Which components are unnecessarily coupled.
+6. Which operations introduce reliability or cost risks.
+7. Which behaviors require regression protection.
+
+Where the execution environment permits, install the original dependencies and run baseline build and validation commands.
+
+Do not confuse an absent test suite with a passing test suite.
+
+Record baseline failures and separate existing defects from issues introduced during modernization.
+
+## 5. Mandatory Project-Specific Investigations
+
+Investigate the following concrete areas identified in the original ZIP.
+
+### A. Environment Variables and API Security
+
+The original implementation references `process.env.API_KEY`, while project documentation references `GEMINI_API_KEY`.
+
+Investigate the actual runtime behavior and resolve this inconsistency securely.
+
+The video generation flow also constructs a download URL containing the API key.
+
+Replace insecure credential handling with a verified, supported mechanism.
+
+### B. Frontend Dependency Loading
+
+The application uses Vite while `index.html` contains CDN-based Tailwind loading and an external JavaScript import map.
+
+Determine whether these mechanisms conflict with or duplicate the intended production build process.
+
+Migrate to an appropriate dependency-managed implementation if justified.
+
+Preserve the existing styling, dark mode, and layout behavior.
+
+### C. Model Compatibility
+
+The source references models including:
+
+- `gemini-2.5-flash`
+- `gemini-2.5-flash-image`
+- `veo-3.1-fast-generate-preview`
+
+Some model identifiers may already be retired, deprecated, or unsuitable for current production use.
+
+Verify model availability, supported capabilities, API methods, pricing implications, and migration requirements using current official documentation.
+
+Never assume these model identifiers will remain available.
+
+### D. Complex Components
+
+Examine the responsibilities and internal state of `App.tsx`, `BeliefGraph.tsx`, and `geminiService.ts`.
+
+Identify opportunities to improve component boundaries, reusable logic, testability, and asynchronous state coordination.
+
+Avoid splitting components merely to reduce file length.
+
+### E. Development Tooling
+
+The original `package.json` lacks dedicated automated testing, linting, and type-checking scripts, and the supplied archive contains no dependency lockfile.
+
+Introduce appropriate tooling without overwhelming this relatively small project with unnecessary infrastructure.
+
+## 6. Technology Stack Modernization
+
+Upgrade dependencies to their latest suitable stable versions, subject to compatibility and environment constraints.
+
+Evaluate:
+
+- React and React DOM
+- TypeScript
+- Vite
+- Vite's React plugin
+- Node.js runtime requirements
+- Google GenAI SDK
+- Tailwind CSS
+- Type definitions
+- Testing and linting tools
+- Relevant transitive dependencies
+
+Consult official package documentation, migration guides, release notes, and compatibility requirements where accessible.
+
+### Non-Negotiable Rules
+
+- Never blindly upgrade everything to the newest available version.
+- Prefer stable, supported releases.
+- Avoid preview software unless required for an essential capability.
+- Do not invent version numbers.
+- Do not replace React or Vite without a compelling, demonstrated reason.
+- Do not introduce incompatible packages.
+- Do not use forced dependency resolution to conceal compatibility problems.
+- Avoid automated breaking-change commands such as `npm audit fix --force` without reviewing their effects.
+- Generate and preserve a reproducible dependency lockfile.
+- Document any dependency that cannot safely be upgraded.
+
+Perform upgrades in logical batches and validate each batch independently.
+
+## 7. Google AI Studio and Gemini API Architecture
+
+Modernize every Google AI integration using officially supported APIs and secure patterns.
+
+### Runtime and Secrets
+
+First determine which capabilities the current Google AI Studio Build environment actually provides.
+
+Prefer AI Studio's supported server-side environment and secret management.
+
+Keep privileged API operations and credentials outside the client bundle.
+
+The application must not expose secrets through:
+
+- Client-side environment variables.
+- Generated JavaScript bundles.
+- Browser-visible source code.
+- Download URLs.
+- Console logging.
+- Error messages.
+- Persistent client storage.
+
+Preserve any legitimate API key selection or billing workflow only if it remains necessary and supported in the current environment.
+
+Do not assume every model or billing arrangement uses identical authorization rules.
+
+If the AI Studio runtime cannot support a required secure operation, document the limitation and select a supported architecture rather than introducing an insecure workaround.
+
+### Model Selection
+
+Evaluate available models by function:
+
+| Application function | Selection priorities |
+|---|---|
+| Prompt analysis | Reliable instruction following, structured output, low latency |
+| Belief graph extraction | Schema adherence, entity/relationship accuracy |
+| Clarification generation | Relevant questions, efficiency, low repetition |
+| Prompt refinement | Preservation of user intent and explicit constraints |
+| Image generation | Supported image output, quality, cost |
+| Video generation | Supported generation workflow, reliability, cost |
+| Story generation | Narrative coherence, instruction adherence |
+
+Prefer suitable stable models.
+
+Use preview-only models when necessary for a required feature and clearly document that dependency.
+
+Centralize model configuration so future model changes do not require searching through many unrelated files.
+
+Do not hardcode experimental model names merely because they appear newer.
+
+### API Reliability
+
+Implement appropriate:
+
+- Typed request and response handling.
+- Runtime schema validation of untrusted AI output.
+- Structured error classification.
+- Bounded retries with exponential backoff and jitter.
+- Respect for rate limits and retry guidance.
+- Cancellation where supported.
+- Request timeouts.
+- Concurrency controls.
+- Protection against stale responses.
+- Consistent user-facing error messages.
+
+Ensure authentication failures, quota exhaustion, unsupported models, content-safety refusals, malformed responses, and transient network errors are handled distinctly where the API allows.
+
+Never silently replace an important failed operation with apparently successful output.
+
+### Video Operations
+
+Review the entire asynchronous video workflow.
+
+Use the current documented generation, operation-status, and media-retrieval mechanisms.
+
+If polling is required, implement bounded, cancellation-aware polling with appropriate delays and terminal-state handling.
+
+Check response status and media integrity before presenting a downloadable result.
+
+Handle abandoned jobs and temporary media URLs appropriately.
+
+Do not expose credentials to retrieve generated media.
+
+Avoid creating persistent queues or databases unless demonstrably necessary.
+
+## 8. Preserve the Original Application's Capabilities
+
+All existing user-facing features must remain available unless they are conclusively obsolete, unsafe, or incompatible.
+
+### Prompt Input and Analysis
+
+Maintain prompt input, prompt analysis, appropriate mode-specific interpretation, and the ability to revise user-provided content.
+
+### Interactive Clarification
+
+Preserve automatically generated clarification questions, predefined choices, custom answers, and user-controlled decisions.
+
+Ensure selected answers remain consistent with the updated prompt.
+
+### Belief Graph
+
+Preserve:
+
+- Entities and attributes.
+- Relationships.
+- Suggested alternatives.
+- User-driven edits.
+- Graph navigation and interaction.
+- Consistency between graph modifications and prompt refinement.
+
+Do not change the meaning of a graph edit during refactoring.
+
+### Prompt Refinement
+
+Preserve the user's original intentions, explicit constraints, important entities, descriptive details, and accepted clarifications.
+
+Changes to the graph must be reflected correctly in the refined prompt.
+
+Conflicting instructions must be resolved using the user's most recent explicit decisions without silently inventing new requirements.
+
+### Image Generation
+
+Preserve multi-image generation, image previews, and downloads.
+
+The existing application attempts to produce four images. Preserve this behavior where supported while handling partial failures honestly.
+
+Avoid unlimited retries or excessive concurrent generation requests.
+
+### Video Generation
+
+Preserve video generation, status feedback, playback, and downloads.
+
+### Story Generation
+
+Preserve story creation, presentation, copying, and downloads.
+
+### User Interface
+
+Preserve the application's essential workflow, navigation, dark mode, and interactive behavior.
+
+Any refactoring must be accompanied by regression checks covering these capabilities.
+
+## 9. Architecture and Code Quality
+
+Improve the implementation according to modern React and TypeScript conventions.
+
+Prioritize:
+
+- Clear separation between UI, domain logic, and API integration.
+- Cohesive component responsibilities.
+- Reusable, testable business logic.
+- Explicit TypeScript types.
+- Runtime validation at trust boundaries.
+- Predictable state transitions.
+- Controlled asynchronous operations.
+- Proper effect cleanup.
+- Accessible interactions.
+- Minimal unnecessary dependencies.
+
+Investigate race conditions when users change modes, edit prompts, or start new requests before previous operations finish.
+
+Prevent outdated requests from overwriting newer results.
+
+Manage object URLs and other browser resources safely.
+
+Keep state management as simple as the application allows. Do not introduce a global state library unless existing complexity justifies it.
+
+Avoid premature abstractions and speculative architecture.
+
+## 10. UI/UX and Accessibility
+
+Improve visual consistency, usability, responsiveness, and accessibility without unnecessarily redesigning the application.
+
+Evaluate:
+
+- Navigation and information hierarchy.
+- Typography and spacing.
+- Layout behavior across screen sizes.
+- Touch and keyboard usability.
+- Focus indicators.
+- Appropriate contrast in light and dark themes.
+- Accessible zooming and text scaling.
+- Loading states and progress feedback.
+- Clear error and recovery actions.
+- Long-running generation operations.
+- Image previews and video playback.
+- Belief graph legibility and interaction.
+
+Fix confirmed usability defects.
+
+Preserve the established application identity.
+
+Do not add decorative animations, new interface libraries, or unnecessary visual complexity merely to make the application appear more modern.
+
+## 11. Security, Privacy, Performance, and Cost Control
+
+Evaluate security and operational behavior together.
+
+Address applicable issues involving:
+
+- API credential exposure.
+- Unsafe handling of model-generated data.
+- Excessive or unbounded requests.
+- Improper error disclosure.
+- Logging of prompts or private content.
+- Browser resource leaks.
+- Unnecessary rerendering.
+- Large generated assets.
+- Concurrent image generation.
+- Long-running video operations.
+- Retry amplification.
+- Unexpected API charges.
+
+Make generation costs and failure states understandable to users where practical.
+
+Do not silently launch multiple costly generations when a single generation would satisfy the request.
+
+Respect model and platform limits.
+
+Never sacrifice security to make a preview appear functional.
+
+## 12. Controlled Implementation Strategy
+
+Modernize the application in the following order.
+
+**Stage 1 — Baseline and Safety**
+
+Inspect the codebase, document current behavior, establish a recoverable snapshot, and determine existing build/test status.
+
+**Stage 2 — Security and Runtime Compatibility**
+
+Repair credential handling, establish secure API boundaries, and verify runtime configuration.
+
+**Stage 3 — Dependency Migration**
+
+Upgrade dependencies incrementally and establish a reproducible build.
+
+**Stage 4 — Gemini API and Model Migration**
+
+Replace unsupported integrations, validate response contracts, and repair generation workflows.
+
+**Stage 5 — Code Refactoring**
+
+Improve architecture, state handling, error management, and maintainability.
+
+**Stage 6 — UI/UX and Performance**
+
+Fix identified interface issues and optimize bottlenecks without introducing unnecessary features.
+
+**Stage 7 — Comprehensive Verification**
+
+Run automated and manual checks, identify regressions, and correct their underlying causes.
+
+**Stage 8 — Final Independent Review**
+
+Review the complete result against the initial feature inventory, security requirements, and acceptance criteria.
+
+### Execution Rules
+
+Work in an isolated Git branch or worktree if available. Otherwise, create a recoverable project copy or checkpoint using available platform capabilities.
+
+Never overwrite the only recoverable copy of the original project.
+
+Keep changes small enough to review and validate.
+
+Run focused checks after each meaningful task.
+
+Use separate agents only for genuinely independent tasks with clear ownership and no conflicting edits.
+
+Do not continue building on a broken integration without first identifying the cause.
+
+Avoid repeated speculative repair attempts.
+
+For ordinary, reversible, in-project changes, proceed autonomously according to the approved scope of this request.
+
+If a decision would fundamentally change the application architecture, remove essential functionality, introduce substantial recurring costs, publish externally, or perform an irreversible action, present the consequences and obtain explicit approval.
+
+Do not pause for approval between routine implementation steps.
+
+## 13. Testing and Acceptance Criteria
+
+Implement an appropriately sized automated test suite.
+
+Consider Vitest, React Testing Library, and Playwright where compatible and useful. Choose tools based on the actual environment rather than installing all of them indiscriminately.
+
+Prioritize tests by risk.
+
+### Minimum Behavioral Regression Matrix
+
+| Scenario | Expected result |
+|---|---|
+| User enters a prompt | Input is preserved and processed appropriately |
+| User requests analysis | Structured graph and clarification results are validated |
+| User answers a clarification | Answer is correctly incorporated |
+| User edits a graph attribute | Intended change is reflected in the refined prompt |
+| User edits a relationship | Updated relationship is preserved |
+| User switches modes during a request | Stale results do not corrupt the active mode |
+| User starts a second request | Earlier responses cannot overwrite the newer request |
+| Image generation partially fails | Valid results remain usable and failure is reported |
+| Video generation remains pending | Progress remains understandable and operation is controlled |
+| Story generation completes | Output can be displayed, copied, and downloaded |
+| Gemini returns malformed JSON | Failure is handled without corrupting application state |
+| Gemini returns a rate-limit error | Retry handling is bounded and appropriate |
+| API credentials are absent | Application displays a safe, actionable configuration error |
+| User opens the app on mobile | Core controls remain accessible |
+| User switches themes | Content and controls remain legible |
+| User downloads generated media | Correct file content and format are delivered |
+
+Include additional tests for important edge cases discovered during the audit.
+
+### Verification Commands
+
+Where the environment supports them, run:
+
+- Dependency installation.
+- Type checking.
+- Linting.
+- Unit tests.
+- Integration tests.
+- Production build.
+- Browser-based smoke tests.
+- Relevant accessibility checks.
+- Dependency and secret-exposure checks.
+
+Do not claim that API generation or complete end-to-end workflows have been verified solely because unit tests with mocks passed.
+
+Perform real API smoke tests only when valid credentials are available and the operation is appropriately authorized. Avoid unnecessary paid API calls.
+
+Report precisely which checks were executed, which passed, which failed, and which were blocked.
+
+## 14. Quality Gates
+
+A stage may be marked complete only when its relevant acceptance criteria have been checked.
+
+Distinguish these statuses:
+
+- **PASS:** Verified successfully with appropriate evidence.
+- **FAIL:** A check was performed and failed.
+- **BLOCKED:** Verification cannot proceed because of a documented dependency or environment limitation.
+- **NOT RUN:** Verification has not been attempted.
+- **NOT APPLICABLE:** The check is irrelevant, with justification.
+
+A successful build does not establish that all user-facing functionality works.
+
+An attempted migration does not establish that the migration succeeded.
+
+An AI-generated implementation is not proof of correct behavior.
+
+If a critical function remains unverified, explicitly disclose that limitation instead of claiming production readiness.
+
+## 15. Documentation and Persistent Progress
+
+Maintain concise project-local documentation where file creation is supported.
+
+Prefer:
+
+`docs/modernization/audit.md`
+
+`docs/modernization/design.md`
+
+`docs/modernization/implementation-plan.md`
+
+`docs/modernization/progress.md`
+
+`docs/modernization/verification-report.md`
+
+Follow existing project conventions if more appropriate.
+
+The documentation should include the original baseline, architectural decisions, upgrade matrix, task status, verification evidence, unresolved risks, and recovery instructions.
+
+Maintain a persistent checklist so work can be resumed accurately if the execution context is interrupted.
+
+Avoid duplicating the same information across multiple documents.
+
+Update the README with accurate setup, development, security configuration, model requirements, build, and deployment instructions.
+
+## 16. Final Deliverables
+
+Provide the actual updated application within the Google AI Studio project.
+
+Also provide a concise final report containing:
+
+### A. Modernization Summary
+
+What was changed and why.
+
+### B. Dependency Upgrade Matrix
+
+Original versions, final versions, and any upgrades deliberately deferred.
+
+### C. Architectural Improvements
+
+Important changes to structure, state management, API integration, and security.
+
+### D. Functionality Preservation
+
+Features retained, defects corrected, and any behavior that necessarily changed.
+
+### E. Verification Results
+
+Actual checks performed and their outcomes.
+
+### F. Remaining Issues
+
+Blocked tests, unresolved limitations, optional future improvements, and requirements for manual configuration.
+
+### G. Final Quality Assessment
+
+Evaluate security, reliability, compatibility, maintainability, performance, accessibility, and feature preservation using evidence.
+
+Do not invent numeric quality scores or claim production readiness without supporting verification.
+
+## 17. Definition of Done
+
+The modernization is complete only when:
+
+- The actual existing application has been updated.
+- All important user-facing capabilities are preserved.
+- Unsupported model integrations have been migrated or explicitly documented as blocked.
+- API secrets are handled securely.
+- Selected dependencies are compatible, supported, and appropriately updated.
+- The application builds successfully in its intended environment.
+- Relevant tests are passing.
+- Critical workflows have been verified to the extent the environment permits.
+- No known critical regression remains unaddressed.
+- Documentation reflects the actual implementation.
+- Remaining limitations are explicitly disclosed.
+
+If any essential condition cannot be met, label the result **PARTIALLY COMPLETE** and explain exactly what remains.
+
+## 18. Final Operating Instructions
+
+You are authorized to analyze, refactor, modernize, and improve this existing application within the boundaries specified above.
+
+Do not substitute a new simplified application for the original.
+
+Do not respond only with recommendations.
+
+Do not maximize complexity.
+
+Do not optimize for the appearance of progress.
+
+Do not claim unverified success.
+
+**Optimize for a working, secure, demonstrably improved application that preserves the full value of the original.**
+
+Start by examining the uploaded project, establishing its baseline, and completing the six-cycle design and migration-plan refinement.
+
+Then execute the controlled modernization, verify the changes, and deliver the updated application with its final technical report.
