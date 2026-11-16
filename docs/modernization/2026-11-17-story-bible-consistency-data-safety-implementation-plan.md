@@ -412,6 +412,19 @@ The passes below refer to **critical examination of this proposed specification*
 
 ## 12. Delivery gates and rollback policy
 
+### T7 — Final verification, documentation and delivery
+
+**Priority:** Required release evidence; this task runs only after T1–T6 have been dispositioned.
+
+- [ ] T7.1 Record the final source diff relative to the baseline, classify each original suggestion S1–S9, and identify any finding that was disproven rather than changed.
+- [ ] T7.2 Run fresh full Node22 CI-equivalent commands and read their actual outputs; log exact totals, execution environment and exit status.
+- [ ] T7.3 Run the real React/Playwright smoke flows (not just helper tests), capture failure-case observations and check desktop/mobile keyboard and accessibility behavior.
+- [ ] T7.4 Conduct the prescribed six-cycle *post-implementation* adversarial review, repair evidenced findings with RED→GREEN tests, and re-run verification afterward.
+- [ ] T7.5 Update the existing verification report with baseline/final SHA, changed paths, risk disposition, real GitHub Actions run URL and any BLOCKED paid API tests. Do not silently rewrite old historical test results.
+- [ ] T7.6 Commit verified implementation changes in reviewable units on the repository's approved branch, and summarize recovery/rollback instructions for any project-data changes.
+
+**T7 acceptance:** A SHA-pinned, reproducible Turkish report; no completion claims based solely on a plan, source grep or agent assertion.
+
 **Gate G0 — Baseline and checkpoint:** Record main SHA, complete source review and recoverable revision/export plan. No production modification yet.
 
 **Gate G1 — Canonical correctness:** SB-01 through SB-06 pass with actual RED→GREEN evidence; Story Bible clear doesn't reappear; confirmed facts and entity mapping retained.
