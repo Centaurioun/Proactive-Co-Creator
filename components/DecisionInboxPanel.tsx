@@ -19,7 +19,7 @@ interface DecisionInboxPanelProps {
     customValues?: Record<string, string>
   ) => void;
   onInspectDecisionTarget: (decision: DecisionItem) => void;
-  onRefreshClarifications: () => void;
+  onRefreshClarifications: (preserveDrafts?: Record<string, string>) => void;
   isClarificationsLoading: boolean;
   clarificationError: string | null;
   onPreviewBatchInstruction: (instruction: string) => Promise<BatchEditProposalResult>;
@@ -43,18 +43,20 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
   const [editingCustomId, setEditingCustomId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [groupFilter, setGroupFilter] = useState<'all' | 'clarification' | 'character' | 'setting' | 'story'>('all');
+  const [groupFilter, setGroupFilter] = useState<'all' | 'clarification' | 'character' | 'setting' | 'story' | 'relationship'>('all');
   const [statusFilter, setStatusFilter] = useState<'pending' | 'all' | DecisionStatus>('pending');
 
   // Natural-language batch edit state
   const [batchInstruction, setBatchInstruction] = useState('');
   const [batchPreview, setBatchPreview] = useState<BatchEditProposalResult | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
+  const [acknowledgeUnhandledClauses, setAcknowledgeUnhandledClauses] = useState(false);
 
   const filteredDecisions = useMemo(() => {
     return decisions.filter((item) => {
       if (statusFilter !== 'all' && item.status !== statusFilter) return false;
       if (groupFilter === 'clarification' && item.category !== 'clarification') return false;
+      if (groupFilter === 'relationship' && item.category !== 'relationship') return false;
       if (groupFilter === 'character' && item.groupKey !== 'character') return false;
       if (groupFilter === 'setting' && item.groupKey !== 'setting') return false;
       if (groupFilter === 'story' && item.groupKey !== 'story' && item.groupKey !== 'plot') return false;
@@ -114,6 +116,7 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
     const trimmed = batchInstruction.trim();
     if (!trimmed) return;
     setBatchError(null);
+    setAcknowledgeUnhandledClauses(false);
     try {
       const result = await onPreviewBatchInstruction(trimmed);
       setBatchPreview(result);
@@ -136,9 +139,17 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
     if (!batchPreview) return;
     const selectedOps = batchPreview.operations.filter((o) => o.selected);
     if (selectedOps.length === 0) return;
+    const hasUnhandled = (batchPreview.unhandledClauses?.length ?? 0) > 0;
+    if (hasUnhandled && !acknowledgeUnhandledClauses) {
+      setBatchError(
+        'Please acknowledge the unhandled instruction clauses before applying the partial batch.'
+      );
+      return;
+    }
     onApplyBatchOperations(batchPreview.operations, batchPreview.instruction);
     setBatchPreview(null);
     setBatchInstruction('');
+    setAcknowledgeUnhandledClauses(false);
   };
 
   return (
@@ -159,7 +170,7 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
 
         <button
           type="button"
-          onClick={onRefreshClarifications}
+          onClick={() => onRefreshClarifications(draftValues)}
           disabled={isClarificationsLoading}
           className="px-3 py-1.5 min-h-[36px] text-xs font-semibold rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700 transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         >
@@ -265,6 +276,33 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
               </div>
             )}
 
+            {batchPreview.unhandledClauses && batchPreview.unhandledClauses.length > 0 && (
+              <div
+                role="alert"
+                className="p-2.5 rounded bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 space-y-1.5"
+              >
+                <p className="font-semibold">
+                  Unhandled Instruction Clause ({batchPreview.unhandledClauses.length}):
+                </p>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {batchPreview.unhandledClauses.map((clause, idx) => (
+                    <li key={idx}>&ldquo;{clause}&rdquo;</li>
+                  ))}
+                </ul>
+                {batchPreview.operations.length > 0 && (
+                  <label className="flex items-center gap-2 pt-1 font-medium cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={acknowledgeUnhandledClauses}
+                      onChange={(e) => setAcknowledgeUnhandledClauses(e.target.checked)}
+                      className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Apply parsed operations only and skip unhandled clauses</span>
+                  </label>
+                )}
+              </div>
+            )}
+
             {batchPreview.warnings.length > 0 && (
               <div className="p-2 rounded bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-300">
                 {batchPreview.warnings.map((w, i) => (
@@ -319,7 +357,10 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
                 <button
                   type="button"
                   onClick={handleCommitBatchOperations}
-                  disabled={batchPreview.operations.every((o) => !o.selected)}
+                  disabled={
+                    batchPreview.operations.every((o) => !o.selected) ||
+                    ((batchPreview.unhandledClauses?.length ?? 0) > 0 && !acknowledgeUnhandledClauses)
+                  }
                   className="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded transition-colors"
                 >
                   Apply Approved Batch ({batchPreview.operations.filter((o) => o.selected).length})
@@ -366,6 +407,7 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
               ['all', 'All'],
               ['clarification', 'Questions'],
               ['character', 'Characters'],
+              ['relationship', 'Relations'],
               ['setting', 'Setting'],
               ['story', 'Story'],
             ] as const
@@ -598,7 +640,7 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
                     </button>
                   </div>
 
-                  {(item.targetEntityName || item.targetStoryField) && (
+                  {(item.targetEntityName || item.targetStoryField || item.targetRelationshipId) && (
                     <button
                       type="button"
                       onClick={() => onInspectDecisionTarget(item)}

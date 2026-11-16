@@ -116,7 +116,8 @@ ${specificInstructions}
 4. **Inference:** If an attribute is not explicitly stated in the prompt, infer a likely value and set "presence_in_prompt" to false.
 
 Relationships:
-- Identify logical relationships between entities (e.g., "hosting", "sitting at", "friends with", "located in").
+- Identify logical directed relationships between entities (e.g., "hosting", "sitting at", "friends with", "located in").
+- Set "presence_in_prompt" to true ONLY if the relationship is explicitly stated in the input prompt; set "presence_in_prompt" to false if it is inferred.
 - Provide a label and 2-3 alternatives (as strings).
 
 Input: ${JSON.stringify({ prompt })}
@@ -151,6 +152,8 @@ OUTPUT JSON:`;
       source: { type: Type.STRING },
       target: { type: Type.STRING },
       label: { type: Type.STRING },
+      presence_in_prompt: { type: Type.BOOLEAN },
+      evidence_excerpt: { type: Type.STRING, nullable: true },
       alternatives: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
     },
     required: ['source', 'target', 'label'],
@@ -312,6 +315,7 @@ Rules:
    - \`remove_relationship\`: requires \`sourceEntityName\`, \`targetEntityName\`
    - \`update_story_bible\`: requires \`storyField\` (one of: genre, tone, narrativePerspective, intendedAudience, setting, themes, centralConflict, pacing, continuityRules, explicitExclusions, visualStyle, cameraAndLighting) and \`nextValue\`
 4. Flag any contradictory statements inside the instruction in \`warnings\`.
+5. CRITICAL: If any clause or sub-instruction in the user's request cannot be mapped to one of the supported operation types or references a nonexistent target, include the exact clause text in \`unhandledClauses\` instead of silently ignoring it.
 
 Current Project Context:
 ${JSON.stringify(context, null, 2)}
@@ -368,6 +372,10 @@ User Batch Instruction: ${JSON.stringify(instruction)}`;
                   type: Type.ARRAY,
                   items: { type: Type.STRING },
                 },
+                unhandledClauses: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
               },
               required: ['operations', 'ambiguities', 'warnings'],
             },
@@ -399,10 +407,6 @@ export async function refinePromptText(
   graphUpdates: GraphUpdate[],
   signal?: AbortSignal
 ): Promise<string> {
-  if (clarifications.length === 0 && graphUpdates.length === 0) {
-    return originalPrompt;
-  }
-
   const ai = getGeminiClient();
   let updatesPromptSection = '';
 
@@ -425,7 +429,22 @@ export async function refinePromptText(
     updatesPromptSection += `\nNEW INFORMATION FROM Q&A:\n${qaList}\n`;
   }
 
-  const prompt = `You are an expert prompt engineer. Your goal is to rewrite the prompt to seamlessly incorporate specific user edits while strictly preserving all other existing details.
+  const prompt =
+    clarifications.length === 0 && graphUpdates.length === 0
+      ? `You are an expert narrative and visual prompt architect.
+Rewrite and polish the following structured creative brief into a cohesive, vivid, contradiction-free generation prompt while preserving every single confirmed fact, canonical character name override, relationship, and explicit exclusion.
+
+Structured Creative Brief:
+${JSON.stringify(originalPrompt)}
+
+Strict Rules:
+1. **Canonical Names & Seed Overrides:** If the brief specifies a Seed Override (e.g., replacing "cat" with "Barnaby" or excluding an entity), replace the old seed noun in the narrative with the canonical name and remove any excluded entity from the scene description.
+2. **Preserve Every Confirmed Fact:** Keep all confirmed attributes, relationships, Story Bible properties, explicit exclusions, and author notes intact.
+3. **Never Invent Unconfirmed Facts:** Do not add new characters or plot points that are not in the brief.
+4. **Return Only the Polished Prompt Text:** No markdown code fences or meta-commentary.
+
+Polished Prompt:`
+      : `You are an expert prompt engineer. Your goal is to rewrite the prompt to seamlessly incorporate specific user edits while strictly preserving all other existing details.
 
 Original Prompt: ${JSON.stringify(originalPrompt)}
 

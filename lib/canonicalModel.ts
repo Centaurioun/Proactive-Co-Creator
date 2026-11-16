@@ -485,16 +485,19 @@ export function createSampleProject(now: number = Date.now()): CreativeProject {
 
   const initialRevisionId = 'rev_initial';
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: 'proj_default_cat_party',
     name: 'Cat’s Woodland Dinner Party',
     createdAt: now,
     updatedAt: now,
+    revision: 1,
+    persistedRevision: 1,
     snapshot,
     artifacts: [],
     revisions: [
       {
         id: initialRevisionId,
+        revisionNumber: 1,
         timestamp: now,
         label: 'Initial Story Plan',
         summary: 'Baseline analysis for "A cat hosting a party for its animal friends"',
@@ -510,13 +513,16 @@ export function buildDecisionInboxFromSnapshot(snapshot: ProjectSnapshot): Decis
   const items: DecisionItem[] = [];
   const now = Date.now();
 
-  // 1. Unanswered / Pending Clarifications
+  // 1. Clarifications (active and resolved)
   for (const clar of snapshot.clarifications) {
     const id = `dec_clar_${clar.id ?? clar.question}`;
     const prev = existingById.get(id);
     if (clar.status === 'answered' || clar.status === 'skipped') {
-      if (prev && prev.status === 'accepted') {
-        items.push(prev);
+      if (prev) {
+        items.push({
+          ...prev,
+          status: clar.status === 'answered' ? 'accepted' : 'rejected',
+        });
       }
       continue;
     }
@@ -548,9 +554,11 @@ export function buildDecisionInboxFromSnapshot(snapshot: ProjectSnapshot): Decis
       status:
         clar.status === 'outdated'
           ? 'outdated'
-          : prev?.status && prev.status !== 'pending'
-            ? prev.status
-            : 'pending',
+          : clar.status === 'deferred'
+            ? 'deferred'
+            : prev?.status && prev.status !== 'pending'
+              ? prev.status
+              : 'pending',
       groupKey,
       targetEntityId: clar.target?.entityId,
       targetEntityName: clar.target?.entityName,
@@ -563,20 +571,30 @@ export function buildDecisionInboxFromSnapshot(snapshot: ProjectSnapshot): Decis
     });
   }
 
-  // 2. Unconfirmed Entity Attributes (inferred by AI)
+  // 2. Entity Attributes (inferred by AI or previously resolved via Decision Inbox)
   for (const entity of snapshot.entities) {
-    if (entity.excluded) continue;
+    if (entity.excluded || entity.status === 'rejected') continue;
     const isScene = isSceneEntityName(entity.name) || entity.category === 'scene';
     for (const attr of entity.attributes) {
       if (attr.name === 'existence' || attr.name === 'existence_in_image') continue;
-      if (attr.status === 'confirmed' || attr.status === 'rejected') continue;
+      const id = `dec_attr_${entity.id ?? entity.name}_${attr.name}`;
+      const prev = existingById.get(id);
+
+      if (attr.status === 'confirmed' || attr.status === 'rejected') {
+        if (prev && (prev.status === 'accepted' || prev.status === 'rejected')) {
+          items.push({
+            ...prev,
+            status: attr.status === 'confirmed' ? 'accepted' : 'rejected',
+            proposedValue: attr.confirmedValue ?? prev.proposedValue,
+          });
+        }
+        continue;
+      }
       if (attr.presence_in_prompt && attr.confirmedValue) continue;
 
       const candidateVal = attr.confirmedValue ?? attr.value[0]?.name;
       if (!candidateVal || candidateVal === 'Unknown') continue;
 
-      const id = `dec_attr_${entity.id ?? entity.name}_${attr.name}`;
-      const prev = existingById.get(id);
       // Avoid duplicating if an active pending clarification already targets this exact entity+attribute
       const coveredByClar = items.some(
         (d) =>
@@ -615,13 +633,65 @@ export function buildDecisionInboxFromSnapshot(snapshot: ProjectSnapshot): Decis
     }
   }
 
-  // 3. Preserve any explicitly staged conflict or batch-operation items still pending
+  // 3. Inferred / Pending Relationships (and previously resolved relationship decisions)
+  const entityById = new Map(snapshot.entities.map((e) => [e.id, e]));
+  for (const rel of snapshot.relationships) {
+    const srcEnt = rel.sourceId ? entityById.get(rel.sourceId) : undefined;
+    const tgtEnt = rel.targetId ? entityById.get(rel.targetId) : undefined;
+    if (srcEnt?.excluded || tgtEnt?.excluded) continue;
+
+    const relId = rel.id ?? `rel_${rel.source}_${rel.target}_${rel.label}`;
+    const id = `dec_rel_${relId}`;
+    const prev = existingById.get(id);
+
+    if (rel.status === 'confirmed' || rel.status === 'rejected') {
+      if (prev && (prev.status === 'accepted' || prev.status === 'rejected')) {
+        items.push({
+          ...prev,
+          status: rel.status === 'confirmed' ? 'accepted' : 'rejected',
+          proposedValue: rel.label,
+        });
+      }
+      continue;
+    }
+
+    const srcName = srcEnt?.name ?? rel.source;
+    const tgtName = tgtEnt?.name ?? rel.target;
+    const options = Array.from(
+      new Set([rel.label, ...(rel.alternatives?.map((a) => a.name) ?? [])])
+    );
+
+    items.push({
+      id,
+      category: 'relationship',
+      title: `${srcName} → ${tgtName}`,
+      description: `Suggested relationship: "${prev?.proposedValue ?? rel.label}"`,
+      explanation: `AI-inferred directed relationship from "${srcName}" to "${tgtName}".`,
+      provenance: rel.provenance ?? 'ai-inferred',
+      status: prev?.status ?? 'pending',
+      groupKey: 'character',
+      targetRelationshipId: rel.id,
+      targetSourceEntityName: srcName,
+      targetTargetEntityName: tgtName,
+      currentValue: 'Unconfirmed',
+      proposedValue: prev?.proposedValue ?? rel.label,
+      options,
+      createdAt: prev?.createdAt ?? now,
+    });
+  }
+
+  // 4. Preserve any explicitly staged conflict, batch-operation, or terminal decisions not already in items
   for (const existing of snapshot.decisions) {
-    if (
-      (existing.category === 'conflict' || existing.category === 'batch-operation') &&
-      !items.some((i) => i.id === existing.id)
-    ) {
-      items.push(existing);
+    if (!items.some((i) => i.id === existing.id)) {
+      if (
+        existing.category === 'conflict' ||
+        existing.category === 'batch-operation' ||
+        existing.status === 'accepted' ||
+        existing.status === 'rejected' ||
+        existing.status === 'deferred'
+      ) {
+        items.push(existing);
+      }
     }
   }
 
@@ -902,7 +972,7 @@ export function addEntity(
   const trimmed = name.trim();
   if (!trimmed) return snapshot;
 
-  const next = structuredClone(snapshot);
+  let next = structuredClone(snapshot);
   const existing = next.entities.find(
     (e) => e.name.toLowerCase() === trimmed.toLowerCase()
   );
@@ -911,8 +981,9 @@ export function addEntity(
     existing.status = 'confirmed';
     if (description) existing.description = description;
     for (const [k, v] of Object.entries(initialAttributes)) {
-      return setEntityAttribute(next, existing.id ?? existing.name, k, v, provenance);
+      next = setEntityAttribute(next, existing.id ?? existing.name, k, v, provenance);
     }
+    next.decisions = buildDecisionInboxFromSnapshot(next);
     next.refinedPrompt = synthesizeRefinedPrompt(next);
     return next;
   }
@@ -963,7 +1034,12 @@ export function upsertRelationship(
   sourceNameOrId: string,
   targetNameOrId: string,
   newLabel: string,
-  provenance: DecisionProvenance = 'user-edit'
+  provenance: DecisionProvenance = 'user-edit',
+  options?: {
+    relationshipId?: string;
+    status?: ApprovalStatus;
+    replaceSameDirectionSingle?: boolean;
+  }
 ): ProjectSnapshot {
   const trimmedLabel = newLabel.trim();
   if (!trimmedLabel) return snapshot;
@@ -981,33 +1057,60 @@ export function upsertRelationship(
   const targetEnt = findEnt(targetNameOrId);
   const sourceName = sourceEnt?.name ?? sourceNameOrId.trim();
   const targetName = targetEnt?.name ?? targetNameOrId.trim();
+  if (
+    (sourceEnt?.id && targetEnt?.id && sourceEnt.id === targetEnt.id) ||
+    sourceName.toLowerCase() === targetName.toLowerCase()
+  ) {
+    return snapshot;
+  }
+  const desiredStatus: ApprovalStatus = options?.status ?? 'confirmed';
 
-  const existing = next.relationships.find(
-    (r) =>
-      (r.sourceId && sourceEnt?.id && r.sourceId === sourceEnt.id && r.targetId === targetEnt?.id) ||
-      (r.source.toLowerCase() === sourceName.toLowerCase() &&
-        r.target.toLowerCase() === targetName.toLowerCase()) ||
-      (r.source.toLowerCase() === targetName.toLowerCase() &&
-        r.target.toLowerCase() === sourceName.toLowerCase())
-  );
+  // Directed multigraph lookup: never match reverse direction (target -> source)!
+  const matchesSameDirection = (r: Relationship) =>
+    (r.sourceId && sourceEnt?.id && r.sourceId === sourceEnt.id && r.targetId === targetEnt?.id) ||
+    (r.source.toLowerCase() === sourceName.toLowerCase() &&
+      r.target.toLowerCase() === targetName.toLowerCase());
+
+  let existing: Relationship | undefined;
+  if (options?.relationshipId) {
+    existing = next.relationships.find((r) => r.id === options.relationshipId);
+  }
+  if (!existing) {
+    // Exact directed + label match
+    existing = next.relationships.find(
+      (r) =>
+        matchesSameDirection(r) &&
+        r.label.trim().toLowerCase() === trimmedLabel.toLowerCase()
+    );
+  }
+  if (!existing && options?.replaceSameDirectionSingle) {
+    const sameDir = next.relationships.filter(matchesSameDirection);
+    if (sameDir.length === 1) {
+      existing = sameDir[0];
+    }
+  }
 
   if (existing) {
+    existing.sourceId = sourceEnt?.id ?? existing.sourceId;
+    existing.targetId = targetEnt?.id ?? existing.targetId;
+    existing.source = sourceName;
+    existing.target = targetName;
     existing.label = trimmedLabel;
-    existing.status = 'confirmed';
+    existing.status = desiredStatus;
     existing.provenance = provenance;
     if (!existing.alternatives?.some((a) => a.name === trimmedLabel)) {
       existing.alternatives = [{ name: trimmedLabel }, ...(existing.alternatives ?? [])];
     }
   } else {
     next.relationships.push({
-      id: makeStableId('rel'),
+      id: options?.relationshipId ?? makeStableId('rel'),
       sourceId: sourceEnt?.id,
       targetId: targetEnt?.id,
       source: sourceName,
       target: targetName,
       label: trimmedLabel,
       alternatives: [{ name: trimmedLabel }],
-      status: 'confirmed',
+      status: desiredStatus,
       provenance,
     });
   }
@@ -1017,10 +1120,54 @@ export function upsertRelationship(
   return next;
 }
 
+export function updateRelationshipById(
+  snapshot: ProjectSnapshot,
+  relationshipId: string,
+  updates: {
+    label?: string;
+    status?: ApprovalStatus;
+    reverseDirection?: boolean;
+  },
+  provenance: DecisionProvenance = 'user-edit'
+): ProjectSnapshot {
+  const next = structuredClone(snapshot);
+  const rel = next.relationships.find((r) => r.id === relationshipId);
+  if (!rel) return snapshot;
+
+  if (updates.reverseDirection) {
+    const prevSource = rel.source;
+    const prevSourceId = rel.sourceId;
+    rel.source = rel.target;
+    rel.sourceId = rel.targetId;
+    rel.target = prevSource;
+    rel.targetId = prevSourceId;
+  }
+
+  if (updates.label !== undefined && updates.label.trim()) {
+    const trimmed = updates.label.trim();
+    rel.label = trimmed;
+    if (!rel.alternatives?.some((a) => a.name === trimmed)) {
+      rel.alternatives = [{ name: trimmed }, ...(rel.alternatives ?? [])];
+    }
+  }
+
+  if (updates.status !== undefined) {
+    rel.status = updates.status;
+  } else {
+    rel.status = 'confirmed';
+  }
+  rel.provenance = provenance;
+
+  next.decisions = buildDecisionInboxFromSnapshot(next);
+  next.refinedPrompt = synthesizeRefinedPrompt(next);
+  return next;
+}
+
 export function removeRelationship(
   snapshot: ProjectSnapshot,
   sourceNameOrId: string,
-  targetNameOrId?: string
+  targetNameOrId?: string,
+  label?: string
 ): ProjectSnapshot {
   const next = structuredClone(snapshot);
   if (!targetNameOrId) {
@@ -1028,16 +1175,62 @@ export function removeRelationship(
   } else {
     const sLower = sourceNameOrId.trim().toLowerCase();
     const tLower = targetNameOrId.trim().toLowerCase();
-    next.relationships = next.relationships.filter(
-      (r) =>
-        !(
-          (r.source.toLowerCase() === sLower && r.target.toLowerCase() === tLower) ||
-          (r.source.toLowerCase() === tLower && r.target.toLowerCase() === sLower)
-        )
-    );
+    const labelLower = label?.trim().toLowerCase();
+    next.relationships = next.relationships.filter((r) => {
+      const sameDir =
+        (r.sourceId?.toLowerCase() === sLower || r.source.toLowerCase() === sLower) &&
+        (r.targetId?.toLowerCase() === tLower || r.target.toLowerCase() === tLower);
+      if (!sameDir) return true;
+      if (labelLower && r.label.trim().toLowerCase() !== labelLower) return true;
+      return false;
+    });
   }
+  next.decisions = buildDecisionInboxFromSnapshot(next);
   next.refinedPrompt = synthesizeRefinedPrompt(next);
   return next;
+}
+
+export function isRelationshipExplicitInPrompt(
+  sourceName: string,
+  label: string,
+  targetName: string,
+  originalIdea: string,
+  rawPresenceFlag?: boolean
+): boolean {
+  if (rawPresenceFlag === false) return false;
+  const promptLower = originalIdea.toLowerCase();
+  if (!promptLower.trim()) return false;
+
+  const cleanEndpoint = (n: string) =>
+    n.toLowerCase().replace(/^(the|a|an)\s+/, '').trim();
+  const srcClean = cleanEndpoint(sourceName);
+  const tgtClean = cleanEndpoint(targetName);
+
+  // Check if the label words (ignoring common prepositions) appear in the prompt
+  const stopWords = new Set(['of', 'to', 'with', 'for', 'in', 'on', 'at', 'by', 'from', 'the', 'a', 'an', 'is', 'are']);
+  const labelTokens = label
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((tok) => tok.length > 2 && !stopWords.has(tok));
+
+  if (labelTokens.length === 0) return Boolean(rawPresenceFlag);
+
+  const hasLabelToken = labelTokens.some((tok) => {
+    const stem = tok.replace(/(ing|ed|es|s)$/, '');
+    return stem.length >= 3 ? promptLower.includes(stem) : promptLower.includes(tok);
+  });
+
+  if (!hasLabelToken) return false;
+
+  // At least one of the endpoints (or a collective noun like "friends"/"animals") should be in the prompt
+  const hasSource = srcClean.length > 0 && promptLower.includes(srcClean);
+  const hasTarget =
+    (tgtClean.length > 0 && promptLower.includes(tgtClean)) ||
+    promptLower.includes('friends') ||
+    promptLower.includes('animals') ||
+    promptLower.includes('guests');
+
+  return hasSource && hasTarget;
 }
 
 export function updateStoryBibleField(
@@ -1112,7 +1305,9 @@ export function updateStoryBibleField(
  * Reconciles new AI analysis (BeliefGraph + Clarifications) with the existing canonical snapshot.
  * Strictly enforces User Authority:
  * - Never overwrites confirmed attribute values, confirmed entity renames, or explicit exclusions.
- * - Stages new AI discoveries as pending proposals in the Decision Inbox.
+ * - Never resurrects rejected attributes or rejected relationships.
+ * - Marks AI-inferred relationships not explicitly stated in originalIdea as status: 'pending'.
+ * - Deduplicates clarifications by semantic target and preserves stable clarification IDs and draft answers.
  */
 export function mergeAnalysisIntoSnapshot(
   current: ProjectSnapshot,
@@ -1137,8 +1332,8 @@ export function mergeAnalysisIntoSnapshot(
           );
 
       if (matched) {
-        // Preserve confirmed exclusion!
-        if (matched.excluded) {
+        // Preserve confirmed exclusion or rejection!
+        if (matched.excluded || matched.status === 'rejected') {
           continue;
         }
         if (!matched.description && rawEnt.description) {
@@ -1148,12 +1343,16 @@ export function mergeAnalysisIntoSnapshot(
           matched.category = inferEntityCategory(rawEnt);
         }
 
-        // Merge attributes without overwriting confirmed attributes
+        // Merge attributes without overwriting confirmed or rejected attributes
         for (const rawAttr of rawEnt.attributes) {
           const existingAttr = matched.attributes.find(
             (a) => a.name.toLowerCase() === rawAttr.name.toLowerCase()
           );
           if (existingAttr) {
+            if (existingAttr.status === 'rejected') {
+              // Never resurrect rejected attributes
+              continue;
+            }
             if (existingAttr.status === 'confirmed') {
               // Keep confirmed value, only append new alternative candidates
               const existingNames = new Set(existingAttr.value.map((v) => v.name));
@@ -1212,7 +1411,7 @@ export function mergeAnalysisIntoSnapshot(
       }
     }
 
-    // Merge relationships while preserving confirmed relationships and entity renames
+    // Merge relationships as directed multigraph while respecting provenance and rejected status
     for (const rawRel of incomingGraph.relationships) {
       const srcName = getCanonicalEntityName(rawRel.source, existingEntities) ?? rawRel.source;
       const tgtName = getCanonicalEntityName(rawRel.target, existingEntities) ?? rawRel.target;
@@ -1220,33 +1419,64 @@ export function mergeAnalysisIntoSnapshot(
       const tgtEnt = existingEntities.find((e) => e.name === tgtName);
       if (!srcEnt || !tgtEnt || srcEnt.id === tgtEnt.id) continue;
       if (srcEnt.excluded || tgtEnt.excluded) continue;
+      if (srcEnt.status === 'rejected' || tgtEnt.status === 'rejected') continue;
 
-      const existingRel = next.relationships.find(
+      const cleanLabel = rawRel.label.trim();
+      const sameDirRels = next.relationships.filter(
         (r) =>
           (r.sourceId === srcEnt.id && r.targetId === tgtEnt.id) ||
-          (r.sourceId === tgtEnt.id && r.targetId === srcEnt.id) ||
-          (r.source.toLowerCase() === srcName.toLowerCase() &&
-            r.target.toLowerCase() === tgtName.toLowerCase())
+          (r.source.toLowerCase() === srcEnt.name.toLowerCase() &&
+            r.target.toLowerCase() === tgtEnt.name.toLowerCase())
       );
 
-      if (existingRel) {
-        if (existingRel.status !== 'confirmed') {
-          existingRel.label = rawRel.label;
-          existingRel.alternatives = rawRel.alternatives;
+      const exactMatch = sameDirRels.find(
+        (r) => r.label.trim().toLowerCase() === cleanLabel.toLowerCase()
+      );
+      if (exactMatch) {
+        if (exactMatch.status === 'rejected') {
+          continue;
         }
-      } else {
-        next.relationships.push({
-          id: makeStableId('rel'),
-          sourceId: srcEnt.id,
-          targetId: tgtEnt.id,
-          source: srcEnt.name,
-          target: tgtEnt.name,
-          label: rawRel.label,
-          alternatives: rawRel.alternatives,
-          status: 'confirmed',
-          provenance: 'ai-inferred',
-        });
+        if (exactMatch.status !== 'confirmed') {
+          exactMatch.alternatives = rawRel.alternatives;
+        }
+        continue;
       }
+
+      // If any rejected relationship in the same direction existed with this label, skip
+      const pendingSameDir = sameDirRels.find((r) => r.status === 'pending');
+      if (pendingSameDir) {
+        pendingSameDir.label = cleanLabel;
+        pendingSameDir.alternatives = rawRel.alternatives;
+        continue;
+      }
+
+      // If a confirmed relationship already exists in this exact direction, do not overwrite it;
+      // only add a new pending proposal if none exists
+      if (sameDirRels.some((r) => r.status === 'confirmed' || r.status === 'rejected')) {
+        continue;
+      }
+
+      const isExplicit = isRelationshipExplicitInPrompt(
+        srcEnt.name,
+        cleanLabel,
+        tgtEnt.name,
+        next.originalIdea,
+        rawRel.presence_in_prompt
+      );
+
+      next.relationships.push({
+        id: makeStableId('rel'),
+        sourceId: srcEnt.id,
+        targetId: tgtEnt.id,
+        source: srcEnt.name,
+        target: tgtEnt.name,
+        label: cleanLabel,
+        presence_in_prompt: isExplicit,
+        evidenceExcerpt: rawRel.evidenceExcerpt,
+        alternatives: rawRel.alternatives,
+        status: isExplicit ? 'confirmed' : 'pending',
+        provenance: isExplicit ? 'prompt-explicit' : 'ai-inferred',
+      });
     }
   }
 
@@ -1254,17 +1484,57 @@ export function mergeAnalysisIntoSnapshot(
     const normalizeQuestion = (q: string) =>
       q.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
+    const getSemanticTargetKey = (clar: Clarification): string | null => {
+      if (!clar.target) return null;
+      if (clar.target.type === 'story_bible' && clar.target.storyField) {
+        return `sb:${clar.target.storyField}`;
+      }
+      if (clar.target.type === 'entity_attribute' && clar.target.attributeName) {
+        const canonicalEntName = clar.target.entityName
+          ? getCanonicalEntityName(clar.target.entityName, next.entities) ?? clar.target.entityName
+          : '';
+        const ent = next.entities.find(
+          (e) =>
+            (clar.target?.entityId && e.id === clar.target.entityId) ||
+            e.name.toLowerCase() === canonicalEntName.toLowerCase()
+        );
+        const entKey = ent?.id ?? canonicalEntName.toLowerCase();
+        if (entKey) {
+          return `ent:${entKey}:${clar.target.attributeName.toLowerCase()}`;
+        }
+      }
+      return null;
+    };
+
     const answeredSet = new Set(next.answeredQuestions.map(normalizeQuestion));
     const skippedSet = new Set(next.skippedQuestions.map(normalizeQuestion));
+    const resolvedTargetKeys = new Set<string>();
 
-    // Preserve existing clarifications that have pending draft answers
-    const preservedDraftClarifications = next.clarifications.filter((c) => {
-      const draft = pendingDraftAnswers[c.id ?? c.question] ?? pendingDraftAnswers[c.question];
-      return Boolean(draft && draft.trim().length > 0 && c.status !== 'answered');
+    for (const oldClar of next.clarifications) {
+      if (oldClar.status === 'answered' || oldClar.status === 'skipped') {
+        answeredSet.add(normalizeQuestion(oldClar.question));
+        const tKey = getSemanticTargetKey(oldClar);
+        if (tKey) resolvedTargetKeys.add(tKey);
+      }
+    }
+
+    // Preserve existing clarifications that have pending draft answers or were already answered/deferred
+    const preservedClarifications = next.clarifications.filter((c) => {
+      if (c.status === 'answered' || c.status === 'skipped' || c.status === 'deferred') {
+        return true;
+      }
+      const draft =
+        pendingDraftAnswers[c.id ?? c.question] ??
+        pendingDraftAnswers[`dec_clar_${c.id ?? c.question}`] ??
+        pendingDraftAnswers[c.question];
+      return Boolean(draft && draft.trim().length > 0);
     });
 
-    const mergedClarifications: Clarification[] = [...preservedDraftClarifications];
+    const mergedClarifications: Clarification[] = [...preservedClarifications];
     const seenNorm = new Set(mergedClarifications.map((c) => normalizeQuestion(c.question)));
+    const seenTargets = new Set(
+      mergedClarifications.map(getSemanticTargetKey).filter((k): k is string => Boolean(k))
+    );
 
     for (const rawClar of incomingClarifications) {
       const normQ = normalizeQuestion(rawClar.question);
@@ -1272,15 +1542,23 @@ export function mergeAnalysisIntoSnapshot(
         continue;
       }
 
-      // Check if target attribute or story field is already confirmed
+      // Normalize target entity ID/name first
       if (rawClar.target?.type === 'entity_attribute' && rawClar.target.entityName && rawClar.target.attributeName) {
+        const canonicalEntName =
+          getCanonicalEntityName(rawClar.target.entityName, next.entities) ?? rawClar.target.entityName;
         const targetEnt = next.entities.find(
-          (e) => e.name.toLowerCase() === rawClar.target?.entityName?.toLowerCase()
+          (e) => e.name.toLowerCase() === canonicalEntName.toLowerCase()
         );
+        if (targetEnt?.excluded || targetEnt?.status === 'rejected') {
+          continue;
+        }
         const targetAttr = targetEnt?.attributes.find(
           (a) => a.name.toLowerCase() === rawClar.target?.attributeName?.toLowerCase()
         );
-        if (targetAttr?.status === 'confirmed' && targetAttr.confirmedValue) {
+        if (
+          (targetAttr?.status === 'confirmed' && targetAttr.confirmedValue) ||
+          targetAttr?.status === 'rejected'
+        ) {
           continue;
         }
         if (targetEnt) {
@@ -1289,16 +1567,29 @@ export function mergeAnalysisIntoSnapshot(
         }
       } else if (rawClar.target?.type === 'story_bible' && rawClar.target.storyField) {
         const sbField = next.storyBible[rawClar.target.storyField];
-        if (sbField?.status === 'confirmed' && sbField.value) {
+        if ((sbField?.status === 'confirmed' && sbField.value) || sbField?.status === 'rejected') {
           continue;
         }
       }
 
+      const targetKey = getSemanticTargetKey(rawClar);
+      if (targetKey && (resolvedTargetKeys.has(targetKey) || seenTargets.has(targetKey))) {
+        continue;
+      }
+
+      // Reuse stable ID if an unanswered clarification with the same question or semantic target existed
+      const priorMatch = next.clarifications.find(
+        (c) =>
+          normalizeQuestion(c.question) === normQ ||
+          (targetKey && getSemanticTargetKey(c) === targetKey)
+      );
+
       seenNorm.add(normQ);
+      if (targetKey) seenTargets.add(targetKey);
       mergedClarifications.push({
         ...rawClar,
-        id: rawClar.id ?? makeStableId('clar'),
-        status: 'unanswered',
+        id: priorMatch?.id ?? rawClar.id ?? makeStableId('clar'),
+        status: priorMatch?.status === 'deferred' ? 'deferred' : 'unanswered',
       });
     }
 
@@ -1306,7 +1597,18 @@ export function mergeAnalysisIntoSnapshot(
   }
 
   next = syncStoryBibleWithSceneEntity(next);
-  next.decisions = buildDecisionInboxFromSnapshot(next);
+  next.decisions = buildDecisionInboxFromSnapshot(next).map((dec) => {
+    const draft =
+      pendingDraftAnswers[dec.id] ??
+      (dec.questionId ? pendingDraftAnswers[dec.questionId] : undefined);
+    if (draft && draft.trim().length > 0 && dec.status === 'pending') {
+      return {
+        ...dec,
+        proposedValue: draft.trim(),
+      };
+    }
+    return dec;
+  });
   next.refinedPrompt = synthesizeRefinedPrompt(next);
   return next;
 }
@@ -1336,9 +1638,11 @@ export function applyDecisionBatch(
       if (!valueToApply) continue;
       const targetKey = dec.targetStoryField
         ? `sb:${dec.targetStoryField}`
-        : dec.targetEntityName && dec.targetAttributeName
-          ? `ent:${dec.targetEntityName.toLowerCase()}:${dec.targetAttributeName.toLowerCase()}`
-          : `q:${dec.id}`;
+        : dec.targetRelationshipId
+          ? `rel:${dec.targetRelationshipId}`
+          : dec.targetEntityName && dec.targetAttributeName
+            ? `ent:${dec.targetEntityName.toLowerCase()}:${dec.targetAttributeName.toLowerCase()}`
+            : `q:${dec.id}`;
       const prior = seenTargets.get(targetKey);
       if (prior && prior.toLowerCase() !== valueToApply.toLowerCase()) {
         conflicts.push(
@@ -1369,6 +1673,11 @@ export function applyDecisionBatch(
             next.skippedQuestions.push(clar.question);
           }
         }
+      } else if (dec.category === 'relationship' && dec.targetRelationshipId) {
+        const rel = next.relationships.find((r) => r.id === dec.targetRelationshipId);
+        if (rel) {
+          rel.status = 'rejected';
+        }
       } else if (dec.targetEntityName && dec.targetAttributeName) {
         const ent = next.entities.find(
           (e) =>
@@ -1394,7 +1703,14 @@ export function applyDecisionBatch(
       dec.status = 'accepted';
       dec.proposedValue = valueToApply;
 
-      if (dec.targetStoryField) {
+      if (dec.category === 'relationship' && dec.targetRelationshipId) {
+        next = updateRelationshipById(
+          next,
+          dec.targetRelationshipId,
+          { label: valueToApply, status: 'confirmed' },
+          'accepted-suggestion'
+        );
+      } else if (dec.targetStoryField) {
         next = updateStoryBibleField(
           next,
           dec.targetStoryField,

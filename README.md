@@ -9,12 +9,13 @@ An intelligent, interactive visual story-planning and prompt-refinement workspac
    - **Center Panel — Interactive Belief Graph 2.0 & Output Deck:** Explore entities and relationships with search, category filters (`character`, `location`, `object`, `event`, `group`), Focus Selected, Highlight Links, Inferred toggle, Group/Expand Guests, Excluded toggle, Fit to View, and a structured Table View toggle.
    - **Right Panel — Persistent Contextual Inspector, Story Bible, Consistency Checks & History:** Edit entity attributes, existence (`Present`/`Absent`), aliases, and relationships without covering the graph canvas; manage high-level Story Bible properties; review automated consistency checks; and restore named revisions or export/import projects.
    - **Bottom Bar — Transaction Undo/Redo & Explicit Generation:** Full multi-step Undo/Redo (`Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`), one-click `Accept All Pending`, mode selector (`Story` default, `Image` secondary), and explicit user-triggered generation.
-2. **Canonical Creative Data Model & User Authority**
+2. **Canonical Creative Data Model, Directed Multigraph & User Authority**
    - Stable internal IDs (`ent_*`, `attr_*`, `rel_*`, `dec_*`, `rev_*`), decision provenance (`prompt-explicit`, `user-edit`, `accepted-suggestion`, `ai-inferred`, `imported`), and approval statuses (`confirmed`, `pending`, `rejected`).
-   - Reanalyzing a prompt or refreshing clarifications never overwrites confirmed user edits, renames, or explicit exclusions.
-3. **Autosave, Version History & Export/Import**
-   - Automatic persistence in `localStorage` and `IndexedDB` (`schemaVersion: 2`) with multi-tab overwrite conflict detection and legacy v1 (`mode: 'video'`) migration to Story mode.
-   - Export full project JSON, readable Story Bible Markdown (`.md`), Refined Prompt Markdown, or generated Story text (`.txt`).
+   - **Directed Multigraph Relationships:** Supports multiple distinct directed predicates between the same entities (`A → B` and `B → A`), curved parallel edge rendering, and a dedicated **Directed Relationship Inspector** (`⇄ Reverse Direction`, `Confirm`, `Reject`, `Delete Edge`, predicate editing).
+   - **Strict Approval Gate & Seed Override Authority:** AI-inferred entities, attributes, Story Bible fields, and relationships enter as `pending` in the Decision Inbox and never enter the generation prompt until confirmed. Renaming or excluding a seed entity emits explicit `Seed Overrides & Canonical Identity` instructions.
+3. **CAS Autosave, Coalesced Version History, Multi-Artifact History & Export/Import**
+   - Automatic persistence in `localStorage` and `IndexedDB` (`schemaVersion: 3`) with monotonic `revision` Compare-And-Swap (`CAS`) conflict recovery, non-destructive quota handling, automatic pre-migration backup (`proactive_co_creator_backup_v2`), and legacy v1 (`mode: 'video'`) migration to Story mode.
+   - Coalesced undo/redo history (`60` steps), staged AI Narrative Polish review, multi-artifact generation history per mode, and full project JSON / Story Bible Markdown (`.md`) / Refined Prompt export.
 
 ## Architecture & Security
 
@@ -35,7 +36,7 @@ cp .env.example .env.local # Set GEMINI_API_KEY=your_key (or configure in AI Stu
 npm run dev                # Start Express + Vite workspace on http://localhost:3000
 ```
 
-- `npm test` — Run all 32 unit, schema, canonical state, batch edit, persistence, and API route tests (`tsx --test tests/*.test.ts`)
+- `npm test` — Run all 47 unit, schema, canonical state, multigraph, batch edit, CAS persistence, async isolation, and API route tests (`tsx --test tests/*.test.ts`)
 - `npm run typecheck` — Run strict TypeScript validation (`tsc --noEmit`)
 - `npm run lint` — Run ESLint across client, server, shared, and test files
 - `npm run build` — Compile production assets into `dist/`

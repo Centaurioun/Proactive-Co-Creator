@@ -11,7 +11,7 @@ import {
   syncStoryBibleWithSceneEntity,
 } from './canonicalModel.ts';
 import { inferEntityCategory } from './beliefGraphUtils.ts';
-import { synthesizeRefinedPrompt } from './promptBuilder.ts';
+import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts';
 import type {
   CreativeProject,
   Entity,
@@ -21,21 +21,26 @@ import type {
   StoryBibleFields,
 } from '../shared/types.ts';
 
-export const CURRENT_SCHEMA_VERSION = 2;
-const LOCAL_STORAGE_PROJECTS_KEY = 'proactive_co_creator_projects_v2';
-const LOCAL_STORAGE_ACTIVE_ID_KEY = 'proactive_co_creator_active_id_v2';
+export const CURRENT_SCHEMA_VERSION = 3;
+export const LOCAL_STORAGE_PROJECTS_KEY = 'proactive_co_creator_projects_v2';
+export const LOCAL_STORAGE_ACTIVE_ID_KEY = 'proactive_co_creator_active_id_v2';
+export const LOCAL_STORAGE_BACKUP_V2_KEY = 'proactive_co_creator_backup_v2';
 const IDB_NAME = 'proactive_co_creator_db_v2';
 const IDB_STORE = 'projects';
 
 export interface StorageSaveResult {
   ok: boolean;
+  saved?: boolean;
   conflictDetected?: boolean;
+  quotaExceeded?: boolean;
+  storedProject?: CreativeProject;
+  persistedRevision?: number;
   error?: string;
 }
 
 /**
- * Migrates older v0/v1 saved project states (including legacy states with `mode: 'video'`)
- * into a valid schemaVersion 2 CreativeProject without losing recoverable story or image data.
+ * Migrates older v0/v1/v2 saved project states (including legacy states with `mode: 'video'`)
+ * into a valid schemaVersion 3 CreativeProject without losing recoverable story or image data.
  */
 export function migrateProjectPayload(raw: unknown): CreativeProject {
   if (!raw || typeof raw !== 'object') {
@@ -52,7 +57,7 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
 
   const now = Date.now();
 
-  // Case 1: Already a v2-like structure with `snapshot`
+  // Case 1: Already a v2/v3-like structure with `snapshot`
   if (obj.snapshot && typeof obj.snapshot === 'object') {
     const rawSnap = obj.snapshot as Record<string, unknown>;
     const rawMode = String(rawSnap.mode ?? 'story');
@@ -131,33 +136,66 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
       snapshot.refinedPrompt = synthesizeRefinedPrompt(snapshot);
     }
 
+    const projectId = typeof obj.id === 'string' && obj.id ? obj.id : makeStableId('proj');
+    const logicalRev =
+      typeof obj.revision === 'number' && obj.revision >= 1
+        ? obj.revision
+        : Array.isArray(obj.revisions) && obj.revisions.length > 0
+          ? obj.revisions.length
+          : 1;
+    const persistedRev =
+      typeof obj.persistedRevision === 'number' && obj.persistedRevision >= 1
+        ? obj.persistedRevision
+        : logicalRev;
+
+    const currentDigest = computePromptDigest(snapshot.refinedPrompt, snapshot.mode);
+    const artifacts = Array.isArray(obj.artifacts)
+      ? (obj.artifacts as CreativeProject['artifacts'])
+          .filter((a) => a && (a.mode === 'story' || a.mode === 'image'))
+          .map((a) => {
+            const digest = a.promptDigest ?? computePromptDigest(a.promptUsed ?? '', a.mode);
+            return {
+              ...a,
+              projectId: a.projectId ?? projectId,
+              sourceRevision: a.sourceRevision ?? logicalRev,
+              promptDigest: digest,
+              isOutdated: digest !== computePromptDigest(snapshot.refinedPrompt, a.mode),
+            };
+          })
+      : [];
+
+    void currentDigest;
+
     return {
       schemaVersion: CURRENT_SCHEMA_VERSION,
-      id: typeof obj.id === 'string' && obj.id ? obj.id : makeStableId('proj'),
+      id: projectId,
       name:
         typeof obj.name === 'string' && obj.name.trim()
           ? obj.name.trim()
           : originalIdea.slice(0, 48),
       createdAt: typeof obj.createdAt === 'number' ? obj.createdAt : now,
       updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : now,
+      revision: logicalRev,
+      persistedRevision: persistedRev,
       snapshot,
-      artifacts: Array.isArray(obj.artifacts)
-        ? (obj.artifacts as CreativeProject['artifacts']).filter(
-            (a) => a && (a.mode === 'story' || a.mode === 'image')
-          )
-        : [],
-      revisions: Array.isArray(obj.revisions) && obj.revisions.length > 0
-        ? (obj.revisions as CreativeProject['revisions'])
-        : [
-            {
-              id: makeStableId('rev'),
-              timestamp: now,
-              label: 'Imported Revision',
-              summary: 'Migrated project state',
-              changeCount: 0,
-              snapshot: structuredClone(snapshot),
-            },
-          ],
+      artifacts,
+      revisions:
+        Array.isArray(obj.revisions) && obj.revisions.length > 0
+          ? (obj.revisions as CreativeProject['revisions']).map((r, idx) => ({
+              ...r,
+              revisionNumber: r.revisionNumber ?? Math.max(1, logicalRev - idx),
+            }))
+          : [
+              {
+                id: makeStableId('rev'),
+                revisionNumber: logicalRev,
+                timestamp: now,
+                label: 'Imported Revision',
+                summary: 'Migrated project state',
+                changeCount: 0,
+                snapshot: structuredClone(snapshot),
+              },
+            ],
     };
   }
 
@@ -214,14 +252,18 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
   snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot);
   snapshot.refinedPrompt = synthesizeRefinedPrompt(snapshot);
 
+  const projectId = typeof obj.id === 'string' ? obj.id : makeStableId('proj');
   const artifacts: CreativeProject['artifacts'] = [];
   if (typeof obj.story === 'string' && obj.story.trim()) {
     artifacts.push({
       id: makeStableId('art_story'),
+      projectId,
       mode: 'story',
       createdAt: now,
       revisionId: 'rev_migrated',
+      sourceRevision: 1,
       promptUsed: snapshot.refinedPrompt,
+      promptDigest: computePromptDigest(snapshot.refinedPrompt, 'story'),
       storyText: obj.story,
       isOutdated: false,
     });
@@ -229,10 +271,13 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
   if (Array.isArray(obj.images) && obj.images.length > 0) {
     artifacts.push({
       id: makeStableId('art_img'),
+      projectId,
       mode: 'image',
       createdAt: now,
       revisionId: 'rev_migrated',
+      sourceRevision: 1,
       promptUsed: snapshot.refinedPrompt,
+      promptDigest: computePromptDigest(snapshot.refinedPrompt, 'image'),
       images: (obj.images as unknown[]).filter((i): i is string => typeof i === 'string'),
       isOutdated: false,
     });
@@ -240,18 +285,21 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
 
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    id: typeof obj.id === 'string' ? obj.id : makeStableId('proj'),
+    id: projectId,
     name:
       typeof obj.name === 'string' && obj.name.trim()
         ? obj.name.trim()
         : (legacyPrompt || 'Migrated Project').slice(0, 48),
     createdAt: now,
     updatedAt: now,
+    revision: 1,
+    persistedRevision: 1,
     snapshot,
     artifacts,
     revisions: [
       {
         id: 'rev_migrated',
+        revisionNumber: 1,
         timestamp: now,
         label: 'Migrated v1 Project',
         summary:
@@ -279,7 +327,7 @@ function normalizeMigratedEntities(rawEntities: unknown[]): Entity[] {
         : rawName;
 
     const rawAttrs = Array.isArray(raw.attributes) ? raw.attributes : [];
-    const attributes = rawAttrs
+    const attributes: Entity['attributes'] = rawAttrs
       .filter((a): a is Record<string, unknown> => Boolean(a && typeof a === 'object'))
       .map((a) => {
         const vals = Array.isArray(a.value)
@@ -291,6 +339,14 @@ function normalizeMigratedEntities(rawEntities: unknown[]): Entity[] {
                   : { name: 'Unknown' }
             )
           : [{ name: 'Unknown' }];
+        const status: 'confirmed' | 'rejected' | 'pending' =
+          a.status === 'confirmed'
+            ? 'confirmed'
+            : a.status === 'rejected'
+              ? 'rejected'
+              : a.presence_in_prompt
+                ? 'confirmed'
+                : 'pending';
         return {
           id: typeof a.id === 'string' ? a.id : makeStableId('attr'),
           name: typeof a.name === 'string' ? a.name : 'property',
@@ -302,12 +358,7 @@ function normalizeMigratedEntities(rawEntities: unknown[]): Entity[] {
               : a.presence_in_prompt
                 ? vals[0]?.name
                 : undefined,
-          status:
-            a.status === 'confirmed' || a.status === 'rejected'
-              ? a.status
-              : a.presence_in_prompt
-                ? ('confirmed' as const)
-                : ('pending' as const),
+          status,
           provenance:
             typeof a.provenance === 'string'
               ? (a.provenance as never)
@@ -417,6 +468,7 @@ export function exportStoryBibleMarkdown(project: CreativeProject): string {
     ``,
     `> **Original Idea:** ${snapshot.originalIdea}`,
     `> **Primary Mode:** ${snapshot.mode === 'story' ? 'Story' : 'Image'}`,
+    `> **Revision:** r${project.revision ?? 1}`,
     `> **Last Updated:** ${new Date(project.updatedAt).toISOString()}`,
     ``,
     `## 1. Narrative & Creative Properties`,
@@ -463,7 +515,7 @@ export function exportStoryBibleMarkdown(project: CreativeProject): string {
 
   lines.push(`## 3. Relationships`, ``);
   for (const rel of snapshot.relationships) {
-    lines.push(`- **${rel.source}** → _${rel.label}_ → **${rel.target}**`);
+    lines.push(`- **${rel.source}** → _${rel.label}_ → **${rel.target}** (${rel.status ?? 'confirmed'})`);
   }
 
   lines.push(``, `## 4. Refined Prompt`, ``, '```text', snapshot.refinedPrompt, '```', ``);
@@ -472,60 +524,117 @@ export function exportStoryBibleMarkdown(project: CreativeProject): string {
 
 // --- Browser Local Storage + IndexedDB Persistence Engine ---
 
-function stripHeavyMediaForFallback(project: CreativeProject): CreativeProject {
-  // Keep lightweight metadata for image artifacts if localStorage quota is tight
-  return {
-    ...project,
-    artifacts: project.artifacts.map((art, idx) =>
-      idx === 0
-        ? art
-        : {
-            ...art,
-            images: art.images ? art.images.slice(0, 1) : undefined,
-          }
-    ),
-  };
-}
-
 export function saveProjectToLocalStorage(
   project: CreativeProject,
-  expectedMinUpdatedAt?: number
+  expectedBaseRevisionOrOptions?:
+    | number
+    | { expectedPersistedRevision?: number; forceOverwrite?: boolean },
+  options?: { forceOverwrite?: boolean }
 ): StorageSaveResult {
   if (typeof window === 'undefined' || !window.localStorage) {
-    return { ok: false, error: 'Browser localStorage is unavailable.' };
+    return { ok: false, saved: false, error: 'Browser localStorage is unavailable.' };
   }
+
+  const normalizedForce =
+    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+      ? Boolean(expectedBaseRevisionOrOptions.forceOverwrite)
+      : Boolean(options?.forceOverwrite);
+
+  const rawExpected =
+    typeof expectedBaseRevisionOrOptions === 'number'
+      ? expectedBaseRevisionOrOptions
+      : expectedBaseRevisionOrOptions?.expectedPersistedRevision;
 
   try {
     const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
-    const map: Record<string, CreativeProject> = raw ? (JSON.parse(raw) as Record<string, CreativeProject>) : {};
+    const map: Record<string, CreativeProject> = raw
+      ? (JSON.parse(raw) as Record<string, CreativeProject>)
+      : {};
     const existing = map[project.id];
 
-    // Multi-tab conflict detection: do not silently overwrite a newer timestamp from another tab
-    if (
-      expectedMinUpdatedAt !== undefined &&
-      existing &&
-      existing.updatedAt > expectedMinUpdatedAt
-    ) {
+    // Optimistic concurrency control (CAS) on monotonic logical revision (and legacy updatedAt fallback)
+    if (!normalizedForce && existing) {
+      const existingRev = typeof existing.revision === 'number' ? existing.revision : 1;
+      const isTimestampExpectation =
+        typeof rawExpected === 'number' && rawExpected > 1_000_000_000_000;
+
+      if (isTimestampExpectation) {
+        if (existing.updatedAt > rawExpected) {
+          return {
+            ok: false,
+            saved: false,
+            conflictDetected: true,
+            storedProject: migrateProjectPayload(existing),
+            error: 'A newer version of this project was saved in another browser tab.',
+          };
+        }
+      } else {
+        const baseRev =
+          rawExpected !== undefined ? rawExpected : project.persistedRevision;
+
+        if (baseRev !== undefined && existingRev > baseRev) {
+          return {
+            ok: false,
+            saved: false,
+            conflictDetected: true,
+            storedProject: migrateProjectPayload(existing),
+            error: `Storage conflict detected: another tab saved revision r${existingRev} while this tab was based on r${baseRev}.`,
+          };
+        }
+
+        // Also detect concurrent edits where another tab wrote the same revision with a newer timestamp
+        if (
+          baseRev !== undefined &&
+          existingRev === baseRev &&
+          project.revision === baseRev &&
+          existing.updatedAt > project.updatedAt
+        ) {
+          return {
+            ok: false,
+            saved: false,
+            conflictDetected: true,
+            storedProject: migrateProjectPayload(existing),
+            error: 'A newer version of this project was saved in another browser tab.',
+          };
+        }
+      }
+    }
+
+    const nextRevision = project.revision ?? 1;
+    const projectToStore: CreativeProject = {
+      ...project,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision: nextRevision,
+      persistedRevision: nextRevision,
+    };
+
+    map[project.id] = projectToStore;
+    try {
+      window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
+    } catch (quotaErr) {
+      // Never silently delete or strip user media on quota errors (AC15, F12).
       return {
         ok: false,
-        conflictDetected: true,
-        error: 'A newer version of this project was saved in another browser tab.',
+        saved: false,
+        quotaExceeded: true,
+        persistedRevision: project.persistedRevision,
+        error:
+          quotaErr instanceof Error && quotaErr.message
+            ? `Browser localStorage quota exceeded (${quotaErr.message}). Full project media remains intact in memory and IndexedDB. Export JSON or remove older image outputs to free space.`
+            : 'Browser localStorage quota exceeded. Full project media remains intact in memory and IndexedDB.',
       };
     }
 
-    map[project.id] = project;
-    try {
-      window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
-    } catch {
-      // Quota fallback: trim older image base64 payloads while preserving all structured project data
-      map[project.id] = stripHeavyMediaForFallback(project);
-      window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
-    }
     window.localStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, project.id);
-    return { ok: true };
+    return {
+      ok: true,
+      saved: true,
+      persistedRevision: nextRevision,
+    };
   } catch (err) {
     return {
       ok: false,
+      saved: false,
       error: err instanceof Error ? err.message : 'Failed to write to local storage.',
     };
   }
@@ -545,13 +654,23 @@ export function loadProjectsFromLocalStorage(): {
     const activeId = window.localStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY);
     if (!raw) {
       const sample = createSampleProject();
-      saveProjectToLocalStorage(sample);
+      saveProjectToLocalStorage(sample, undefined, { forceOverwrite: true });
       return { projects: [sample], activeProjectId: sample.id };
     }
 
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const projects: CreativeProject[] = [];
+    let needsPreMigrationBackup = false;
+
     for (const val of Object.values(parsed)) {
+      if (
+        val &&
+        typeof val === 'object' &&
+        typeof (val as { schemaVersion?: unknown }).schemaVersion === 'number' &&
+        ((val as { schemaVersion: number }).schemaVersion < CURRENT_SCHEMA_VERSION)
+      ) {
+        needsPreMigrationBackup = true;
+      }
       try {
         projects.push(migrateProjectPayload(val));
       } catch {
@@ -559,9 +678,19 @@ export function loadProjectsFromLocalStorage(): {
       }
     }
 
+    if (needsPreMigrationBackup) {
+      try {
+        if (!window.localStorage.getItem(LOCAL_STORAGE_BACKUP_V2_KEY)) {
+          window.localStorage.setItem(LOCAL_STORAGE_BACKUP_V2_KEY, raw);
+        }
+      } catch {
+        // Best-effort backup if quota is tight
+      }
+    }
+
     if (projects.length === 0) {
       const sample = createSampleProject();
-      saveProjectToLocalStorage(sample);
+      saveProjectToLocalStorage(sample, undefined, { forceOverwrite: true });
       return { projects: [sample], activeProjectId: sample.id };
     }
 
@@ -597,8 +726,25 @@ export function deleteProjectFromLocalStorage(projectId: string): CreativeProjec
   }
 }
 
-export async function saveProjectToIndexedDb(project: CreativeProject): Promise<void> {
-  if (typeof window === 'undefined' || !('indexedDB' in window)) return;
+export async function saveProjectToIndexedDb(
+  project: CreativeProject,
+  expectedBaseRevisionOrOptions?:
+    | number
+    | { expectedPersistedRevision?: number; forceOverwrite?: boolean },
+  options?: { forceOverwrite?: boolean }
+): Promise<StorageSaveResult> {
+  if (typeof window === 'undefined' || !('indexedDB' in window)) {
+    return { ok: false, saved: false, error: 'IndexedDB is unavailable in this environment.' };
+  }
+  const normalizedForce =
+    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+      ? Boolean(expectedBaseRevisionOrOptions.forceOverwrite)
+      : Boolean(options?.forceOverwrite);
+  const rawExpected =
+    typeof expectedBaseRevisionOrOptions === 'number'
+      ? expectedBaseRevisionOrOptions
+      : expectedBaseRevisionOrOptions?.expectedPersistedRevision;
+
   return new Promise((resolve) => {
     try {
       const req = window.indexedDB.open(IDB_NAME, 1);
@@ -611,19 +757,101 @@ export async function saveProjectToIndexedDb(project: CreativeProject): Promise<
       req.onsuccess = () => {
         const db = req.result;
         const tx = db.transaction(IDB_STORE, 'readwrite');
-        tx.objectStore(IDB_STORE).put(project);
+        const store = tx.objectStore(IDB_STORE);
+        const getReq = store.get(project.id);
+
+        getReq.onsuccess = () => {
+          const existing = getReq.result as CreativeProject | undefined;
+          const baseRev =
+            rawExpected !== undefined
+              ? rawExpected
+              : project.persistedRevision;
+
+          if (
+            !normalizedForce &&
+            existing &&
+            baseRev !== undefined &&
+            (existing.revision ?? 1) > baseRev
+          ) {
+            db.close();
+            resolve({
+              ok: false,
+              saved: false,
+              conflictDetected: true,
+              storedProject: migrateProjectPayload(existing),
+              error: `IndexedDB has a newer revision (r${existing.revision ?? 1}) than expected base r${baseRev}.`,
+            });
+            return;
+          }
+
+          const nextRev = project.revision ?? 1;
+          store.put({
+            ...project,
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+            revision: nextRev,
+            persistedRevision: nextRev,
+          });
+        };
+
         tx.oncomplete = () => {
           db.close();
-          resolve();
+          resolve({ ok: true, saved: true, persistedRevision: project.revision ?? 1 });
         };
         tx.onerror = () => {
+          const errMsg = tx.error?.message ?? 'IndexedDB transaction failed.';
           db.close();
-          resolve();
+          resolve({ ok: false, saved: false, error: errMsg });
         };
       };
-      req.onerror = () => resolve();
+      req.onerror = () =>
+        resolve({ ok: false, saved: false, error: req.error?.message ?? 'Failed to open IndexedDB.' });
+    } catch (err) {
+      resolve({
+        ok: false,
+        saved: false,
+        error: err instanceof Error ? err.message : 'IndexedDB exception.',
+      });
+    }
+  });
+}
+
+export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
+  if (typeof window === 'undefined' || !('indexedDB' in window)) return [];
+  return new Promise((resolve) => {
+    try {
+      const req = window.indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const store = tx.objectStore(IDB_STORE);
+        const allReq = store.getAll();
+        allReq.onsuccess = () => {
+          const rawList = Array.isArray(allReq.result) ? allReq.result : [];
+          const migrated: CreativeProject[] = [];
+          for (const item of rawList) {
+            try {
+              migrated.push(migrateProjectPayload(item));
+            } catch {
+              // Ignore malformed record
+            }
+          }
+          db.close();
+          resolve(migrated.sort((a, b) => b.updatedAt - a.updatedAt));
+        };
+        allReq.onerror = () => {
+          db.close();
+          resolve([]);
+        };
+      };
+      req.onerror = () => resolve([]);
     } catch {
-      resolve();
+      resolve([]);
     }
   });
 }

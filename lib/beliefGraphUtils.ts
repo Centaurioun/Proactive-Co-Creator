@@ -79,57 +79,78 @@ export function getEffectiveAttributeValue(
   return getHighestProbabilityValue(attribute);
 }
 
-export function getCanonicalEntityName(
+export function findCandidateEntities(
   name: string,
   objectEntities: Entity[]
-): string | null {
-  if (!name) return null;
+): Entity[] {
+  if (!name) return [];
   const lowerName = name.toLowerCase().trim();
   const cleanName = lowerName.replace(/^(the|a|an)\s+/, '').trim();
 
-  // Check exact ID or exact name or alias first
-  let match = objectEntities.find(
+  // 1. Exact ID match is always unique
+  const idMatch = objectEntities.filter((e) => e.id === name);
+  if (idMatch.length > 0) return idMatch;
+
+  // Helper to check if cleanName appears as a standalone word token in an entity name
+  const escapedClean = cleanName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const wordTokenRegex =
+    cleanName.length >= 3 ? new RegExp(`\\b${escapedClean}\\b`, 'i') : null;
+
+  // 2. Exact name/alias match (with or without leading article)
+  const exactMatches = objectEntities.filter(
     (e) =>
-      e.id === name ||
       e.name.toLowerCase().trim() === lowerName ||
-      e.aliases?.some((a) => a.toLowerCase().trim() === lowerName)
+      e.name.toLowerCase().replace(/^(the|a|an)\s+/, '').trim() === cleanName ||
+      e.aliases?.some(
+        (a) =>
+          a.toLowerCase().trim() === lowerName ||
+          a.toLowerCase().replace(/^(the|a|an)\s+/, '').trim() === cleanName
+      )
   );
-  if (!match) {
-    match = objectEntities.find(
-      (e) =>
-        e.name
-          .toLowerCase()
-          .replace(/^(the|a|an)\s+/, '')
-          .trim() === cleanName ||
-        e.aliases?.some(
-          (a) =>
-            a
-              .toLowerCase()
-              .replace(/^(the|a|an)\s+/, '')
-              .trim() === cleanName
-        )
-    );
+
+  if (exactMatches.length > 0) {
+    // If cleanName is a single noun (e.g. "fox") and another entity also has "fox" as a word token (e.g. "Red Fox"), include it as an ambiguity candidate while keeping exactMatches[0] first
+    if (!/\s/.test(cleanName) && wordTokenRegex) {
+      const exactSet = new Set(exactMatches);
+      const extraWordMatches = objectEntities.filter(
+        (e) => !exactSet.has(e) && wordTokenRegex.test(e.name)
+      );
+      if (extraWordMatches.length > 0) {
+        return [...exactMatches, ...extraWordMatches];
+      }
+    }
+    return exactMatches;
   }
-  if (!match && cleanName.length > 2) {
-    match = objectEntities.find((e) => {
+
+  // 3. Partial substring matches (may return multiple candidates when ambiguous)
+  if (cleanName.length > 2) {
+    const partialMatches = objectEntities.filter((e) => {
       const cleanEntity = e.name
         .toLowerCase()
         .replace(/^(the|a|an)\s+/, '')
         .trim();
-      return cleanEntity.includes(cleanName);
-    });
-    if (!match) {
-      match = objectEntities.find((e) => {
-        const cleanEntity = e.name
-          .toLowerCase()
-          .replace(/^(the|a|an)\s+/, '')
-          .trim();
-        return cleanName.includes(cleanEntity) && cleanEntity.length > 2;
+      const aliasHit = e.aliases?.some((a) => {
+        const cleanAlias = a.toLowerCase().replace(/^(the|a|an)\s+/, '').trim();
+        return cleanAlias.includes(cleanName) || (cleanName.includes(cleanAlias) && cleanAlias.length > 2);
       });
-    }
+      return (
+        cleanEntity.includes(cleanName) ||
+        (cleanName.includes(cleanEntity) && cleanEntity.length > 2) ||
+        Boolean(aliasHit)
+      );
+    });
+    return partialMatches;
   }
 
-  return match ? match.name : null;
+  return [];
+}
+
+export function getCanonicalEntityName(
+  name: string,
+  objectEntities: Entity[]
+): string | null {
+  const candidates = findCandidateEntities(name, objectEntities);
+  return candidates.length > 0 ? candidates[0].name : null;
 }
 
 export function normalizeAndDeduplicateRelationships(
@@ -139,11 +160,14 @@ export function normalizeAndDeduplicateRelationships(
   if (!rawRelationships || rawRelationships.length === 0) return [];
 
   const validRels = rawRelationships.filter(
-    (r) => !isSceneEntityName(r.source) && !isSceneEntityName(r.target)
+    (r) =>
+      r.status !== 'rejected' &&
+      !isSceneEntityName(r.source) &&
+      !isSceneEntityName(r.target)
   );
 
   const uniqueRels: Relationship[] = [];
-  const pairSet = new Set<string>();
+  const directedKeySet = new Set<string>();
 
   for (const rel of validRels) {
     let sourceEntity = rel.sourceId
@@ -169,17 +193,22 @@ export function normalizeAndDeduplicateRelationships(
       targetEntity = objectEntities.find((e) => e.name === canonicalTarget);
     }
 
-    const sortedPair = [canonicalSource, canonicalTarget].sort();
-    const pairKey = JSON.stringify(sortedPair);
-    if (!pairSet.has(pairKey)) {
-      pairSet.add(pairKey);
+    if (sourceEntity?.excluded || targetEntity?.excluded) {
+      continue;
+    }
+
+    const cleanLabel = rel.label.trim();
+    const directedKey = `${(sourceEntity?.id ?? canonicalSource).toLowerCase()}->${(targetEntity?.id ?? canonicalTarget).toLowerCase()}::${cleanLabel.toLowerCase()}`;
+    if (!directedKeySet.has(directedKey)) {
+      directedKeySet.add(directedKey);
       uniqueRels.push({
         ...rel,
-        id: rel.id ?? `rel_${canonicalSource}_${canonicalTarget}`,
+        id: rel.id ?? `rel_${canonicalSource}_${canonicalTarget}_${cleanLabel.replace(/\s+/g, '_')}`,
         sourceId: sourceEntity?.id,
         targetId: targetEntity?.id,
         source: canonicalSource,
         target: canonicalTarget,
+        label: cleanLabel,
       });
     }
   }

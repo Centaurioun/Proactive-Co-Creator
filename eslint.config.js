@@ -9,6 +9,7 @@ export default tseslint.config(
       'node_modules/**',
       '.next/**',
       '.backup-original/**',
+      '.backup-2026-11-16/**',
       '.playwright-cli/**',
       'public/**',
     ],

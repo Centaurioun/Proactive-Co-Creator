@@ -18,10 +18,10 @@ import {
   createEmptyStoryBible,
   createSampleProject,
   makeStableId,
-  mergeAnalysisIntoSnapshot,
   removeRelationship,
   renameEntity,
   setEntityAttribute,
+  updateRelationshipById,
   updateStoryBibleField,
   upsertRelationship,
 } from './lib/canonicalModel';
@@ -30,8 +30,6 @@ import {
   createUndoRedoState,
   performRedo,
   performUndo,
-  pushUndoableTransaction,
-  recordProjectRevision,
   restoreProjectRevision,
   type UndoRedoState,
 } from './lib/historyEngine';
@@ -39,11 +37,25 @@ import {
   applyProposedOperations,
   interpretBatchInstructionLocally,
 } from './lib/nlBatchEngine';
+import {
+  acceptPolishProposal,
+  applyAsyncAnalysisCompletion,
+  applyAsyncGenerationCompletion,
+  clearTicket,
+  commitSnapshotTransaction,
+  createPolishProposal,
+  createRequestTicket,
+  isProjectActionLoading,
+  refreshArtifactsCurrentness,
+  registerTicket,
+  type InFlightTicketsMap,
+} from './lib/projectController';
 import { synthesizeRefinedPrompt } from './lib/promptBuilder';
 import {
   deleteProjectFromLocalStorage,
   exportProjectToJson,
   exportStoryBibleMarkdown,
+  loadProjectsFromIndexedDb,
   loadProjectsFromLocalStorage,
   migrateProjectPayload,
   saveProjectToIndexedDb,
@@ -60,6 +72,7 @@ import {
   requestBatchEditInterpretation,
 } from './services/apiClient';
 import type {
+  AiPolishProposal,
   BatchEditProposalResult,
   CreativeProject,
   DecisionItem,
@@ -67,10 +80,17 @@ import type {
   GenerationMode,
   ProjectSnapshot,
   ProposedOperation,
+  Relationship,
   StoryBibleFields,
 } from './shared/types';
 
 type MobileTab = 'decisions' | 'graph' | 'inspector' | 'output';
+
+interface StorageConflictAlert {
+  type: 'conflict' | 'quota';
+  message: string;
+  projectId: string;
+}
 
 function getReadableErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ClientApiError) return error.message;
@@ -111,62 +131,151 @@ function App() {
 
   // Selection & UI workspace navigation
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('inspector');
   const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
   const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(true);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState<boolean>(false);
   const [statusNotification, setStatusNotification] = useState<string | null>(null);
+  const [storageAlert, setStorageAlert] = useState<StorageConflictAlert | null>(null);
 
-  // Loading & Error States
-  const [isGraphLoading, setIsGraphLoading] = useState(false);
-  const [isClarificationsLoading, setIsClarificationsLoading] = useState(false);
-  const [isBatchLoading, setIsBatchLoading] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isPolishingPrompt, setIsPolishingPrompt] = useState(false);
+  // Scoped Request Tickets & Staged Proposals
+  const [inFlightTickets, setInFlightTickets] = useState<InFlightTicketsMap>({});
+  const [polishProposalsByProject, setPolishProposalsByProject] = useState<
+    Record<string, AiPolishProposal>
+  >({});
 
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [clarificationError, setClarificationError] = useState<string | null>(null);
-  const [galleryErrors, setGalleryErrors] = useState<Record<GenerationMode, string | null>>({
-    story: null,
-    image: null,
-  });
+  const [analysisErrors, setAnalysisErrors] = useState<Record<string, string | null>>({});
+  const [clarificationErrors, setClarificationErrors] = useState<Record<string, string | null>>({});
+  const [galleryErrors, setGalleryErrors] = useState<
+    Record<string, Record<GenerationMode, string | null>>
+  >({});
 
-  const graphAbortRef = useRef<AbortController | null>(null);
-  const clarifyAbortRef = useRef<AbortController | null>(null);
-  const generationAbortRef = useRef<AbortController | null>(null);
+  const abortControllersRef = useRef<Record<string, AbortController>>({});
+
+  // Hydrate full media artifacts from IndexedDB on initial mount
+  useEffect(() => {
+    void loadProjectsFromIndexedDb().then((idbProjects) => {
+      if (idbProjects.length === 0) return;
+      setSavedProjects((prev) =>
+        prev.map((lp) => {
+          const match = idbProjects.find((ip) => ip.id === lp.id);
+          if (match && (match.revision ?? 0) >= (lp.revision ?? 0)) {
+            return match;
+          }
+          return lp;
+        })
+      );
+      setProject((prev) => {
+        const match = idbProjects.find((ip) => ip.id === prev.id);
+        if (match && (match.revision ?? 0) >= (prev.revision ?? 0)) {
+          return {
+            ...prev,
+            artifacts: match.artifacts.length > 0 ? match.artifacts : prev.artifacts,
+          };
+        }
+        return prev;
+      });
+    });
+  }, []);
 
   // Derive synchronized active project with current undoState.present snapshot
   const activeProject = useMemo<CreativeProject>(() => {
-    if (project.snapshot === undoState.present) return project;
-    const promptChanged = project.snapshot.refinedPrompt !== undoState.present.refinedPrompt;
-    const updatedArtifacts = promptChanged
-      ? project.artifacts.map((a) => ({ ...a, isOutdated: true }))
-      : project.artifacts;
+    const refreshedArtifacts = refreshArtifactsCurrentness(project.artifacts, undoState.present);
+    if (project.snapshot === undoState.present && refreshedArtifacts === project.artifacts) {
+      return project;
+    }
     return {
       ...project,
       snapshot: undoState.present,
-      artifacts: updatedArtifacts,
+      artifacts: refreshedArtifacts,
     };
   }, [project, undoState.present]);
 
+  const activeProjectRef = useRef<CreativeProject>(activeProject);
+  const undoStateRef = useRef<UndoRedoState>(undoState);
   useEffect(() => {
+    activeProjectRef.current = activeProject;
+    undoStateRef.current = undoState;
+  }, [activeProject, undoState]);
+
+  // Persist active project with CAS revision protection
+  useEffect(() => {
+    if (storageAlert?.type === 'conflict' && storageAlert.projectId === activeProject.id) {
+      return;
+    }
     const timer = setTimeout(() => {
-      const res = saveProjectToLocalStorage(activeProject);
-      if (res.conflictDetected && res.error) {
-        setStatusNotification(res.error);
+      const res = saveProjectToLocalStorage(activeProject, {
+        expectedPersistedRevision: activeProject.persistedRevision,
+      });
+      if (!res.saved) {
+        if (res.conflictDetected) {
+          setStorageAlert({
+            type: 'conflict',
+            projectId: activeProject.id,
+            message:
+              res.error ??
+              'Storage conflict: a newer project revision was saved in another tab.',
+          });
+          return;
+        }
+        if (res.quotaExceeded) {
+          setStorageAlert({
+            type: 'quota',
+            projectId: activeProject.id,
+            message:
+              res.error ??
+              'Browser localStorage quota reached. Large media is kept in IndexedDB; export a JSON backup to be safe.',
+          });
+        }
+      } else if (activeProject.persistedRevision !== activeProject.revision) {
+        setProject((prev) =>
+          prev.id === activeProject.id
+            ? { ...prev, persistedRevision: activeProject.revision }
+            : prev
+        );
       }
-      void saveProjectToIndexedDb(activeProject);
+
+      void saveProjectToIndexedDb(activeProject, {
+        expectedPersistedRevision: activeProject.persistedRevision,
+      });
+
       setSavedProjects((prev) => {
-        const idx = prev.findIndex((p) => p.id === activeProject.id);
-        if (idx === -1) return [activeProject, ...prev];
+        const synced = { ...activeProject, persistedRevision: activeProject.revision };
+        const idx = prev.findIndex((p) => p.id === synced.id);
+        if (idx === -1) return [synced, ...prev];
         const copy = [...prev];
-        copy[idx] = activeProject;
+        copy[idx] = synced;
         return copy;
       });
     }, 250);
     return () => clearTimeout(timer);
-  }, [activeProject]);
+  }, [activeProject, storageAlert]);
+
+  // Multi-tab storage conflict listener
+  useEffect(() => {
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key !== 'proactive_co_creator_projects_v2' || !e.newValue) return;
+      try {
+        const latest = loadProjectsFromLocalStorage();
+        const current = activeProjectRef.current;
+        const remoteMatch = latest.projects.find((p) => p.id === current.id);
+        if (remoteMatch && (remoteMatch.revision ?? 1) > (current.persistedRevision ?? current.revision ?? 1)) {
+          setStorageAlert({
+            type: 'conflict',
+            projectId: current.id,
+            message: `Another tab saved revision #${remoteMatch.revision} while this tab is on revision #${current.revision}. Choose whether to reload the latest version or overwrite storage.`,
+          });
+        }
+      } catch {
+        // Ignore malformed storage events
+      }
+    };
+    window.addEventListener('storage', handleStorageEvent);
+    return () => window.removeEventListener('storage', handleStorageEvent);
+  }, []);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -199,16 +308,24 @@ function App() {
   }, []);
 
   const commitTransaction = useCallback(
-    (nextSnapshot: ProjectSnapshot, label: string, summary?: string, changeCount: number = 1) => {
-      setUndoState((prev) => pushUndoableTransaction(prev, nextSnapshot, label));
-      setProject((prev) =>
-        recordProjectRevision(
-          { ...prev, snapshot: nextSnapshot },
-          label,
-          summary ?? label,
-          changeCount
-        )
+    (
+      nextSnapshot: ProjectSnapshot,
+      label: string,
+      summary?: string,
+      changeCount: number = 1,
+      options?: { coalesceKey?: string; coalesceWindowMs?: number }
+    ) => {
+      const { project: nextProj, undoState: nextUndo } = commitSnapshotTransaction(
+        activeProjectRef.current,
+        undoStateRef.current,
+        nextSnapshot,
+        label,
+        summary ?? label,
+        changeCount,
+        options
       );
+      setUndoState(nextUndo);
+      setProject(nextProj);
     },
     []
   );
@@ -222,25 +339,45 @@ function App() {
     );
   }, [snapshot.entities, selectedEntityId]);
 
+  const selectedRelationship = useMemo(() => {
+    if (!selectedRelationshipId) return null;
+    return (
+      snapshot.relationships.find((r) => r.id === selectedRelationshipId) ?? null
+    );
+  }, [snapshot.relationships, selectedRelationshipId]);
+
   const consistencyIssues = useMemo(
     () => evaluateProjectConsistency(snapshot),
     [snapshot]
   );
 
   const latestStoryArtifact = useMemo(
-    () => project.artifacts.find((a) => a.mode === 'story' && a.storyText),
-    [project.artifacts]
+    () => activeProject.artifacts.find((a) => a.mode === 'story' && a.storyText),
+    [activeProject.artifacts]
   );
 
   const latestImageArtifact = useMemo(
-    () => project.artifacts.find((a) => a.mode === 'image' && a.images && a.images.length > 0),
-    [project.artifacts]
+    () => activeProject.artifacts.find((a) => a.mode === 'image' && a.images && a.images.length > 0),
+    [activeProject.artifacts]
   );
 
   const isCurrentOutputOutdated = useMemo(() => {
     const activeArt = mode === 'story' ? latestStoryArtifact : latestImageArtifact;
     return Boolean(activeArt?.isOutdated);
   }, [mode, latestStoryArtifact, latestImageArtifact]);
+
+  // Scoped loading states for activeProject
+  const isGraphLoading = isProjectActionLoading(inFlightTickets, activeProject.id, 'analyze');
+  const isClarificationsLoading =
+    isGraphLoading || isProjectActionLoading(inFlightTickets, activeProject.id, 'clarify');
+  const isBatchLoading = isProjectActionLoading(inFlightTickets, activeProject.id, 'batch');
+  const isGenerating = isProjectActionLoading(inFlightTickets, activeProject.id, 'generate');
+  const isPolishingPrompt = isProjectActionLoading(inFlightTickets, activeProject.id, 'polish');
+
+  const analysisError = analysisErrors[activeProject.id] ?? null;
+  const clarificationError = clarificationErrors[activeProject.id] ?? null;
+  const currentGalleryError = galleryErrors[activeProject.id]?.[mode] ?? null;
+  const activePolishProposal = polishProposalsByProject[activeProject.id] ?? null;
 
   // --- Handlers for Deterministic Local Creative Edits ---
 
@@ -250,7 +387,13 @@ function App() {
       originalIdea: newIdea,
     };
     next.refinedPrompt = synthesizeRefinedPrompt(next);
-    setUndoState((prev) => ({ ...prev, present: next }));
+    commitTransaction(
+      next,
+      'Edit Seed Story Idea',
+      'Updated seed story idea and resynthesized prompt.',
+      1,
+      { coalesceKey: 'seed-idea', coalesceWindowMs: 2500 }
+    );
   };
 
   const handleSetFreeformNotes = (notes: string) => {
@@ -259,7 +402,13 @@ function App() {
       freeformNotes: notes,
     };
     next.refinedPrompt = synthesizeRefinedPrompt(next);
-    commitTransaction(next, 'Update Author Notes', 'Updated freeform author notes.');
+    commitTransaction(
+      next,
+      'Update Author Notes',
+      'Updated freeform author notes.',
+      1,
+      { coalesceKey: 'freeform-notes', coalesceWindowMs: 2500 }
+    );
   };
 
   const handleModeChange = (newMode: GenerationMode) => {
@@ -269,7 +418,11 @@ function App() {
       mode: newMode,
     };
     next.refinedPrompt = synthesizeRefinedPrompt(next, newMode);
-    setUndoState((prev) => ({ ...prev, present: next }));
+    commitTransaction(
+      next,
+      `Switch Mode to ${newMode === 'story' ? 'Story' : 'Image'}`,
+      `Switched active generation mode to ${newMode}.`
+    );
     setStatusNotification(
       `Switched to ${newMode === 'story' ? 'Story' : 'Image'} mode. Shared Story Bible and confirmed entities are preserved.`
     );
@@ -315,12 +468,32 @@ function App() {
     );
   };
 
+  const handleUpdateRelationshipById = (
+    relationshipId: string,
+    updates: {
+      label?: string;
+      status?: 'confirmed' | 'rejected' | 'pending';
+      reverseDirection?: boolean;
+    }
+  ) => {
+    const next = updateRelationshipById(snapshot, relationshipId, updates, 'user-edit');
+    const summaryParts: string[] = [];
+    if (updates.reverseDirection) summaryParts.push('reversed direction');
+    if (updates.label) summaryParts.push(`label "${updates.label}"`);
+    if (updates.status) summaryParts.push(`status ${updates.status}`);
+    commitTransaction(
+      next,
+      `Update Relationship (${summaryParts.join(', ') || 'edited'})`,
+      `Updated directed relationship (${summaryParts.join(', ')}).`
+    );
+  };
+
   const handleRemoveRelationship = (relIdOrSource: string, target?: string) => {
     const next = removeRelationship(snapshot, relIdOrSource, target);
     commitTransaction(
       next,
       `Remove relationship`,
-      `Removed relationship from ${relIdOrSource}${target ? ` to ${target}` : ''}.`
+      `Removed relationship ${relIdOrSource}${target ? ` → ${target}` : ''}.`
     );
   };
 
@@ -329,7 +502,9 @@ function App() {
     commitTransaction(
       next,
       `Update Story Bible: ${field}`,
-      `Set Story Bible ${field} to "${value}".`
+      `Set Story Bible ${field} to "${value}".`,
+      1,
+      { coalesceKey: `story-bible:${field}`, coalesceWindowMs: 2500 }
     );
   };
 
@@ -367,6 +542,16 @@ function App() {
       setMobileTab('inspector');
       return;
     }
+    if (decision.targetRelationshipId) {
+      const rel = snapshot.relationships.find((r) => r.id === decision.targetRelationshipId);
+      if (rel) {
+        setSelectedEntityId(null);
+        setSelectedRelationshipId(rel.id ?? null);
+        setRightPanelTab('inspector');
+        setMobileTab('inspector');
+        return;
+      }
+    }
     if (decision.targetEntityId || decision.targetEntityName) {
       const target = snapshot.entities.find(
         (e) =>
@@ -374,6 +559,7 @@ function App() {
           e.name.toLowerCase() === decision.targetEntityName?.toLowerCase()
       );
       if (target) {
+        setSelectedRelationshipId(null);
         setSelectedEntityId(target.id ?? target.name);
         setRightPanelTab('inspector');
         setMobileTab('inspector');
@@ -386,18 +572,28 @@ function App() {
   const handlePreviewBatchInstruction = async (
     instruction: string
   ): Promise<BatchEditProposalResult> => {
-    // First run fast deterministic local interpreter
-    const localResult = interpretBatchInstructionLocally(instruction, snapshot);
-    if (localResult.operations.length > 0 || localResult.ambiguities.length > 0) {
+    const targetProject = activeProjectRef.current;
+    const localResult = interpretBatchInstructionLocally(
+      instruction,
+      targetProject.snapshot,
+      {
+        projectId: targetProject.id,
+        revision: targetProject.revision,
+      }
+    );
+    if (
+      (localResult.operations.length > 0 || localResult.ambiguities.length > 0) &&
+      localResult.coverageComplete
+    ) {
       return localResult;
     }
 
-    // Fallback to server-side Gemini batch interpretation if local rules didn't match
-    setIsBatchLoading(true);
+    const ticket = createRequestTicket(targetProject, 'batch');
+    setInFlightTickets((prev) => registerTicket(prev, ticket));
     try {
       const aiResult = await requestBatchEditInterpretation(instruction, {
-        prompt: snapshot.refinedPrompt,
-        entities: snapshot.entities.map((e) => ({
+        prompt: targetProject.snapshot.refinedPrompt,
+        entities: targetProject.snapshot.entities.map((e) => ({
           id: e.id,
           name: e.name,
           category: e.category,
@@ -408,18 +604,25 @@ function App() {
             status: a.status,
           })),
         })),
-        relationships: snapshot.relationships.map((r) => ({
+        relationships: targetProject.snapshot.relationships.map((r) => ({
           id: r.id,
           source: r.source,
           target: r.target,
           label: r.label,
         })),
       });
-      return aiResult;
+      if (aiResult.operations.length > 0 || aiResult.ambiguities.length > 0) {
+        return {
+          ...aiResult,
+          baseProjectId: targetProject.id,
+          baseRevision: targetProject.revision,
+        };
+      }
+      return localResult;
     } catch {
       return localResult;
     } finally {
-      setIsBatchLoading(false);
+      setInFlightTickets((prev) => clearTicket(prev, ticket));
     }
   };
 
@@ -427,7 +630,14 @@ function App() {
     operations: ProposedOperation[],
     instruction: string
   ) => {
-    const res = applyProposedOperations(snapshot, operations);
+    const res = applyProposedOperations(snapshot, operations, {
+      expectedBaseRevision: activeProject.revision,
+      currentRevision: activeProject.revision,
+    });
+    if (res.errors.length > 0) {
+      setStatusNotification(res.errors[0].message);
+      return;
+    }
     if (res.appliedCount > 0) {
       commitTransaction(
         res.snapshot,
@@ -439,29 +649,29 @@ function App() {
     }
   };
 
-  // --- AI Analysis, Clarifications & Generation ---
+  // --- AI Analysis, Clarifications & Generation with Scoped Tickets ---
 
   const handleAnalyzeIdea = useCallback(async () => {
-    const trimmed = snapshot.originalIdea.trim();
+    const originProject = activeProjectRef.current;
+    const originSnap = originProject.snapshot;
+    const trimmed = originSnap.originalIdea.trim();
     if (!trimmed) return;
 
-    graphAbortRef.current?.abort();
-    clarifyAbortRef.current?.abort();
-    const graphController = new AbortController();
-    const clarifyController = new AbortController();
-    graphAbortRef.current = graphController;
-    clarifyAbortRef.current = clarifyController;
+    const slotKey = `${originProject.id}:analyze`;
+    abortControllersRef.current[slotKey]?.abort();
+    const controller = new AbortController();
+    abortControllersRef.current[slotKey] = controller;
 
-    setIsGraphLoading(true);
-    setIsClarificationsLoading(true);
-    setAnalysisError(null);
-    setClarificationError(null);
+    const ticket = createRequestTicket(originProject, 'analyze');
+    setInFlightTickets((prev) => registerTicket(prev, ticket));
+    setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: null }));
+    setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
 
     const confirmedFacts = [
-      ...Object.entries(snapshot.storyBible)
+      ...Object.entries(originSnap.storyBible)
         .filter(([, f]) => f.status === 'confirmed' && f.value)
         .map(([k, f]) => `${k}: ${f.value}`),
-      ...snapshot.entities
+      ...originSnap.entities
         .filter((e) => !e.excluded)
         .flatMap((e) =>
           e.attributes
@@ -472,128 +682,173 @@ function App() {
 
     try {
       const [newGraph, newClarifications] = await Promise.all([
-        analyzePromptToBeliefGraph(trimmed, mode, graphController.signal).catch((err) => {
+        analyzePromptToBeliefGraph(trimmed, originSnap.mode, controller.signal).catch((err) => {
           if (!isAbortError(err)) {
-            setAnalysisError(
-              getReadableErrorMessage(err, 'Could not reach AI analysis service; local plan preserved.')
-            );
+            setAnalysisErrors((prev) => ({
+              ...prev,
+              [originProject.id]: getReadableErrorMessage(
+                err,
+                'Could not reach AI analysis service; local plan preserved.'
+              ),
+            }));
           }
           return null;
         }),
         generateClarifications(
           trimmed,
-          [...snapshot.answeredQuestions, ...snapshot.skippedQuestions],
-          mode,
-          clarifyController.signal,
+          [...originSnap.answeredQuestions, ...originSnap.skippedQuestions],
+          originSnap.mode,
+          controller.signal,
           confirmedFacts
         ).catch((err) => {
           if (!isAbortError(err)) {
-            setClarificationError(
-              getReadableErrorMessage(err, 'Could not fetch new AI questions; existing decisions preserved.')
-            );
+            setClarificationErrors((prev) => ({
+              ...prev,
+              [originProject.id]: getReadableErrorMessage(
+                err,
+                'Could not fetch new AI questions; existing decisions preserved.'
+              ),
+            }));
           }
           return null;
         }),
       ]);
 
       if (newGraph || newClarifications) {
-        const merged = mergeAnalysisIntoSnapshot(snapshot, newGraph, newClarifications);
-        commitTransaction(
-          merged,
-          'Reanalyze Prompt with AI',
-          'Merged AI analysis while preserving confirmed user decisions.'
-        );
+        const applied = applyAsyncAnalysisCompletion({
+          ticket,
+          activeProject: activeProjectRef.current,
+          activeUndoState: undoStateRef.current,
+          savedProjects,
+          newGraph,
+          newClarifications,
+          label: 'Reanalyze Prompt with AI',
+          summary: 'Merged AI analysis while preserving confirmed user decisions.',
+        });
+        setProject(applied.activeProject);
+        setUndoState(applied.activeUndoState);
+        setSavedProjects(applied.savedProjects);
+        if (applied.rebasedOntoNewerRevision) {
+          setStatusNotification(
+            'Rebased AI analysis onto your latest edits without overwriting confirmed changes.'
+          );
+        }
       }
     } finally {
-      setIsGraphLoading(false);
-      setIsClarificationsLoading(false);
+      setInFlightTickets((prev) => clearTicket(prev, ticket));
     }
-  }, [snapshot, mode, commitTransaction]);
+  }, [savedProjects]);
 
-  const handleRefreshClarifications = useCallback(async () => {
-    clarifyAbortRef.current?.abort();
-    const controller = new AbortController();
-    clarifyAbortRef.current = controller;
+  const handleRefreshClarifications = useCallback(
+    async (preserveDrafts?: Record<string, string>) => {
+      const originProject = activeProjectRef.current;
+      const originSnap = originProject.snapshot;
 
-    setIsClarificationsLoading(true);
-    setClarificationError(null);
+      const slotKey = `${originProject.id}:clarify`;
+      abortControllersRef.current[slotKey]?.abort();
+      const controller = new AbortController();
+      abortControllersRef.current[slotKey] = controller;
 
-    const confirmedFacts = snapshot.entities
-      .filter((e) => !e.excluded)
-      .flatMap((e) =>
-        e.attributes
-          .filter((a) => a.status === 'confirmed' && a.confirmedValue)
-          .map((a) => `${e.name} ${a.name}: ${a.confirmedValue}`)
-      );
+      const ticket = createRequestTicket(originProject, 'clarify');
+      setInFlightTickets((prev) => registerTicket(prev, ticket));
+      setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
 
-    try {
-      const freshClarifications = await generateClarifications(
-        snapshot.refinedPrompt || snapshot.originalIdea,
-        [...snapshot.answeredQuestions, ...snapshot.skippedQuestions],
-        mode,
-        controller.signal,
-        confirmedFacts
-      );
-      const merged = mergeAnalysisIntoSnapshot(snapshot, null, freshClarifications);
-      commitTransaction(merged, 'Request Additional Clarifications');
-    } catch (err) {
-      if (!isAbortError(err)) {
-        setClarificationError(
-          getReadableErrorMessage(err, 'Failed to request additional clarifications.')
+      const confirmedFacts = originSnap.entities
+        .filter((e) => !e.excluded)
+        .flatMap((e) =>
+          e.attributes
+            .filter((a) => a.status === 'confirmed' && a.confirmedValue)
+            .map((a) => `${e.name} ${a.name}: ${a.confirmedValue}`)
         );
+
+      try {
+        const freshClarifications = await generateClarifications(
+          originSnap.refinedPrompt || originSnap.originalIdea,
+          [...originSnap.answeredQuestions, ...originSnap.skippedQuestions],
+          originSnap.mode,
+          controller.signal,
+          confirmedFacts
+        );
+        const applied = applyAsyncAnalysisCompletion({
+          ticket,
+          activeProject: activeProjectRef.current,
+          activeUndoState: undoStateRef.current,
+          savedProjects,
+          newGraph: null,
+          newClarifications: freshClarifications,
+          preserveDraftAnswers: preserveDrafts,
+          label: 'Request Additional Clarifications',
+          summary: 'Added non-duplicate AI clarification questions.',
+        });
+        setProject(applied.activeProject);
+        setUndoState(applied.activeUndoState);
+        setSavedProjects(applied.savedProjects);
+      } catch (err) {
+        if (!isAbortError(err)) {
+          setClarificationErrors((prev) => ({
+            ...prev,
+            [originProject.id]: getReadableErrorMessage(
+              err,
+              'Failed to request additional clarifications.'
+            ),
+          }));
+        }
+      } finally {
+        setInFlightTickets((prev) => clearTicket(prev, ticket));
       }
-    } finally {
-      setIsClarificationsLoading(false);
-    }
-  }, [snapshot, mode, commitTransaction]);
+    },
+    [savedProjects]
+  );
 
   const handleGenerateOutput = useCallback(async () => {
-    const promptToUse = (snapshot.refinedPrompt || snapshot.originalIdea).trim();
+    const originProject = activeProjectRef.current;
+    const originSnap = originProject.snapshot;
+    const promptToUse = (originSnap.refinedPrompt || originSnap.originalIdea).trim();
     if (!promptToUse) return;
 
-    generationAbortRef.current?.abort();
+    const slotKey = `${originProject.id}:generate`;
+    abortControllersRef.current[slotKey]?.abort();
     const controller = new AbortController();
-    generationAbortRef.current = controller;
+    abortControllersRef.current[slotKey] = controller;
 
-    const requestMode = mode;
-    setIsGenerating(true);
+    const requestMode = originSnap.mode;
+    const ticket = createRequestTicket(originProject, 'generate');
+    setInFlightTickets((prev) => registerTicket(prev, ticket));
     setShowOutputDrawer(true);
-    setGalleryErrors((prev) => ({ ...prev, [requestMode]: null }));
+    setGalleryErrors((prev) => ({
+      ...prev,
+      [originProject.id]: {
+        ...(prev[originProject.id] ?? { story: null, image: null }),
+        [requestMode]: null,
+      },
+    }));
 
     try {
       if (requestMode === 'story') {
         const generatedStory = await generateStoryFromPrompt(promptToUse, controller.signal);
-        const newArt = {
-          id: makeStableId('art_story'),
-          mode: 'story' as const,
-          createdAt: Date.now(),
-          revisionId: project.revisions[0]?.id ?? 'rev_latest',
+        const applied = applyAsyncGenerationCompletion({
+          ticket,
+          activeProject: activeProjectRef.current,
+          savedProjects,
+          mode: 'story',
           promptUsed: promptToUse,
           storyText: generatedStory,
-          isOutdated: false,
-        };
-        setProject((prev) => ({
-          ...prev,
-          updatedAt: Date.now(),
-          artifacts: [newArt, ...prev.artifacts.filter((a) => a.mode !== 'story')],
-        }));
+        });
+        setProject(applied.activeProject);
+        setSavedProjects(applied.savedProjects);
       } else {
         const result = await generateImagesFromPrompt(promptToUse, controller.signal);
-        const newArt = {
-          id: makeStableId('art_img'),
-          mode: 'image' as const,
-          createdAt: Date.now(),
-          revisionId: project.revisions[0]?.id ?? 'rev_latest',
+        const applied = applyAsyncGenerationCompletion({
+          ticket,
+          activeProject: activeProjectRef.current,
+          savedProjects,
+          mode: 'image',
           promptUsed: promptToUse,
           images: result.images,
           warning: result.warning,
-          isOutdated: false,
-        };
-        setProject((prev) => ({
-          ...prev,
-          updatedAt: Date.now(),
-          artifacts: [newArt, ...prev.artifacts.filter((a) => a.mode !== 'image')],
-        }));
+        });
+        setProject(applied.activeProject);
+        setSavedProjects(applied.savedProjects);
       }
     } catch (err) {
       if (!isAbortError(err)) {
@@ -601,37 +856,92 @@ function App() {
           err,
           `Failed to generate ${requestMode}. Check your server API key configuration.`
         );
-        setGalleryErrors((prev) => ({ ...prev, [requestMode]: message }));
+        setGalleryErrors((prev) => ({
+          ...prev,
+          [originProject.id]: {
+            ...(prev[originProject.id] ?? { story: null, image: null }),
+            [requestMode]: message,
+          },
+        }));
       }
     } finally {
-      setIsGenerating(false);
+      setInFlightTickets((prev) => clearTicket(prev, ticket));
     }
-  }, [snapshot.refinedPrompt, snapshot.originalIdea, mode, project.revisions]);
+  }, [savedProjects]);
 
   const handlePolishPromptWithAi = async () => {
-    if (isPolishingPrompt) return;
-    setIsPolishingPrompt(true);
+    const originProject = activeProjectRef.current;
+    if (isProjectActionLoading(inFlightTickets, originProject.id, 'polish')) return;
+
+    const ticket = createRequestTicket(originProject, 'polish');
+    setInFlightTickets((prev) => registerTicket(prev, ticket));
     try {
       const polished = await refinePromptWithAllUpdates(
-        snapshot.refinedPrompt,
+        originProject.snapshot.refinedPrompt,
         [],
         []
       );
-      const next: ProjectSnapshot = {
-        ...snapshot,
-        refinedPrompt: polished,
-      };
-      commitTransaction(next, 'AI Polish Refined Prompt');
+      const proposal = createPolishProposal(originProject, polished);
+      setPolishProposalsByProject((prev) => ({
+        ...prev,
+        [originProject.id]: proposal,
+      }));
+      setStatusNotification(
+        'Staged AI narrative polish proposal. Review and accept or discard it in the Output panel.'
+      );
     } catch (err) {
       setStatusNotification(
         getReadableErrorMessage(err, 'Could not run AI prompt polish; structured prompt preserved.')
       );
     } finally {
-      setIsPolishingPrompt(false);
+      setInFlightTickets((prev) => clearTicket(prev, ticket));
     }
   };
 
-  // --- Persistence, History & Export/Import Handlers ---
+  const handleAcceptPolishProposal = () => {
+    if (!activePolishProposal) return;
+    const res = acceptPolishProposal(activeProject, undoState, activePolishProposal);
+    setProject(res.project);
+    setUndoState(res.undoState);
+    setPolishProposalsByProject((prev) => {
+      const next = { ...prev };
+      delete next[activeProject.id];
+      return next;
+    });
+    setStatusNotification('Accepted AI narrative polish. Undo is available.');
+  };
+
+  const handleRejectPolishProposal = () => {
+    setPolishProposalsByProject((prev) => {
+      const next = { ...prev };
+      delete next[activeProject.id];
+      return next;
+    });
+    setStatusNotification('Discarded staged AI narrative polish proposal.');
+  };
+
+  // --- Persistence, Conflict Resolution, History & Export/Import Handlers ---
+
+  const handleReloadLatestFromStorage = () => {
+    const latest = loadProjectsFromLocalStorage();
+    const match = latest.projects.find((p) => p.id === activeProject.id) ?? latest.projects[0];
+    if (!match) return;
+    setSavedProjects(latest.projects);
+    setProject(match);
+    setUndoState(createUndoRedoState(match.snapshot));
+    setStorageAlert(null);
+    setStatusNotification(`Reloaded revision #${match.revision} from storage.`);
+  };
+
+  const handleForceOverwriteStorage = () => {
+    const res = saveProjectToLocalStorage(activeProject, { forceOverwrite: true });
+    void saveProjectToIndexedDb(activeProject, { forceOverwrite: true });
+    if (res.saved) {
+      setProject((prev) => ({ ...prev, persistedRevision: activeProject.revision }));
+      setStorageAlert(null);
+      setStatusNotification('Overwrote storage with your current tab version.');
+    }
+  };
 
   const handleUndo = () => {
     const { state, undoneLabel } = performUndo(undoState);
@@ -662,7 +972,10 @@ function App() {
     setProject(sample);
     setUndoState(createUndoRedoState(sample.snapshot));
     setSelectedEntityId(null);
-    saveProjectToLocalStorage(sample);
+    setSelectedRelationshipId(null);
+    setStorageAlert(null);
+    saveProjectToLocalStorage(sample, { forceOverwrite: true });
+    void saveProjectToIndexedDb(sample, { forceOverwrite: true });
     setStatusNotification('Loaded sample story plan: "Cat’s Woodland Dinner Party".');
   };
 
@@ -672,6 +985,8 @@ function App() {
     setProject(target);
     setUndoState(createUndoRedoState(target.snapshot));
     setSelectedEntityId(null);
+    setSelectedRelationshipId(null);
+    setStorageAlert(null);
   };
 
   const handleCreateNewProject = (name: string, initialPrompt: string) => {
@@ -690,7 +1005,9 @@ function App() {
       skippedQuestions: [],
     };
     const newProj: CreativeProject = {
-      schemaVersion: 2,
+      schemaVersion: 3,
+      revision: 1,
+      persistedRevision: 1,
       id: makeStableId('proj'),
       name,
       createdAt: now,
@@ -700,6 +1017,7 @@ function App() {
       revisions: [
         {
           id: makeStableId('rev'),
+          revisionNumber: 1,
           timestamp: now,
           label: 'Created Project',
           summary: `Created project "${name}"`,
@@ -710,7 +1028,11 @@ function App() {
     };
     setProject(newProj);
     setUndoState(createUndoRedoState(newSnap));
-    saveProjectToLocalStorage(newProj);
+    setSelectedEntityId(null);
+    setSelectedRelationshipId(null);
+    setStorageAlert(null);
+    saveProjectToLocalStorage(newProj, { forceOverwrite: true });
+    void saveProjectToIndexedDb(newProj, { forceOverwrite: true });
   };
 
   const handleDeleteProject = (projectId: string) => {
@@ -719,6 +1041,8 @@ function App() {
     if (project.id === projectId && remaining.length > 0) {
       setProject(remaining[0]);
       setUndoState(createUndoRedoState(remaining[0].snapshot));
+      setSelectedEntityId(null);
+      setSelectedRelationshipId(null);
     }
   };
 
@@ -748,7 +1072,10 @@ function App() {
       const migrated = migrateProjectPayload(parsed);
       setProject(migrated);
       setUndoState(createUndoRedoState(migrated.snapshot));
-      saveProjectToLocalStorage(migrated);
+      setSelectedEntityId(null);
+      setSelectedRelationshipId(null);
+      saveProjectToLocalStorage(migrated, { forceOverwrite: true });
+      void saveProjectToIndexedDb(migrated, { forceOverwrite: true });
       setStatusNotification(`Imported project "${migrated.name}".`);
       return { ok: true };
     } catch (err) {
@@ -775,7 +1102,11 @@ function App() {
     }
   };
 
-  const pendingDecisionCount = snapshot.decisions.filter((d) => d.status === 'pending').length;
+  const pendingDecisions = useMemo(
+    () => snapshot.decisions.filter((d) => d.status === 'pending'),
+    [snapshot.decisions]
+  );
+  const pendingDecisionCount = pendingDecisions.length;
 
   return (
     <div
@@ -790,6 +1121,51 @@ function App() {
         onSelectSection={handleSelectHeaderSection}
         onLoadSampleProject={handleResetSampleProject}
       />
+
+      {/* Storage Conflict / Quota Recovery Banner */}
+      {storageAlert && (
+        <div
+          role="alert"
+          aria-label="Storage conflict or quota alert"
+          className="bg-amber-50 dark:bg-amber-950/80 border-b border-amber-300 dark:border-amber-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-950 dark:text-amber-100 flex-shrink-0 z-40"
+        >
+          <span className="font-medium">{storageAlert.message}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            {storageAlert.type === 'conflict' && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleReloadLatestFromStorage}
+                  className="px-2.5 py-1 rounded font-semibold bg-amber-700 hover:bg-amber-800 text-white"
+                >
+                  Reload Latest from Storage
+                </button>
+                <button
+                  type="button"
+                  onClick={handleForceOverwriteStorage}
+                  className="px-2.5 py-1 rounded font-semibold bg-white dark:bg-gray-800 border border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100"
+                >
+                  Keep My Version (Overwrite)
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={handleExportJson}
+              className="px-2.5 py-1 rounded font-medium bg-white dark:bg-gray-800 border border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100"
+            >
+              Export Backup JSON
+            </button>
+            <button
+              type="button"
+              onClick={() => setStorageAlert(null)}
+              className="text-amber-700 dark:text-amber-300 hover:underline px-1"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {statusNotification && (
         <div
@@ -864,9 +1240,18 @@ function App() {
               isLoading={isGraphLoading}
               error={analysisError}
               selectedEntity={selectedEntity}
+              selectedRelationship={selectedRelationship}
               onSelectEntity={(ent) => {
                 setSelectedEntityId(ent ? (ent.id ?? ent.name) : null);
                 if (ent) {
+                  setSelectedRelationshipId(null);
+                  setRightPanelTab('inspector');
+                }
+              }}
+              onSelectRelationship={(rel: Relationship | null) => {
+                setSelectedRelationshipId(rel?.id ?? null);
+                if (rel) {
+                  setSelectedEntityId(null);
                   setRightPanelTab('inspector');
                 }
               }}
@@ -880,8 +1265,10 @@ function App() {
             <div
               className={`flex-shrink-0 ${
                 mobileTab === 'output'
-                  ? 'flex-1 min-h-0 xl:flex-none xl:h-64'
-                  : 'hidden xl:block xl:h-64'
+                  ? 'flex-1 min-h-0 xl:flex-none xl:h-52'
+                  : latestStoryArtifact || latestImageArtifact || activePolishProposal
+                    ? 'hidden xl:block xl:h-56'
+                    : 'hidden xl:block xl:h-40'
               }`}
             >
               <OutputDisplay
@@ -891,12 +1278,16 @@ function App() {
                 onChangeFreeformNotes={handleSetFreeformNotes}
                 onPolishPromptWithAi={handlePolishPromptWithAi}
                 isPolishingPrompt={isPolishingPrompt}
+                polishProposal={activePolishProposal}
+                onAcceptPolishProposal={handleAcceptPolishProposal}
+                onRejectPolishProposal={handleRejectPolishProposal}
+                artifacts={activeProject.artifacts}
                 images={latestImageArtifact?.images ?? []}
                 imageWarning={latestImageArtifact?.warning ?? null}
                 story={latestStoryArtifact?.storyText ?? null}
                 mode={mode}
                 isLoading={isGenerating}
-                error={galleryErrors[mode]}
+                error={currentGalleryError}
                 isOutdated={isCurrentOutputOutdated}
                 onGenerate={handleGenerateOutput}
               />
@@ -916,12 +1307,20 @@ function App() {
             project={activeProject}
             savedProjects={savedProjects}
             selectedEntity={selectedEntity}
-            selectedRelationship={null}
-            onSelectEntity={(ent) => setSelectedEntityId(ent ? (ent.id ?? ent.name) : null)}
+            selectedRelationship={selectedRelationship}
+            onSelectEntity={(ent) => {
+              setSelectedEntityId(ent ? (ent.id ?? ent.name) : null);
+              if (ent) setSelectedRelationshipId(null);
+            }}
+            onSelectRelationship={(rel) => {
+              setSelectedRelationshipId(rel?.id ?? null);
+              if (rel) setSelectedEntityId(null);
+            }}
             onAttributeChange={handleAttributeChange}
             onRenameEntity={handleRenameEntity}
             onAddEntity={handleAddEntity}
             onUpsertRelationship={handleUpsertRelationship}
+            onUpdateRelationshipById={handleUpdateRelationshipById}
             onRemoveRelationship={handleRemoveRelationship}
             onUpdateStoryBible={handleUpdateStoryBible}
             consistencyIssues={consistencyIssues}
@@ -977,19 +1376,167 @@ function App() {
         onUndo={handleUndo}
         onRedo={handleRedo}
         onAcceptAllPending={handleAcceptAllPendingDecisions}
-        onReviewChanges={() => {
-          setShowOutputDrawer(true);
-          setRightPanelTab('story-bible');
-        }}
+        onReviewChanges={() => setIsReviewModalOpen(true)}
         mode={mode}
         onModeChange={handleModeChange}
         onGenerate={handleGenerateOutput}
         isGenerating={isGenerating}
         showOutputDrawer={showOutputDrawer}
         onToggleOutputDrawer={() => setShowOutputDrawer((prev) => !prev)}
-        revisionCount={project.revisions.length}
+        revisionCount={activeProject.revisions.length}
         isOutdated={isCurrentOutputOutdated}
       />
+
+      {/* Dedicated Review Plan & Prompt Changes Modal (AC19) */}
+      {isReviewModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Review Plan and Prompt Changes"
+          className="fixed inset-0 z-[1900] bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs"
+          onClick={() => setIsReviewModalOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3.5 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-base font-bold text-gray-900 dark:text-gray-100">
+                  Review Story Plan, Pending Decisions &amp; Prompt Diff
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Project Revision #{activeProject.revision} · {pendingDecisionCount} pending inbox item(s) ·{' '}
+                  {consistencyIssues.length} consistency warning(s)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsReviewModalOpen(false)}
+                className="text-sm font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white px-2 py-1"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+              {/* Pending Decisions Summary */}
+              <div className="p-3.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-gray-900 dark:text-gray-100">
+                    Pending Creative Decisions ({pendingDecisionCount})
+                  </h3>
+                  {pendingDecisionCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleAcceptAllPendingDecisions}
+                      className="px-2.5 py-1 rounded font-semibold bg-blue-600 hover:bg-blue-700 text-white"
+                    >
+                      Accept All Pending ({pendingDecisionCount})
+                    </button>
+                  )}
+                </div>
+                {pendingDecisionCount === 0 ? (
+                  <p className="text-gray-500">All creative decisions are currently resolved.</p>
+                ) : (
+                  <ul className="space-y-1.5 max-h-36 overflow-y-auto">
+                    {pendingDecisions.map((d) => (
+                      <li
+                        key={d.id}
+                        className="flex items-center justify-between gap-2 p-2 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
+                      >
+                        <span className="truncate">
+                          <strong className="capitalize">{d.category}:</strong> {d.title} &rarr;{' '}
+                          <span className="text-blue-600 dark:text-blue-400 font-semibold">
+                            {d.proposedValue}
+                          </span>
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleApplyDecisions([d.id], 'accept')}
+                            className="px-2 py-0.5 rounded bg-blue-600 text-white font-semibold"
+                          >
+                            Accept
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleApplyDecisions([d.id], 'reject')}
+                            className="px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-800 text-red-600 dark:text-red-400 font-medium"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Recent Revisions Summary */}
+              <div className="p-3.5 rounded-lg border border-gray-200 dark:border-gray-800 space-y-2">
+                <h3 className="font-bold text-gray-900 dark:text-gray-100">
+                  Recent Plan Revisions ({activeProject.revisions.length})
+                </h3>
+                <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                  {activeProject.revisions.slice(0, 5).map((rev, idx) => (
+                    <div
+                      key={rev.id}
+                      className="flex items-center justify-between gap-2 p-2 rounded bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800"
+                    >
+                      <div>
+                        <span className="font-semibold text-gray-900 dark:text-gray-100">
+                          Rev #{rev.revisionNumber ?? activeProject.revisions.length - idx}: {rev.label}
+                        </span>
+                        <p className="text-[11px] text-gray-500">{rev.summary}</p>
+                      </div>
+                      {idx > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreRevision(rev.id)}
+                          className="px-2.5 py-1 rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 font-medium shrink-0"
+                        >
+                          Restore
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Synthesized Prompt Preview */}
+              <div className="space-y-1.5">
+                <h3 className="font-bold text-gray-900 dark:text-gray-100">
+                  Authoritative Synthesized Prompt ({mode === 'story' ? 'Story Mode' : 'Image Mode'})
+                </h3>
+                <pre className="p-3 rounded-lg bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
+                  {snapshot.refinedPrompt}
+                </pre>
+              </div>
+            </div>
+
+            <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsReviewModalOpen(false);
+                  setRightPanelTab('story-bible');
+                }}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                Open Story Bible
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsReviewModalOpen(false)}
+                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <InfoModal isOpen={showInfoModal} onClose={() => setShowInfoModal(false)} />
     </div>

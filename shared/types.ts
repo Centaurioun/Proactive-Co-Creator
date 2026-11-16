@@ -57,6 +57,8 @@ export interface Relationship {
   alternatives?: Candidate[];
   status?: ApprovalStatus;
   provenance?: DecisionProvenance;
+  presence_in_prompt?: boolean;
+  evidenceExcerpt?: string;
 }
 
 export interface BeliefState {
@@ -155,6 +157,8 @@ export interface DecisionItem {
   targetEntityName?: string;
   targetAttributeName?: string;
   targetRelationshipId?: string;
+  targetSourceEntityName?: string;
+  targetTargetEntityName?: string;
   targetStoryField?: keyof StoryBibleFields;
   questionId?: string;
   currentValue?: string;
@@ -179,6 +183,8 @@ export interface ProposedOperation {
   id: string;
   type: ProposedOperationType;
   summary: string;
+  clauseId?: string;
+  clauseText?: string;
   entityId?: string;
   entityName?: string;
   newEntityName?: string;
@@ -200,6 +206,30 @@ export interface BatchEditAmbiguity {
   reason: string;
   candidates: string[];
   clarifyingQuestion: string;
+  clauseId?: string;
+}
+
+export interface BatchInstructionClause {
+  id?: string;
+  spanId?: string;
+  text: string;
+  status: 'covered' | 'parsed' | 'ambiguous' | 'unhandled';
+  operationIds: string[];
+  reason?: string;
+}
+
+export type BatchValidationIssueCode =
+  | 'STALE_BASE'
+  | 'MISSING_TARGET'
+  | 'CONFLICT'
+  | 'INVALID_VALUE'
+  | 'UNHANDLED_CLAUSE';
+
+export interface BatchValidationIssue {
+  code: BatchValidationIssueCode;
+  message: string;
+  operationId?: string;
+  clauseId?: string;
 }
 
 export interface BatchEditProposalResult {
@@ -207,12 +237,22 @@ export interface BatchEditProposalResult {
   operations: ProposedOperation[];
   ambiguities: BatchEditAmbiguity[];
   warnings: string[];
+  clauses?: BatchInstructionClause[];
+  unhandledClauses?: string[];
+  coverageComplete?: boolean;
+  baseProjectId?: string;
+  baseRevision?: number;
 }
 
 export interface ConsistencyIssue {
   id: string;
   severity: 'error' | 'warning';
-  category: 'trait_conflict' | 'setting_conflict' | 'relationship_conflict' | 'violated_exclusion' | 'unresolved_decision';
+  category:
+    | 'trait_conflict'
+    | 'setting_conflict'
+    | 'relationship_conflict'
+    | 'violated_exclusion'
+    | 'unresolved_decision';
   title: string;
   description: string;
   affectedEntityIds: string[];
@@ -221,10 +261,13 @@ export interface ConsistencyIssue {
 
 export interface GenerationArtifact {
   id: string;
+  projectId?: string;
   mode: GenerationMode;
   createdAt: number;
   revisionId: string;
+  sourceRevision?: number;
   promptUsed: string;
+  promptDigest?: string;
   storyText?: string;
   images?: string[];
   warning?: string | null;
@@ -233,10 +276,12 @@ export interface GenerationArtifact {
 
 export interface ProjectRevision {
   id: string;
+  revisionNumber?: number;
   timestamp: number;
   label: string;
   summary: string;
   changeCount: number;
+  coalesceKey?: string;
   snapshot: ProjectSnapshot;
 }
 
@@ -257,12 +302,46 @@ export interface ProjectSnapshot {
 export interface CreativeProject {
   schemaVersion: number;
   id: string;
+  revision: number;
+  persistedRevision?: number;
   name: string;
   createdAt: number;
   updatedAt: number;
   snapshot: ProjectSnapshot;
   artifacts: GenerationArtifact[];
   revisions: ProjectRevision[];
+}
+
+export type AiRequestAction =
+  | 'analyze'
+  | 'clarify'
+  | 'batch'
+  | 'batch-edit'
+  | 'polish'
+  | 'generate'
+  | 'story'
+  | 'image';
+
+export interface AiRequestTicket {
+  requestId: string;
+  projectId: string;
+  baseRevision: number;
+  action: AiRequestAction;
+  mode?: GenerationMode;
+  promptUsed?: string;
+  promptDigest?: string;
+  startedAt: number;
+}
+
+export interface AiPolishProposal {
+  requestId?: string;
+  projectId: string;
+  baseRevision: number;
+  originalPrompt: string;
+  polishedPrompt: string;
+  proposedPrompt?: string;
+  isNoOp?: boolean;
+  createdAt: number;
 }
 
 export type ApiErrorCode =
@@ -290,3 +369,4 @@ export interface ImageGenerationResult {
   failedCount: number;
   warning: string | null;
 }
+

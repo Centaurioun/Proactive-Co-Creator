@@ -4,7 +4,11 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import type { GenerationMode } from '../shared/types';
+import type {
+  AiPolishProposal,
+  GenerationArtifact,
+  GenerationMode,
+} from '../shared/types';
 
 interface OutputDisplayProps {
   originalIdea: string;
@@ -13,6 +17,10 @@ interface OutputDisplayProps {
   onChangeFreeformNotes: (notes: string) => void;
   onPolishPromptWithAi?: () => void;
   isPolishingPrompt?: boolean;
+  polishProposal?: AiPolishProposal | null;
+  onAcceptPolishProposal?: () => void;
+  onRejectPolishProposal?: () => void;
+  artifacts?: GenerationArtifact[];
   images: string[];
   imageWarning?: string | null;
   story: string | null;
@@ -30,6 +38,10 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   onChangeFreeformNotes,
   onPolishPromptWithAi,
   isPolishingPrompt = false,
+  polishProposal = null,
+  onAcceptPolishProposal,
+  onRejectPolishProposal,
+  artifacts = [],
   images,
   imageWarning,
   story,
@@ -43,7 +55,17 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   const [copiedStory, setCopiedStory] = useState(false);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [activeView, setActiveView] = useState<'prompt' | 'output'>('output');
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const placeholderCount = 4;
+
+  const modeArtifacts = artifacts.filter((a) => a.mode === mode);
+  const activeArtifact =
+    modeArtifacts.find((a) => a.id === selectedArtifactId) ?? modeArtifacts[0] ?? null;
+  const displayedStory =
+    mode === 'story' ? (activeArtifact?.storyText ?? story) : story;
+  const displayedImages =
+    mode === 'image' ? (activeArtifact?.images ?? images) : images;
+  const displayedOutdated = activeArtifact ? activeArtifact.isOutdated : isOutdated;
 
   useEffect(() => {
     if (!selectedImage) return;
@@ -57,9 +79,9 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   }, [selectedImage]);
 
   const downloadStory = () => {
-    if (!story) return;
+    if (!displayedStory) return;
     const element = document.createElement('a');
-    const file = new Blob([story], { type: 'text/plain;charset=utf-8' });
+    const file = new Blob([displayedStory], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(file);
     element.href = url;
     element.download = 'generated_story.txt';
@@ -70,9 +92,9 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   };
 
   const copyStory = async () => {
-    if (!story) return;
+    if (!displayedStory) return;
     try {
-      await navigator.clipboard.writeText(story);
+      await navigator.clipboard.writeText(displayedStory);
       setCopiedStory(true);
       setTimeout(() => setCopiedStory(false), 2000);
     } catch {
@@ -154,7 +176,23 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
               </>
             )}
 
-            {activeView === 'output' && mode === 'story' && story && !isLoading && (
+            {activeView === 'output' && modeArtifacts.length > 1 && (
+              <select
+                aria-label="Select generation history artifact"
+                value={activeArtifact?.id ?? ''}
+                onChange={(e) => setSelectedArtifactId(e.target.value)}
+                className="text-xs bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-2 py-1 text-gray-800 dark:text-gray-200"
+              >
+                {modeArtifacts.map((art, idx) => (
+                  <option key={art.id} value={art.id}>
+                    Run #{modeArtifacts.length - idx} (Rev {art.sourceRevision ?? 1}){' '}
+                    {art.isOutdated ? '· Outdated' : '· Current'}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {activeView === 'output' && mode === 'story' && displayedStory && !isLoading && (
               <>
                 <button
                   type="button"
@@ -174,6 +212,44 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
             )}
           </div>
         </div>
+
+        {/* Staged AI Polish Proposal Banner */}
+        {polishProposal && (
+          <div
+            role="region"
+            aria-label="Staged AI Polish Proposal"
+            className="mb-3 p-3 rounded-md bg-indigo-50/80 dark:bg-indigo-950/50 border border-indigo-300 dark:border-indigo-800 space-y-2 flex-shrink-0"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-indigo-900 dark:text-indigo-200">
+                Staged AI Narrative Polish Proposal (Review Before Applying)
+              </span>
+              <div className="flex items-center gap-1.5">
+                {onAcceptPolishProposal && (
+                  <button
+                    type="button"
+                    onClick={onAcceptPolishProposal}
+                    className="px-2.5 py-1 text-xs font-semibold rounded bg-indigo-600 hover:bg-indigo-700 text-white"
+                  >
+                    Accept Polished Prompt
+                  </button>
+                )}
+                {onRejectPolishProposal && (
+                  <button
+                    type="button"
+                    onClick={onRejectPolishProposal}
+                    className="px-2.5 py-1 text-xs font-medium rounded bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700 hover:bg-gray-100"
+                  >
+                    Discard Proposal
+                  </button>
+                )}
+              </div>
+            </div>
+            <pre className="p-2 rounded bg-white dark:bg-gray-900 border border-indigo-200 dark:border-indigo-900 text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap font-mono max-h-28 overflow-y-auto">
+              {polishProposal.polishedPrompt || polishProposal.proposedPrompt}
+            </pre>
+          </div>
+        )}
 
         {/* View 1: Refined Prompt & Author Notes */}
         {activeView === 'prompt' ? (
@@ -209,7 +285,7 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
         ) : (
           /* View 2: Generated Story or Images */
           <div className="flex-1 overflow-y-auto min-h-0 relative">
-            {isOutdated && !isLoading && (images.length > 0 || story) && (
+            {displayedOutdated && !isLoading && (displayedImages.length > 0 || displayedStory) && (
               <div className="mb-2.5 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-2 text-xs text-amber-900 dark:text-amber-200">
                 <span>
                   Story plan has been updated since this output was generated. Previous output is preserved below.
@@ -246,9 +322,9 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
                 <div className="py-8 text-center text-xs font-medium text-gray-600 dark:text-gray-300">
                   Writing story from your confirmed Story Bible and Belief Graph...
                 </div>
-              ) : story ? (
+              ) : displayedStory ? (
                 <article className="p-4 bg-gray-50 dark:bg-gray-950/60 rounded-md border border-gray-200 dark:border-gray-800 space-y-2.5 leading-relaxed text-sm text-gray-800 dark:text-gray-200">
-                  {story
+                  {displayedStory
                     .split('\n')
                     .filter((line) => line.trim().length > 0)
                     .map((paragraph, index) => (
@@ -283,8 +359,8 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
                           Generating...
                         </div>
                       ))
-                  : images.length > 0
-                    ? images.map((image, index) => (
+                  : displayedImages.length > 0
+                    ? displayedImages.map((image, index) => (
                         <button
                           key={index}
                           type="button"

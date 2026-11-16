@@ -33,6 +33,7 @@
     "dist",
     ".next",
     ".backup-original",
+    ".backup-2026-11-16",
     ".playwright-cli"
   ]
 }

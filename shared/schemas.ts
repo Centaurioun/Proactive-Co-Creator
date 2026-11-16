@@ -121,6 +121,8 @@ const RawRelationshipSchema = z.object({
   source: z.string().trim().min(1),
   target: z.string().trim().min(1),
   label: z.string().trim().min(1),
+  presence_in_prompt: z.boolean().optional(),
+  evidence_excerpt: z.string().trim().optional(),
   alternatives: z.array(z.string().trim().min(1)).nullable().optional(),
 });
 
@@ -186,6 +188,7 @@ export const RawBatchEditResponseSchema = z.object({
     )
     .default([]),
   warnings: z.array(z.string()).default([]),
+  unhandledClauses: z.array(z.string()).default([]),
 });
 
 export function stripMarkdownCodeFence(text: string): string {
@@ -231,6 +234,8 @@ export function parseAndValidateBeliefGraph(rawText: string, prompt: string): Be
       source: rel.source,
       target: rel.target,
       label: rel.label,
+      presence_in_prompt: rel.presence_in_prompt,
+      evidenceExcerpt: rel.evidence_excerpt,
       alternatives: (rel.alternatives ?? []).map((name) => ({ name })),
     })),
   };
@@ -313,27 +318,34 @@ export function parseAndValidateBatchEditResponse(
     );
   }
 
+  const operations = validated.data.operations.map((op, index) => ({
+    id: `op_${Date.now()}_${index}`,
+    type: op.type,
+    summary: op.summary,
+    entityName: op.entityName,
+    newEntityName: op.newEntityName,
+    entityCategory: op.entityCategory,
+    attributeName: op.attributeName,
+    nextValue: op.nextValue,
+    sourceEntityName: op.sourceEntityName,
+    targetEntityName: op.targetEntityName,
+    storyField:
+      op.storyField && VALID_STORY_FIELDS.has(op.storyField as keyof StoryBibleFields)
+        ? (op.storyField as keyof StoryBibleFields)
+        : undefined,
+    destructive: op.type === 'exclude_entity' || op.type === 'remove_relationship',
+    selected: true,
+  }));
+
   return {
     instruction,
-    operations: validated.data.operations.map((op, index) => ({
-      id: `op_${Date.now()}_${index}`,
-      type: op.type,
-      summary: op.summary,
-      entityName: op.entityName,
-      newEntityName: op.newEntityName,
-      entityCategory: op.entityCategory,
-      attributeName: op.attributeName,
-      nextValue: op.nextValue,
-      sourceEntityName: op.sourceEntityName,
-      targetEntityName: op.targetEntityName,
-      storyField:
-        op.storyField && VALID_STORY_FIELDS.has(op.storyField as keyof StoryBibleFields)
-          ? (op.storyField as keyof StoryBibleFields)
-          : undefined,
-      destructive: op.type === 'exclude_entity' || op.type === 'remove_relationship',
-      selected: true,
-    })),
+    operations,
     ambiguities: validated.data.ambiguities,
     warnings: validated.data.warnings,
+    unhandledClauses: validated.data.unhandledClauses,
+    coverageComplete:
+      validated.data.unhandledClauses.length === 0 &&
+      validated.data.ambiguities.length === 0 &&
+      operations.length > 0,
   };
 }

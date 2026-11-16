@@ -15,6 +15,7 @@ import {
   computeFitTransform,
   computeForceLayout,
   computeNodeDimensions,
+  computeParallelEdgeOffsets,
   getEdgePath,
   type ViewTransform,
 } from '../lib/graphLayout';
@@ -31,8 +32,10 @@ export interface BeliefGraphProps {
   isLoading: boolean;
   error?: string | null;
   selectedEntity: Entity | null;
+  selectedRelationship?: Relationship | null;
   onSelectEntity: (entity: Entity | null) => void;
-  onRelationshipChange: (source: string, target: string, newLabel: string) => void;
+  onSelectRelationship?: (rel: Relationship | null) => void;
+  onRelationshipChange: (source: string, target: string, newLabel: string, relationshipId?: string) => void;
   onAttributeChange?: (entityName: string, attributeName: string, newValue: string) => void;
   currentPrompt: string;
 }
@@ -42,7 +45,9 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
   isLoading,
   error,
   selectedEntity,
+  selectedRelationship = null,
   onSelectEntity,
+  onSelectRelationship,
   onRelationshipChange,
 }) => {
   // Belief Graph 2.0 navigation & filtering state
@@ -105,7 +110,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
 
   // Filter and optionally group entities
   const visibleEntities = useMemo(() => {
-    let list = rawObjectEntities.map((e) => ({
+    let list: Entity[] = rawObjectEntities.map((e) => ({
       ...e,
       category: inferEntityCategory(e),
     }));
@@ -120,23 +125,43 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
       list = list.filter((e) => e.category === categoryFilter);
     }
 
-    // Group collapse for animal guests when toggled
+    // Generic group collapse when toggled: collapses explicit groupId clusters first,
+    // or falls back to collapsing secondary character/category clusters of >= 2 members.
     if (collapseGuestGroup) {
-      const groupedMembers = list.filter((e) => e.groupId === 'group_animal_guests');
-      if (groupedMembers.length > 1) {
-        const nonGrouped = list.filter((e) => e.groupId !== 'group_animal_guests');
+      const explicitGroupMembers = list.filter((e) => Boolean(e.groupId));
+      if (explicitGroupMembers.length > 1) {
+        const nonGrouped = list.filter((e) => !e.groupId);
         const syntheticGroup: Entity = {
           id: 'ent_group_guests_synthetic',
-          name: `Animal Guests (${groupedMembers.length})`,
+          name: `Grouped Entities (${explicitGroupMembers.length})`,
           category: 'group',
           presence_in_prompt: true,
-          description: `Grouped view of: ${groupedMembers.map((m) => m.name).join(', ')}`,
+          description: `Grouped view of: ${explicitGroupMembers.map((m) => m.name).join(', ')}`,
           alternatives: null,
           status: 'confirmed',
           attributes: [],
-          aliases: groupedMembers.map((m) => m.name),
+          aliases: explicitGroupMembers.map((m) => m.name),
         };
         list = [...nonGrouped, syntheticGroup];
+      } else {
+        const chars = list.filter((e) => e.category === 'character');
+        if (chars.length > 2) {
+          const primaryChar = chars[0];
+          const secondaryChars = chars.slice(1);
+          const others = list.filter((e) => e.category !== 'character');
+          const syntheticGroup: Entity = {
+            id: 'ent_group_guests_synthetic',
+            name: `Character Group (${secondaryChars.length})`,
+            category: 'group',
+            presence_in_prompt: true,
+            description: `Grouped view of: ${secondaryChars.map((m) => m.name).join(', ')}`,
+            alternatives: null,
+            status: 'confirmed',
+            attributes: [],
+            aliases: secondaryChars.map((m) => m.name),
+          };
+          list = [primaryChar, ...others, syntheticGroup];
+        }
       }
     }
 
@@ -177,15 +202,23 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
     [visibleEntities]
   );
 
-  const relationships = useMemo(
-    () => normalizeAndDeduplicateRelationships(data?.relationships, visibleEntities),
-    [data?.relationships, visibleEntities]
+  const relationships = useMemo(() => {
+    const normalized = normalizeAndDeduplicateRelationships(data?.relationships, visibleEntities);
+    if (!showInferred) {
+      return normalized.filter((r) => r.status === 'confirmed' || r.presence_in_prompt);
+    }
+    return normalized;
+  }, [data?.relationships, visibleEntities, showInferred]);
+
+  const parallelEdgeOffsets = useMemo(
+    () => computeParallelEdgeOffsets(relationships),
+    [relationships]
   );
 
   // Structural signature for layout stability (only re-run full layout if entity names/edges change)
   const topologySignature = useMemo(() => {
     const nodeKeys = visibleEntities.map((e) => e.id ?? e.name).sort().join('|');
-    const edgeKeys = relationships.map((r) => `${r.source}->${r.target}`).sort().join('|');
+    const edgeKeys = relationships.map((r) => `${r.source}->${r.target}::${r.label}`).sort().join('|');
     return `${nodeKeys}::${edgeKeys}`;
   }, [visibleEntities, relationships]);
 
@@ -486,59 +519,118 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
 
       {/* Alternative High-Density Table View for Large Projects */}
       {displayMode === 'table' ? (
-        <div className="flex-1 overflow-y-auto p-4 min-h-0">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-gray-200 dark:border-gray-800 text-gray-500 dark:text-gray-400">
-                <th className="py-2 px-2.5 font-semibold">Entity</th>
-                <th className="py-2 px-2.5 font-semibold">Category</th>
-                <th className="py-2 px-2.5 font-semibold">Origin</th>
-                <th className="py-2 px-2.5 font-semibold">Key Attributes</th>
-                <th className="py-2 px-2.5 font-semibold text-right">Connections</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-              {visibleEntities.map((ent) => {
-                const isSelected = selectedEntity?.name === ent.name;
-                const connCount = relationships.filter(
-                  (r) => r.source === ent.name || r.target === ent.name
-                ).length;
-                const attrSummary = ent.attributes
-                  .filter((a) => a.name !== 'existence')
-                  .map((a) => `${a.name}: ${getEffectiveAttributeValue(a)}`)
-                  .join(' · ');
+        <div className="flex-1 overflow-y-auto p-4 min-h-0 space-y-6">
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+              Entities ({visibleEntities.length})
+            </h3>
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-800 text-gray-500 dark:text-gray-400">
+                  <th className="py-2 px-2.5 font-semibold">Entity</th>
+                  <th className="py-2 px-2.5 font-semibold">Category</th>
+                  <th className="py-2 px-2.5 font-semibold">Origin</th>
+                  <th className="py-2 px-2.5 font-semibold">Key Attributes</th>
+                  <th className="py-2 px-2.5 font-semibold text-right">Connections</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {visibleEntities.map((ent) => {
+                  const isSelected = selectedEntity?.name === ent.name;
+                  const connCount = relationships.filter(
+                    (r) => r.source === ent.name || r.target === ent.name
+                  ).length;
+                  const attrSummary = ent.attributes
+                    .filter((a) => a.name !== 'existence')
+                    .map((a) => `${a.name}: ${getEffectiveAttributeValue(a)}`)
+                    .join(' · ');
 
-                return (
-                  <tr
-                    key={ent.id ?? ent.name}
-                    onClick={() => onSelectEntity(ent)}
-                    className={`cursor-pointer transition-colors ${
-                      isSelected
-                        ? 'bg-blue-50/70 dark:bg-blue-950/40'
-                        : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
-                    }`}
-                  >
-                    <td className="py-2.5 px-2.5 font-semibold text-gray-900 dark:text-gray-100">
-                      {ent.name}
-                      {ent.excluded ? ' (Excluded)' : ''}
-                    </td>
-                    <td className="py-2.5 px-2.5 capitalize text-gray-600 dark:text-gray-300">
-                      {ent.category ?? 'entity'}
-                    </td>
-                    <td className="py-2.5 px-2.5 text-gray-500 dark:text-gray-400">
-                      {ent.presence_in_prompt ? 'Explicit' : 'Inferred'}
-                    </td>
-                    <td className="py-2.5 px-2.5 text-gray-700 dark:text-gray-300 max-w-xs truncate">
-                      {attrSummary || '—'}
-                    </td>
-                    <td className="py-2.5 px-2.5 text-right font-mono tabular-nums text-gray-600 dark:text-gray-400">
-                      {connCount}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                  return (
+                    <tr
+                      key={ent.id ?? ent.name}
+                      onClick={() => {
+                        onSelectEntity(ent);
+                        onSelectRelationship?.(null);
+                      }}
+                      className={`cursor-pointer transition-colors ${
+                        isSelected
+                          ? 'bg-blue-50/70 dark:bg-blue-950/40'
+                          : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                      }`}
+                    >
+                      <td className="py-2.5 px-2.5 font-semibold text-gray-900 dark:text-gray-100">
+                        {ent.name}
+                        {ent.excluded ? ' (Excluded)' : ''}
+                      </td>
+                      <td className="py-2.5 px-2.5 capitalize text-gray-600 dark:text-gray-300">
+                        {ent.category ?? 'entity'}
+                      </td>
+                      <td className="py-2.5 px-2.5 text-gray-500 dark:text-gray-400">
+                        {ent.presence_in_prompt ? 'Explicit' : 'Inferred'}
+                      </td>
+                      <td className="py-2.5 px-2.5 text-gray-700 dark:text-gray-300 max-w-xs truncate">
+                        {attrSummary || '—'}
+                      </td>
+                      <td className="py-2.5 px-2.5 text-right font-mono tabular-nums text-gray-600 dark:text-gray-400">
+                        {connCount}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+              Directed Relationships ({relationships.length})
+            </h3>
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-gray-200 dark:border-gray-800 text-gray-500 dark:text-gray-400">
+                  <th className="py-2 px-2.5 font-semibold">Source</th>
+                  <th className="py-2 px-2.5 font-semibold">Directed Label</th>
+                  <th className="py-2 px-2.5 font-semibold">Target</th>
+                  <th className="py-2 px-2.5 font-semibold text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                {relationships.map((rel, idx) => {
+                  const isSelected =
+                    selectedRelationship?.id === rel.id ||
+                    (selectedRelationship?.source === rel.source &&
+                      selectedRelationship?.target === rel.target &&
+                      selectedRelationship?.label === rel.label);
+                  return (
+                    <tr
+                      key={rel.id ?? `tbl_rel_${idx}`}
+                      onClick={() => {
+                        onSelectRelationship?.(rel);
+                      }}
+                      className={`cursor-pointer transition-colors ${
+                        isSelected
+                          ? 'bg-amber-50/70 dark:bg-amber-950/40'
+                          : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                      }`}
+                    >
+                      <td className="py-2 px-2.5 font-semibold text-gray-900 dark:text-gray-100">
+                        {rel.source}
+                      </td>
+                      <td className="py-2 px-2.5 text-blue-700 dark:text-blue-300 font-medium">
+                        → {rel.label} →
+                      </td>
+                      <td className="py-2 px-2.5 font-semibold text-gray-900 dark:text-gray-100">
+                        {rel.target}
+                      </td>
+                      <td className="py-2 px-2.5 text-right capitalize text-gray-600 dark:text-gray-400">
+                        {rel.status ?? 'confirmed'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : (
         /* Interactive SVG Force-Directed Belief Graph Canvas */
@@ -556,11 +648,11 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
             className="relative bg-gray-50/50 dark:bg-gray-950/60 w-full flex-1 min-h-0 overflow-hidden"
           >
             {data && (
-              <div className="absolute top-3 left-3 flex flex-col gap-1.5 z-30">
+              <div className="absolute top-2.5 right-3 flex items-center gap-1 z-30">
                 <button
                   type="button"
                   onClick={zoomIn}
-                  className="bg-white dark:bg-gray-800 min-w-[36px] min-h-[36px] p-2 rounded-md border border-gray-200 dark:border-gray-700 shadow-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-xs font-bold"
+                  className="bg-white/95 dark:bg-gray-800/95 min-w-[30px] min-h-[30px] px-2 py-1 rounded border border-gray-200 dark:border-gray-700 shadow-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-xs font-bold"
                   title="Zoom In"
                   aria-label="Zoom in belief graph"
                 >
@@ -569,7 +661,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                 <button
                   type="button"
                   onClick={zoomOut}
-                  className="bg-white dark:bg-gray-800 min-w-[36px] min-h-[36px] p-2 rounded-md border border-gray-200 dark:border-gray-700 shadow-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-xs font-bold"
+                  className="bg-white/95 dark:bg-gray-800/95 min-w-[30px] min-h-[30px] px-2 py-1 rounded border border-gray-200 dark:border-gray-700 shadow-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-xs font-bold"
                   title="Zoom Out"
                   aria-label="Zoom out belief graph"
                 >
@@ -578,7 +670,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                 <button
                   type="button"
                   onClick={resetView}
-                  className="bg-white dark:bg-gray-800 min-w-[36px] min-h-[36px] px-2 py-1.5 rounded-md border border-gray-200 dark:border-gray-700 shadow-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-[11px] font-semibold"
+                  className="bg-white/95 dark:bg-gray-800/95 min-w-[34px] min-h-[30px] px-2 py-1 rounded border border-gray-200 dark:border-gray-700 shadow-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-[11px] font-semibold"
                   title="Fit to View"
                   aria-label="Fit belief graph to view"
                 >
@@ -588,7 +680,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
             )}
 
             {/* Graph Legend */}
-            <div className="absolute bottom-2.5 left-3 z-20 pointer-events-none text-[11px] text-gray-500 dark:text-gray-400 bg-white/85 dark:bg-gray-900/85 px-2.5 py-1 rounded border border-gray-200 dark:border-gray-800">
+            <div className="absolute bottom-2 left-3 z-20 pointer-events-none text-[11px] text-gray-500 dark:text-gray-400 bg-white/85 dark:bg-gray-900/85 px-2.5 py-0.5 rounded border border-gray-200 dark:border-gray-800">
               <span>Solid border: Explicit</span>
               <span aria-hidden="true"> · </span>
               <span>Dashed: AI Inferred</span>
@@ -639,6 +731,9 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                     const targetDims = nodeDimensions[rel.target];
                     if (!sourceDims || !targetDims) return null;
 
+                    const edgeKey = rel.id ?? `${rel.source}->${rel.target}::${rel.label}`;
+                    const curveOffset = parallelEdgeOffsets[edgeKey] ?? 0;
+
                     const { path, labelX, labelY } = getEdgePath(
                       sourcePos.x,
                       sourcePos.y,
@@ -647,7 +742,8 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                       sourceDims.width,
                       sourceDims.height,
                       targetDims.width,
-                      targetDims.height
+                      targetDims.height,
+                      curveOffset
                     );
 
                     let opacity = 1;
@@ -663,21 +759,29 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                             : 0.2;
                     }
 
-                    const isModified = rel.provenance === 'user-edit';
+                    const isModified =
+                      rel.provenance === 'user-edit' || rel.provenance === 'accepted-suggestion';
+                    const isPending = rel.status === 'pending';
+                    const isSelectedRel =
+                      selectedRelationship?.id === rel.id ||
+                      (selectedRelationship?.source === rel.source &&
+                        selectedRelationship?.target === rel.target &&
+                        selectedRelationship?.label === rel.label);
 
                     return (
                       <g
-                        key={rel.id ?? `rel-${rel.source}-${rel.target}-${i}`}
+                        key={rel.id ?? `rel-${rel.source}-${rel.target}-${rel.label}-${i}`}
                         style={{ opacity, transition: 'opacity 0.15s ease-out' }}
                         className="cursor-pointer focus:outline-none"
                         role="button"
                         tabIndex={0}
-                        aria-label={`Relationship: ${rel.source} ${rel.label} ${rel.target}. Press Enter to edit.`}
+                        aria-label={`Directed relationship: ${rel.source} ${rel.label} ${rel.target} (${rel.status ?? 'confirmed'}). Press Enter to inspect or edit.`}
                         onMouseEnter={() => setHoveredRel(rel)}
                         onMouseLeave={() => setHoveredRel(null)}
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
                           e.stopPropagation();
+                          onSelectRelationship?.(rel);
                           openRelationshipEditorAtClientPoint(
                             rel,
                             e.clientX,
@@ -688,6 +792,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
+                            onSelectRelationship?.(rel);
                             const rect = e.currentTarget.getBoundingClientRect();
                             openRelationshipEditorAtClientPoint(
                               rel,
@@ -701,11 +806,16 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                         <path
                           d={path}
                           className={
-                            isModified
-                              ? 'stroke-blue-500 dark:stroke-blue-400'
-                              : 'stroke-slate-400 dark:stroke-slate-500'
+                            isSelectedRel
+                              ? 'stroke-amber-500 dark:stroke-amber-400'
+                              : isPending
+                                ? 'stroke-amber-500/80 dark:stroke-amber-400/80'
+                                : isModified
+                                  ? 'stroke-blue-500 dark:stroke-blue-400'
+                                  : 'stroke-slate-400 dark:stroke-slate-500'
                           }
-                          strokeWidth={isModified ? 2.5 : 2}
+                          strokeWidth={isSelectedRel || isModified ? 2.5 : 2}
+                          strokeDasharray={isPending ? '5 3' : 'none'}
                           fill="none"
                           markerEnd={`url(#${markerId})`}
                         />
@@ -719,12 +829,17 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                           strokeLinejoin="round"
                           paintOrder="stroke"
                           className={
-                            isModified
-                              ? 'fill-blue-700 dark:fill-blue-300 stroke-white dark:stroke-gray-950'
-                              : 'fill-slate-700 dark:fill-slate-200 stroke-white dark:stroke-gray-950'
+                            isSelectedRel
+                              ? 'fill-amber-700 dark:fill-amber-300 stroke-white dark:stroke-gray-950'
+                              : isPending
+                                ? 'fill-amber-700 dark:fill-amber-300 stroke-white dark:stroke-gray-950'
+                                : isModified
+                                  ? 'fill-blue-700 dark:fill-blue-300 stroke-white dark:stroke-gray-950'
+                                  : 'fill-slate-700 dark:fill-slate-200 stroke-white dark:stroke-gray-950'
                           }
                         >
                           {truncateLabel(rel.label, 20)}
+                          {isPending ? ' (?)' : ''}
                         </text>
                       </g>
                     );
@@ -778,6 +893,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                             return;
                           }
                           onSelectEntity(entity);
+                          onSelectRelationship?.(null);
                           setSelectedRel(null);
                         }}
                         onKeyDown={(e) => {
@@ -788,6 +904,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                               return;
                             }
                             onSelectEntity(entity);
+                            onSelectRelationship?.(null);
                             setSelectedRel(null);
                           }
                         }}
@@ -841,7 +958,12 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
               onClose={() => setSelectedRel(null)}
               isLoading={isLoading}
               onChange={(newLabel) =>
-                onRelationshipChange(selectedRel.rel.source, selectedRel.rel.target, newLabel)
+                onRelationshipChange(
+                  selectedRel.rel.source,
+                  selectedRel.rel.target,
+                  newLabel,
+                  selectedRel.rel.id
+                )
               }
             />
           )}

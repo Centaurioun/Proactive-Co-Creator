@@ -96,7 +96,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
         <button
           type="button"
           onClick={onReviewChanges}
-          className="px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors whitespace-nowrap hidden md:inline-flex items-center"
+          className="px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors whitespace-nowrap inline-flex items-center"
         >
           Review Plan &amp; Prompt
         </button>

@@ -22,9 +22,27 @@ const STORY_FIELD_LABELS: Record<keyof StoryBibleFields, string> = {
 };
 
 /**
+ * Deterministic fast hash for comparing prompt + mode across revisions and artifacts.
+ */
+export function computePromptDigest(prompt: string, mode: GenerationMode): string {
+  const normalized = `${mode}::${prompt.trim().replace(/\s+/g, ' ')}`;
+  let h1 = 0xdeadbeef ^ normalized.length;
+  let h2 = 0x41c6ce57 ^ normalized.length;
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `pd_${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/**
  * Synthesizes a clean, authoritative generation prompt from confirmed creative decisions.
  * Never includes rejected suggestions or unconfirmed AI guesses.
- * Respects mode-specific fields while sharing core story facts.
+ * Emits explicit Seed Overrides when seed entities are renamed or excluded so downstream
+ * generation never reintroduces stale seed names or excluded subjects.
  */
 export function synthesizeRefinedPrompt(
   snapshot: ProjectSnapshot,
@@ -69,12 +87,18 @@ export function synthesizeRefinedPrompt(
     sections.push(`Creative Direction:\n- ${bibleLines.join('\n- ')}`);
   }
 
-  // 2. Confirmed Entities and Attributes (excluding excluded entities and scene meta-entity)
+  // 2. Confirmed Entities, Attributes, and Seed Overrides
   const entityLines: string[] = [];
   const excludedNames: string[] = [];
+  const seedOverrides: string[] = [];
+  const entityById = new Map(snapshot.entities.map((e) => [e.id, e]));
 
   for (const entity of snapshot.entities) {
     if (isSceneEntityName(entity.name) || entity.category === 'scene') continue;
+    if (entity.status === 'rejected') {
+      excludedNames.push(entity.name);
+      continue;
+    }
 
     const exAttr = entity.attributes.find(
       (a) => a.name === 'existence' || a.name === 'existence_in_image'
@@ -85,7 +109,29 @@ export function synthesizeRefinedPrompt(
 
     if (isExcluded) {
       excludedNames.push(entity.name);
+      if (entity.aliases && entity.aliases.length > 0) {
+        excludedNames.push(...entity.aliases);
+      }
+      seedOverrides.push(
+        `Exclude "${entity.name}" from the output (override any seed mention of "${entity.name}").`
+      );
       continue;
+    }
+
+    const priorAliases = (entity.aliases ?? []).filter(
+      (alias) => alias.trim().toLowerCase() !== entity.name.trim().toLowerCase()
+    );
+    if (entity.provenance === 'user-edit' && priorAliases.length > 0) {
+      const seedMatchingAliases = priorAliases.filter((alias) =>
+        baseIdea.toLowerCase().includes(alias.trim().toLowerCase())
+      );
+      const relevantAliases =
+        seedMatchingAliases.length > 0
+          ? seedMatchingAliases
+          : [priorAliases[priorAliases.length - 1]];
+      seedOverrides.push(
+        `Canonical name for ${relevantAliases.map((a) => `"${a}"`).join(' / ')} is "${entity.name}" (use "${entity.name}" instead of ${relevantAliases.map((a) => `"${a}"`).join(' or ')}).`
+      );
     }
 
     const confirmedAttrs = entity.attributes.filter(
@@ -96,16 +142,25 @@ export function synthesizeRefinedPrompt(
         getEffectiveAttributeValue(a) !== 'Unknown'
     );
 
-    if (confirmedAttrs.length > 0 || entity.provenance === 'user-edit') {
+    if (
+      confirmedAttrs.length > 0 ||
+      entity.provenance === 'user-edit' ||
+      priorAliases.length > 0 ||
+      (entity.status === 'confirmed' && !entity.presence_in_prompt)
+    ) {
       const attrSummary = confirmedAttrs
         .map((a) => `${a.name.replace(/_/g, ' ')}: ${getEffectiveAttributeValue(a)}`)
         .join(', ');
       if (attrSummary) {
         entityLines.push(`${entity.name} (${attrSummary})`);
-      } else if (entity.status === 'confirmed' && !entity.presence_in_prompt) {
+      } else if (entity.status === 'confirmed') {
         entityLines.push(`${entity.name}${entity.description ? ` — ${entity.description}` : ''}`);
       }
     }
+  }
+
+  if (seedOverrides.length > 0) {
+    sections.push(`Seed Overrides & Canonical Identity:\n- ${seedOverrides.join('\n- ')}`);
   }
 
   if (entityLines.length > 0) {
@@ -117,14 +172,22 @@ export function synthesizeRefinedPrompt(
   const relLines: string[] = [];
 
   for (const rel of snapshot.relationships) {
-    if (excludedSet.has(rel.source.toLowerCase()) || excludedSet.has(rel.target.toLowerCase())) {
+    if (rel.status !== 'confirmed') continue;
+
+    const sourceEntity = rel.sourceId ? entityById.get(rel.sourceId) : undefined;
+    const targetEntity = rel.targetId ? entityById.get(rel.targetId) : undefined;
+
+    if (sourceEntity?.excluded || targetEntity?.excluded) continue;
+    if (sourceEntity?.status === 'rejected' || targetEntity?.status === 'rejected') continue;
+
+    const sourceName = sourceEntity?.name ?? rel.source;
+    const targetName = targetEntity?.name ?? rel.target;
+
+    if (excludedSet.has(sourceName.toLowerCase()) || excludedSet.has(targetName.toLowerCase())) {
       continue;
     }
-    if (rel.status === 'confirmed' && rel.provenance !== 'prompt-explicit') {
-      relLines.push(`${rel.source} ${rel.label} ${rel.target}`);
-    } else if (rel.status === 'confirmed' && rel.provenance === 'prompt-explicit') {
-      relLines.push(`${rel.source} ${rel.label} ${rel.target}`);
-    }
+
+    relLines.push(`${sourceName} ${rel.label} ${targetName}`);
   }
 
   if (relLines.length > 0) {

@@ -63,22 +63,26 @@ describe('lib/beliefGraphUtils & lib/graphLayout', () => {
     assert.equal(truncateLabel('a very long relationship label', 10), 'a very lon...');
   });
 
-  it('normalizes canonical entity names and deduplicates undirected relationship pairs', () => {
+  it('normalizes canonical entity names, preserves directed multigraph edges (A->B and B->A), and deduplicates identical directed triples', () => {
     const objectEntities = [makeEntity('The Red Cat'), makeEntity('Party Hat')];
     assert.equal(getCanonicalEntityName('red cat', objectEntities), 'The Red Cat');
 
     const rawRelationships: Relationship[] = [
       { source: 'The Image', target: 'Cat', label: 'contains' },
       { source: 'Red Cat', target: 'Party Hat', label: 'wearing' },
-      { source: 'Party Hat', target: 'The Red Cat', label: 'worn by' },
-      { source: 'Red Cat', target: 'The Red Cat', label: 'self' },
+      { source: 'The Red Cat', target: 'Party Hat', label: 'wearing' }, // exact directed duplicate
+      { source: 'Party Hat', target: 'The Red Cat', label: 'worn by' }, // opposite direction (preserved per INV-06)
+      { source: 'Red Cat', target: 'The Red Cat', label: 'self' }, // self-loop (rejected)
     ];
 
     const normalized = normalizeAndDeduplicateRelationships(rawRelationships, objectEntities);
-    assert.equal(normalized.length, 1);
+    assert.equal(normalized.length, 2);
     assert.equal(normalized[0].source, 'The Red Cat');
     assert.equal(normalized[0].target, 'Party Hat');
     assert.equal(normalized[0].label, 'wearing');
+    assert.equal(normalized[1].source, 'Party Hat');
+    assert.equal(normalized[1].target, 'The Red Cat');
+    assert.equal(normalized[1].label, 'worn by');
   });
 
   it('computes node dimensions, intersection geometry, and edge paths cleanly', () => {

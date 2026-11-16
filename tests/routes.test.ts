@@ -42,16 +42,15 @@ function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServi
     refinePromptText: async (orig) => `${orig}, warm lighting`,
     interpretBatchEditInstruction: async (instruction) => ({
       instruction,
-      summary: 'Proposed 1 operation',
       warnings: [],
+      ambiguities: [],
       operations: [
         {
           id: 'op_1',
           type: 'update_story_bible',
-          targetDescription: 'Story Bible • Tone',
           summary: 'Set tone to mysterious',
-          storyBibleField: 'tone',
-          proposedValue: 'mysterious',
+          storyField: 'tone',
+          nextValue: 'mysterious',
           selected: true,
         },
       ],
@@ -177,9 +176,9 @@ describe('server/routes API contract', () => {
       }),
     });
     assert.equal(okBatch.status, 200);
-    const batchJson = (await okBatch.json()) as { operations: Array<{ storyBibleField?: string }> };
+    const batchJson = (await okBatch.json()) as { operations: Array<{ storyField?: string }> };
     assert.equal(batchJson.operations.length, 1);
-    assert.equal(batchJson.operations[0].storyBibleField, 'tone');
+    assert.equal(batchJson.operations[0].storyField, 'tone');
   });
 
   it('handles /api/generate/images and /api/generate/story and returns 404 for removed video routes', async () => {

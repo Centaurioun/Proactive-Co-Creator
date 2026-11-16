@@ -65,6 +65,38 @@ export function getIntersection(
   };
 }
 
+export function computeParallelEdgeOffsets(
+  relationships: Relationship[]
+): Record<string, number> {
+  const groups = new Map<string, Relationship[]>();
+  for (const rel of relationships) {
+    const pairKey = [rel.source.toLowerCase(), rel.target.toLowerCase()].sort().join('::');
+    const list = groups.get(pairKey) ?? [];
+    list.push(rel);
+    groups.set(pairKey, list);
+  }
+
+  const offsets: Record<string, number> = {};
+  for (const [, list] of groups.entries()) {
+    if (list.length <= 1) {
+      const r = list[0];
+      if (r) {
+        const key = r.id ?? `${r.source}->${r.target}::${r.label}`;
+        offsets[key] = 0;
+      }
+      continue;
+    }
+
+    const spacing = 28;
+    list.forEach((r, idx) => {
+      const key = r.id ?? `${r.source}->${r.target}::${r.label}`;
+      offsets[key] = (idx - (list.length - 1) / 2) * spacing;
+    });
+  }
+
+  return offsets;
+}
+
 export function getEdgePath(
   x1: number,
   y1: number,
@@ -73,14 +105,35 @@ export function getEdgePath(
   sourceW: number,
   sourceH: number,
   targetW: number,
-  targetH: number
+  targetH: number,
+  curveOffset: number = 0
 ): { path: string; labelX: number; labelY: number } {
   const start = getIntersection(x1, y1, x2, y2, sourceW, sourceH, 0);
   const end = getIntersection(x2, y2, x1, y1, targetW, targetH, 5);
 
-  const path = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
-  const labelX = (start.x + end.x) / 2;
-  const labelY = (start.y + end.y) / 2;
+  if (Math.abs(curveOffset) < 0.5) {
+    const path = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+    const labelX = (start.x + end.x) / 2;
+    const labelY = (start.y + end.y) / 2;
+    return { path, labelX, labelY };
+  }
+
+  // Canonical normal vector so A->B and B->A with different signed curveOffsets bend in opposite directions
+  const isCanonicalOrder = x1 < x2 || (x1 === x2 && y1 <= y2);
+  const canonicalDx = isCanonicalOrder ? end.x - start.x : start.x - end.x;
+  const canonicalDy = isCanonicalOrder ? end.y - start.y : start.y - end.y;
+  const len = Math.hypot(canonicalDx, canonicalDy) || 1;
+  const nx = -canonicalDy / len;
+  const ny = canonicalDx / len;
+
+  const midX = (start.x + end.x) / 2;
+  const midY = (start.y + end.y) / 2;
+  const ctrlX = midX + nx * curveOffset * 1.6;
+  const ctrlY = midY + ny * curveOffset * 1.6;
+
+  const labelX = 0.25 * start.x + 0.5 * ctrlX + 0.25 * end.x;
+  const labelY = 0.25 * start.y + 0.5 * ctrlY + 0.25 * end.y;
+  const path = `M ${start.x} ${start.y} Q ${ctrlX} ${ctrlY} ${end.x} ${end.y}`;
 
   return { path, labelX, labelY };
 }

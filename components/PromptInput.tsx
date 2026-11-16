@@ -52,24 +52,24 @@ const PromptInput: React.FC<PromptInputProps> = ({
   };
 
   return (
-    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg p-3 flex flex-col gap-2.5 flex-shrink-0">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg px-3 py-2 flex flex-col gap-1.5 flex-shrink-0">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
           <label
             htmlFor="prompt-textarea"
-            className="font-display text-xs sm:text-sm font-bold text-gray-900 dark:text-gray-100"
+            className="font-display text-xs font-bold text-gray-900 dark:text-gray-100 whitespace-nowrap"
           >
             Original Story / Scene Seed
           </label>
           <span aria-hidden="true" className="text-gray-300 dark:text-gray-700">
             ·
           </span>
-          <span className="text-xs text-gray-500 dark:text-gray-400 font-mono tabular-nums">
+          <span className="text-[11px] text-gray-500 dark:text-gray-400 font-mono tabular-nums whitespace-nowrap">
             {prompt.length} chars
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <div
             role="group"
             aria-label="Workspace mode"
@@ -80,7 +80,7 @@ const PromptInput: React.FC<PromptInputProps> = ({
               onClick={() => setMode('story')}
               disabled={isLoading}
               aria-pressed={mode === 'story'}
-              className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap ${
+              className={`px-2 py-0.5 text-xs font-semibold rounded transition-colors whitespace-nowrap ${
                 mode === 'story'
                   ? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs'
                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
@@ -93,7 +93,7 @@ const PromptInput: React.FC<PromptInputProps> = ({
               onClick={() => setMode('image')}
               disabled={isLoading}
               aria-pressed={mode === 'image'}
-              className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap ${
+              className={`px-2 py-0.5 text-xs font-semibold rounded transition-colors whitespace-nowrap ${
                 mode === 'image'
                   ? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs'
                   : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
@@ -107,7 +107,7 @@ const PromptInput: React.FC<PromptInputProps> = ({
             type="button"
             onClick={handleAnalyzeClick}
             disabled={isLoading || !hasPromptText}
-            className="px-3 py-1.5 min-h-[34px] text-xs font-semibold rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 transition-colors whitespace-nowrap disabled:opacity-50"
+            className="px-2.5 py-1 text-xs font-semibold rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 transition-colors whitespace-nowrap disabled:opacity-50"
           >
             Reanalyze Idea
           </button>
@@ -116,7 +116,7 @@ const PromptInput: React.FC<PromptInputProps> = ({
             type="button"
             onClick={handleSubmitClick}
             disabled={isLoading || !hasPromptText}
-            className="px-3 py-1.5 min-h-[34px] text-xs font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap disabled:opacity-50"
+            className="px-2.5 py-1 text-xs font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap disabled:opacity-50"
           >
             {isGenerating
               ? 'Generating...'
