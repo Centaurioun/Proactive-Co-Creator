@@ -332,6 +332,16 @@ export interface ProjectSnapshot {
   skippedQuestions: string[];
 }
 
+export interface PersistedUndoHistoryEntry {
+  label: string;
+  snapshot: ProjectSnapshot;
+}
+
+export interface PersistedUndoHistory {
+  past: PersistedUndoHistoryEntry[];
+  future: PersistedUndoHistoryEntry[];
+}
+
 export interface CreativeProject {
   schemaVersion: number;
   id: string;
@@ -343,6 +353,7 @@ export interface CreativeProject {
   snapshot: ProjectSnapshot;
   artifacts: GenerationArtifact[];
   revisions: ProjectRevision[];
+  undoHistory?: PersistedUndoHistory;
 }
 
 export type AiRequestAction =

@@ -29,6 +29,7 @@ import { evaluateProjectConsistency } from './lib/consistencyChecker';
 import {
   createUndoRedoState,
   restoreProjectRevision,
+  serializeUndoHistory,
   type UndoRedoState,
 } from './lib/historyEngine';
 import {
@@ -58,7 +59,7 @@ import {
   exportProjectToJson,
   exportStoryBibleMarkdown,
   getDeletedProjectIds,
-  loadProjectsFromIndexedDb,
+  loadProjectsFromIndexedDbDetailed,
   loadProjectsFromLocalStorage,
   migrateProjectPayload,
   persistProjectDurably,
@@ -133,7 +134,11 @@ function App() {
   const [savedProjects, setSavedProjects] = useState<CreativeProject[]>(initialData.projects);
   const [project, setProject] = useState<CreativeProject>(initialProject);
   const [undoState, setUndoState] = useState<UndoRedoState>(() =>
-    createUndoRedoState(initialProject.snapshot, initialProject.revisions)
+    createUndoRedoState(
+      initialProject.snapshot,
+      initialProject.revisions,
+      initialProject.undoHistory
+    )
   );
 
   const snapshot = undoState.present;
@@ -177,18 +182,17 @@ function App() {
   const reviewModalDialogRef = useRef<HTMLDivElement | null>(null);
   const reviewModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  // Derive synchronized active project with current undoState.present snapshot
+  // Derive synchronized active project with current undoState.present snapshot and persisted Undo/Redo stacks
   const activeProject = useMemo<CreativeProject>(() => {
     const refreshedArtifacts = refreshArtifactsCurrentness(project.artifacts, undoState.present);
-    if (project.snapshot === undoState.present && refreshedArtifacts === project.artifacts) {
-      return project;
-    }
+    const nextUndoHistory = serializeUndoHistory(undoState);
     return {
       ...project,
       snapshot: undoState.present,
       artifacts: refreshedArtifacts,
+      undoHistory: nextUndoHistory,
     };
-  }, [project, undoState.present]);
+  }, [project, undoState]);
 
   const activeProjectRef = useRef<CreativeProject>(activeProject);
   const undoStateRef = useRef<UndoRedoState>(undoState);
@@ -199,14 +203,36 @@ function App() {
     savedProjectsRef.current = savedProjects;
   }, [activeProject, undoState, savedProjects]);
 
-  // Hydrate full projects & media artifacts from IndexedDB on initial mount (F-02 / IA-04)
+  // Hydrate full projects & media artifacts from IndexedDB on initial mount (F-02 / IA-04 / FIX 1)
   useEffect(() => {
     let cancelled = false;
-    void loadProjectsFromIndexedDb()
-      .then((idbProjects) => {
+    void loadProjectsFromIndexedDbDetailed()
+      .then((idbLoad) => {
         if (cancelled) return;
         isHydrationCompleteRef.current = true;
-        if (idbProjects.length === 0) {
+
+        // FIX 1: Never treat an IndexedDB read error or unavailable DB as proof that storage is empty
+        if (idbLoad.status === 'read_error') {
+          setStorageAlert({
+            type: 'error',
+            projectId: activeProjectRef.current.id,
+            message: `IndexedDB read failure (${idbLoad.error ?? 'Unable to read durable database'}). Automatic sample seeding was blocked to protect existing IndexedDB records. Click Reload Latest from Storage or export a JSON backup.`,
+          });
+          return;
+        }
+        if (idbLoad.status === 'unavailable') {
+          return;
+        }
+        if (idbLoad.corruptRecordCount > 0) {
+          setStorageAlert({
+            type: 'error',
+            projectId: activeProjectRef.current.id,
+            message: `Skipped ${idbLoad.corruptRecordCount} corrupt or unsupported record(s) in IndexedDB while preserving recoverable projects.`,
+          });
+        }
+
+        const idbProjects = idbLoad.projects;
+        if (idbLoad.status === 'empty' && idbProjects.length === 0) {
           void saveProjectToIndexedDb(activeProjectRef.current, {
             expectedPersistedRevision: activeProjectRef.current.persistedRevision,
           });
@@ -223,10 +249,18 @@ function App() {
         setSavedProjects(reconciled.savedProjects);
 
         if (reconciled.conflictWithHydrated) {
+          const idbBibleSummary =
+            reconciled.conflictWithHydrated.snapshot.storyBible.genre.value ||
+            reconciled.conflictWithHydrated.snapshot.storyBible.setting.value ||
+            reconciled.conflictWithHydrated.snapshot.originalIdea.slice(0, 40);
+          const localBibleSummary =
+            reconciled.activeProject.snapshot.storyBible.genre.value ||
+            reconciled.activeProject.snapshot.storyBible.setting.value ||
+            reconciled.activeProject.snapshot.originalIdea.slice(0, 40);
           setStorageAlert({
             type: 'conflict',
             projectId: reconciled.activeProject.id,
-            message: `Storage hydration conflict: IndexedDB holds revision #${reconciled.conflictWithHydrated.revision} while this tab has revision #${reconciled.activeProject.revision}. Choose whether to reload the latest version from storage or keep your current version.`,
+            message: `Storage hydration conflict: IndexedDB holds revision #${reconciled.conflictWithHydrated.revision} ("${idbBibleSummary}") while this tab has revision #${reconciled.activeProject.revision} ("${localBibleSummary}"). Both versions are preserved until you choose which to keep.`,
           });
         } else {
           const idbActive = idbProjects.find((p) => p.id === reconciled.activeProject.id);
@@ -265,7 +299,7 @@ function App() {
     };
   }, []);
 
-  // Persist active project atomically with CAS revision protection & authoritative acknowledgement (F-02 / IA-05)
+  // Persist active project via authoritative IndexedDB CAS with non-authoritative localStorage cache (FIX 3)
   useEffect(() => {
     if (storageAlert?.type === 'conflict' && storageAlert.projectId === activeProject.id) {
       return;
@@ -296,45 +330,51 @@ function App() {
             projectId: targetProject.id,
             message:
               res.error ??
-              'Storage conflict: a newer project revision was saved in another tab.',
+              'Storage conflict: a newer or divergent project revision exists in durable storage.',
           });
           return;
         }
-        if (res.quotaExceeded) {
+        if (!res.saved) {
           setStorageAlert({
-            type: 'quota',
+            type: res.quotaExceeded ? 'quota' : 'error',
             projectId: targetProject.id,
             message:
               res.error ??
-              'Browser storage quota reached. Export a JSON backup or remove older image outputs to free space.',
-          });
-        } else if (!res.saved && res.error) {
-          setStorageAlert({
-            type: 'error',
-            projectId: targetProject.id,
-            message: res.error,
+              'Durable save failed. Export a JSON backup to prevent data loss.',
           });
           return;
         }
 
-        if (res.saved) {
-          const ackRevision = res.persistedRevision ?? targetProject.revision;
-          setProject((prev) =>
-            prev.id === targetProject.id && prev.persistedRevision !== ackRevision
-              ? { ...prev, persistedRevision: ackRevision }
-              : prev
-          );
-          setSavedProjects((prev) => {
-            if (getDeletedProjectIds().has(targetProject.id)) {
-              return prev.filter((p) => p.id !== targetProject.id);
-            }
-            const synced = { ...targetProject, persistedRevision: ackRevision };
-            const idx = prev.findIndex((p) => p.id === synced.id);
-            if (idx === -1) return [synced, ...prev];
-            const copy = [...prev];
-            copy[idx] = synced;
-            return copy;
-          });
+        // Authoritative store succeeded (`res.saved === true`)
+        const ackRevision = res.persistedRevision ?? targetProject.revision;
+        setProject((prev) =>
+          prev.id === targetProject.id && prev.persistedRevision !== ackRevision
+            ? { ...prev, persistedRevision: ackRevision }
+            : prev
+        );
+        setSavedProjects((prev) => {
+          if (getDeletedProjectIds().has(targetProject.id)) {
+            return prev.filter((p) => p.id !== targetProject.id);
+          }
+          const synced = { ...targetProject, persistedRevision: ackRevision };
+          const idx = prev.findIndex((p) => p.id === synced.id);
+          if (idx === -1) return [synced, ...prev];
+          const copy = [...prev];
+          copy[idx] = synced;
+          return copy;
+        });
+
+        if (res.quotaExceeded || res.cacheSynced === false) {
+          if (res.cacheWarning || res.error) {
+            setStorageAlert({
+              type: res.quotaExceeded ? 'quota' : 'error',
+              projectId: targetProject.id,
+              message:
+                res.cacheWarning ??
+                res.error ??
+                'Saved to authoritative IndexedDB, but localStorage cache could not be updated.',
+            });
+          }
         }
       });
     }, 250);
@@ -1091,16 +1131,73 @@ function App() {
 
   // --- Persistence, Conflict Resolution, History & Export/Import Handlers ---
 
-  const handleReloadLatestFromStorage = () => {
-    void reloadLatestProjectsFromStorage(activeProjectRef.current.id).then((latest) => {
-      setSavedProjects(latest.projects);
-      setProject(latest.activeProject);
-      setUndoState(latest.activeUndoState);
-      setStorageAlert(null);
-      setStatusNotification(
-        `Reloaded revision #${latest.activeProject.revision} from storage.`
-      );
-    });
+  const handleReloadLatestFromStorage = (resolution?: 'prefer-idb' | 'prefer-local') => {
+    const originId = activeProjectRef.current.id;
+    const originRevision = activeProjectRef.current.revision;
+    const originSnapshot = activeProjectRef.current.snapshot;
+
+    void reloadLatestProjectsFromStorage(originId, resolution ? { resolution } : undefined).then(
+      (latest) => {
+        // FIX 2: Prevent stale asynchronous reloads from overwriting newer in-memory edits
+        if (
+          activeProjectRef.current.id !== originId ||
+          activeProjectRef.current.revision !== originRevision ||
+          activeProjectRef.current.snapshot !== originSnapshot
+        ) {
+          setStorageAlert({
+            type: 'conflict',
+            projectId: activeProjectRef.current.id,
+            message:
+              'Newer in-memory edits were made while reloading from storage. Your in-memory edits were preserved.',
+          });
+          return;
+        }
+
+        if (latest.idbStatus === 'read_error') {
+          setStorageAlert({
+            type: 'error',
+            projectId: originId,
+            message: `Could not reload from IndexedDB (${latest.idbError ?? 'read failure'}). Existing records were not overwritten.`,
+          });
+          return;
+        }
+
+        if (latest.conflictDetected && latest.conflictProject) {
+          const idbBibleSummary =
+            latest.conflictProject.snapshot.storyBible.genre.value ||
+            latest.conflictProject.snapshot.storyBible.setting.value ||
+            latest.conflictProject.snapshot.originalIdea.slice(0, 40);
+          const localBibleSummary =
+            latest.activeProject.snapshot.storyBible.genre.value ||
+            latest.activeProject.snapshot.storyBible.setting.value ||
+            latest.activeProject.snapshot.originalIdea.slice(0, 40);
+          setSavedProjects(latest.projects);
+          setStorageAlert({
+            type: 'conflict',
+            projectId: latest.activeProject.id,
+            message: `Conflicting versions detected at revision #${latest.conflictProject.revision}: IndexedDB has "${idbBibleSummary}" while localStorage has "${localBibleSummary}". Both versions remain recoverable.`,
+          });
+          return;
+        }
+
+        setSavedProjects(latest.projects);
+        setProject(latest.activeProject);
+        setUndoState(latest.activeUndoState);
+
+        if (latest.persisted === false && latest.persistenceWarning) {
+          setStorageAlert({
+            type: 'error',
+            projectId: latest.activeProject.id,
+            message: `Reloaded revision #${latest.activeProject.revision} in memory, but storage synchronization reported: ${latest.persistenceWarning}`,
+          });
+        } else {
+          setStorageAlert(null);
+          setStatusNotification(
+            `Reloaded revision #${latest.activeProject.revision} from storage.`
+          );
+        }
+      }
+    );
   };
 
   const handleForceOverwriteStorage = () => {
@@ -1168,7 +1265,7 @@ function App() {
     const sample = createSampleProject();
     hasLocalEditsSinceMountRef.current = true;
     setProject(sample);
-    setUndoState(createUndoRedoState(sample.snapshot, sample.revisions));
+    setUndoState(createUndoRedoState(sample.snapshot, sample.revisions, sample.undoHistory));
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
     setStorageAlert(null);
@@ -1180,7 +1277,7 @@ function App() {
     const target = savedProjects.find((p) => p.id === projectId);
     if (!target) return;
     setProject(target);
-    setUndoState(createUndoRedoState(target.snapshot, target.revisions));
+    setUndoState(createUndoRedoState(target.snapshot, target.revisions, target.undoHistory));
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
     setStorageAlert(null);
@@ -1225,7 +1322,7 @@ function App() {
     };
     hasLocalEditsSinceMountRef.current = true;
     setProject(newProj);
-    setUndoState(createUndoRedoState(newSnap, newProj.revisions));
+    setUndoState(createUndoRedoState(newSnap, newProj.revisions, newProj.undoHistory));
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
     setStorageAlert(null);
@@ -1274,7 +1371,13 @@ function App() {
       if (activeProjectRef.current.id === projectId && delRes.remaining.length > 0) {
         const replacement = delRes.remaining[0];
         setProject(replacement);
-        setUndoState(createUndoRedoState(replacement.snapshot, replacement.revisions));
+        setUndoState(
+          createUndoRedoState(
+            replacement.snapshot,
+            replacement.revisions,
+            replacement.undoHistory
+          )
+        );
         setSelectedEntityId(null);
         setSelectedRelationshipId(null);
       }
@@ -1318,7 +1421,9 @@ function App() {
       const migrated = migrateProjectPayload(parsed);
       hasLocalEditsSinceMountRef.current = true;
       setProject(migrated);
-      setUndoState(createUndoRedoState(migrated.snapshot, migrated.revisions));
+      setUndoState(
+        createUndoRedoState(migrated.snapshot, migrated.revisions, migrated.undoHistory)
+      );
       setSelectedEntityId(null);
       setSelectedRelationshipId(null);
       void persistProjectDurably(migrated, {
@@ -1454,7 +1559,7 @@ function App() {
               <>
                 <button
                   type="button"
-                  onClick={handleReloadLatestFromStorage}
+                  onClick={() => handleReloadLatestFromStorage('prefer-idb')}
                   className="px-2.5 py-1 rounded font-semibold bg-amber-700 hover:bg-amber-800 text-white"
                 >
                   Reload Latest from Storage

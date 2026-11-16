@@ -729,19 +729,33 @@ export function syncStoryBibleWithSceneEntity(snapshot: ProjectSnapshot): Projec
       if (!mappedField) continue;
       const bibleEntry = next.storyBible[mappedField];
       const attrVal = attr.confirmedValue ?? attr.value[0]?.name ?? '';
-      if (attr.status === 'confirmed' && attrVal) {
+      const attrUpdatedAt = attr.updatedAt ?? 0;
+      const bibleIsNewerConfirmed =
+        bibleEntry.status === 'confirmed' &&
+        Boolean(bibleEntry.value.trim()) &&
+        bibleEntry.updatedAt > attrUpdatedAt;
+
+      if (bibleIsNewerConfirmed) {
+        attr.confirmedValue = bibleEntry.value;
+        attr.status = 'confirmed';
+        attr.provenance = bibleEntry.provenance;
+        attr.updatedAt = bibleEntry.updatedAt;
+        if (!attr.value.some((v) => v.name === bibleEntry.value)) {
+          attr.value = [{ name: bibleEntry.value }, ...attr.value];
+        }
+      } else if (attr.status === 'confirmed' && attrVal) {
         next.storyBible[mappedField] = {
           value: attrVal,
           status: 'confirmed',
           provenance: attr.provenance ?? 'user-edit',
-          updatedAt: now,
+          updatedAt: attrUpdatedAt || bibleEntry.updatedAt || now,
         };
       } else if (!bibleEntry.value && attrVal) {
         next.storyBible[mappedField] = {
           value: attrVal,
           status: attr.status ?? 'pending',
           provenance: attr.provenance ?? 'ai-inferred',
-          updatedAt: now,
+          updatedAt: attrUpdatedAt || bibleEntry.updatedAt || now,
         };
       }
     }

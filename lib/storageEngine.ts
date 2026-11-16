@@ -43,6 +43,22 @@ export interface StorageSaveResult {
   quotaExceeded?: boolean;
   storedProject?: CreativeProject;
   persistedRevision?: number;
+  authoritativeStore?: 'indexeddb' | 'localstorage';
+  idbSaved?: boolean;
+  localSaved?: boolean;
+  cacheSynced?: boolean;
+  cacheWarning?: string;
+  error?: string;
+}
+
+export type IndexedDbLoadStatus = 'ok' | 'empty' | 'unavailable' | 'read_error';
+
+export interface IndexedDbLoadResult {
+  ok: boolean;
+  status: IndexedDbLoadStatus;
+  projects: CreativeProject[];
+  corruptRecordCount: number;
+  corruptRecordErrors: string[];
   error?: string;
 }
 
@@ -204,6 +220,13 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
                 snapshot: structuredClone(snapshot),
               },
             ],
+      undoHistory:
+        obj.undoHistory &&
+        typeof obj.undoHistory === 'object' &&
+        Array.isArray((obj.undoHistory as { past?: unknown }).past) &&
+        Array.isArray((obj.undoHistory as { future?: unknown }).future)
+          ? (obj.undoHistory as CreativeProject['undoHistory'])
+          : undefined,
     };
   }
 
@@ -534,50 +557,124 @@ export function exportStoryBibleMarkdown(project: CreativeProject): string {
 
 export function getDeletedProjectIds(): Set<string> {
   const combined = new Set<string>(deletedProjectIdsMemorySet);
-  if (typeof window === 'undefined' || !window.localStorage) return combined;
-  try {
-    const raw = window.localStorage.getItem(LOCAL_STORAGE_DELETED_IDS_KEY);
-    if (!raw) return combined;
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      for (const id of parsed) {
-        if (typeof id === 'string') {
-          combined.add(id);
-          deletedProjectIdsMemorySet.add(id);
+  if (typeof window === 'undefined') return combined;
+
+  const readFromStorage = (storage: Storage | undefined) => {
+    if (!storage) return;
+    try {
+      const raw = storage.getItem(LOCAL_STORAGE_DELETED_IDS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          if (typeof id === 'string') {
+            combined.add(id);
+            deletedProjectIdsMemorySet.add(id);
+          }
         }
       }
+    } catch {
+      // Ignore storage read error
     }
-    return combined;
-  } catch {
-    return combined;
-  }
+  };
+
+  readFromStorage(window.localStorage);
+  readFromStorage(window.sessionStorage);
+  return combined;
 }
 
-export function recordDeletedProjectId(projectId: string): void {
+export function recordDeletedProjectId(projectId: string): boolean {
   deletedProjectIdsMemorySet.add(projectId);
-  if (typeof window === 'undefined' || !window.localStorage) return;
+  if (typeof window === 'undefined') return false;
+
+  const set = getDeletedProjectIds();
+  set.add(projectId);
+  const serialized = JSON.stringify(Array.from(set).slice(-200));
+
   try {
-    const set = getDeletedProjectIds();
-    set.add(projectId);
-    const list = Array.from(set).slice(-200);
-    window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, JSON.stringify(list));
+    window.sessionStorage?.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
   } catch {
-    // In-memory tombstone remains authoritative even if localStorage is full
+    // Ignore sessionStorage error
+  }
+
+  if (!window.localStorage) return false;
+
+  try {
+    window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
+    return true;
+  } catch {
+    // LocalStorage is at quota: compact non-authoritative localStorage cache so the small deletion tombstone can be durably persisted
+    try {
+      window.localStorage.removeItem(LOCAL_STORAGE_BACKUP_V2_KEY);
+      window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
+      return true;
+    } catch {
+      // Continue compaction
+    }
+
+    try {
+      const rawProjects = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
+      if (rawProjects) {
+        const parsed = JSON.parse(rawProjects) as Record<string, CreativeProject>;
+        delete parsed[projectId];
+        const compacted: Record<string, CreativeProject> = {};
+        for (const [id, proj] of Object.entries(parsed)) {
+          if (proj && typeof proj === 'object') {
+            compacted[id] = {
+              ...proj,
+              artifacts: [],
+              revisions: Array.isArray(proj.revisions) ? proj.revisions.slice(0, 1) : [],
+              undoHistory: undefined,
+            };
+          }
+        }
+        try {
+          window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(compacted));
+          window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
+          return true;
+        } catch {
+          // If even compacted cache exceeds localStorage quota and IndexedDB is available, evict the non-authoritative cache key to guarantee tombstone durability
+          const hasIdb = 'indexedDB' in window && Boolean(window.indexedDB);
+          if (hasIdb) {
+            window.localStorage.removeItem(LOCAL_STORAGE_PROJECTS_KEY);
+            window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
+            return true;
+          }
+        }
+      }
+    } catch {
+      // In-memory and sessionStorage tombstones remain active
+    }
+    return false;
   }
 }
 
 export function clearDeletedProjectId(projectId: string): void {
   deletedProjectIdsMemorySet.delete(projectId);
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    const raw = window.localStorage.getItem(LOCAL_STORAGE_DELETED_IDS_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    const list = Array.isArray(parsed)
-      ? parsed.filter((id): id is string => typeof id === 'string' && id !== projectId)
-      : [];
-    window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, JSON.stringify(list));
-  } catch {
-    // Ignore storage error
+  if (typeof window === 'undefined') return;
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    if (!storage) continue;
+    try {
+      const raw = storage.getItem(LOCAL_STORAGE_DELETED_IDS_KEY);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+      const list = Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === 'string' && id !== projectId)
+        : [];
+      storage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, JSON.stringify(list));
+    } catch {
+      // Ignore storage error
+    }
+  }
+}
+
+export function simulateBrowserProcessRestartForTesting(): void {
+  deletedProjectIdsMemorySet.clear();
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    try {
+      window.sessionStorage.removeItem(LOCAL_STORAGE_DELETED_IDS_KEY);
+    } catch {
+      // Ignore sessionStorage error
+    }
   }
 }
 
@@ -637,16 +734,26 @@ function evaluateCasConflict(params: {
   if (
     baseRev !== undefined &&
     existingRev === baseRev &&
-    candidateRev === baseRev &&
-    existing.updatedAt > candidate.updatedAt
+    candidateRev === baseRev
   ) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: migrateProjectPayload(existing),
-      error: 'A newer version of this project was saved in another browser tab.',
-    };
+    if (!isSnapshotSemanticallyEqual(existing.snapshot, candidate.snapshot)) {
+      return {
+        ok: false,
+        saved: false,
+        conflictDetected: true,
+        storedProject: migrateProjectPayload(existing),
+        error: `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with a divergent snapshot.`,
+      };
+    }
+    if (existing.updatedAt > candidate.updatedAt) {
+      return {
+        ok: false,
+        saved: false,
+        conflictDetected: true,
+        storedProject: migrateProjectPayload(existing),
+        error: 'A newer version of this project was saved in another browser tab.',
+      };
+    }
   }
 
   return null;
@@ -718,16 +825,22 @@ export function saveProjectToLocalStorage(
     try {
       window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
     } catch (quotaErr) {
+      const isQuota =
+        (quotaErr instanceof Error &&
+          (quotaErr.name === 'QuotaExceededError' || /quota/i.test(quotaErr.message))) ||
+        false;
       // Never silently delete or strip user media on quota errors (AC15, F12).
       return {
         ok: false,
         saved: false,
-        quotaExceeded: true,
+        quotaExceeded: isQuota,
         persistedRevision: project.persistedRevision,
         error:
           quotaErr instanceof Error && quotaErr.message
-            ? `Browser localStorage quota exceeded (${quotaErr.message}). Full project media remains intact in memory and IndexedDB. Export JSON or remove older image outputs to free space.`
-            : 'Browser localStorage quota exceeded. Full project media remains intact in memory and IndexedDB.',
+            ? isQuota
+              ? `Browser localStorage quota exceeded (${quotaErr.message}). Full project media remains intact in memory and IndexedDB. Export JSON or remove older image outputs to free space.`
+              : quotaErr.message
+            : 'Browser localStorage write failed.',
       };
     }
 
@@ -746,25 +859,33 @@ export function saveProjectToLocalStorage(
   }
 }
 
-export function loadProjectsFromLocalStorage(): {
+export function loadProjectsFromLocalStorage(options?: {
+  skipAutoSeedIfEmpty?: boolean;
+}): {
   projects: CreativeProject[];
   activeProjectId: string | null;
 } {
   if (typeof window === 'undefined' || !window.localStorage) {
     deletedProjectIdsMemorySet.clear();
+    if (options?.skipAutoSeedIfEmpty) {
+      return { projects: [], activeProjectId: null };
+    }
     const sample = createSampleProject();
     return { projects: [sample], activeProjectId: sample.id };
   }
 
   try {
     const rawDeleted = window.localStorage.getItem(LOCAL_STORAGE_DELETED_IDS_KEY);
-    if (!rawDeleted) {
+    const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
+    const activeId = window.localStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY);
+    if (!rawDeleted && !raw && !activeId) {
       deletedProjectIdsMemorySet.clear();
     }
     const deletedIds = getDeletedProjectIds();
-    const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
-    const activeId = window.localStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY);
     if (!raw) {
+      if (options?.skipAutoSeedIfEmpty) {
+        return { projects: [], activeProjectId: activeId };
+      }
       const sample = createSampleProject();
       saveProjectToLocalStorage(sample, undefined, { forceOverwrite: true, allowDeleted: true });
       return { projects: [sample], activeProjectId: sample.id };
@@ -804,6 +925,9 @@ export function loadProjectsFromLocalStorage(): {
     }
 
     if (projects.length === 0) {
+      if (options?.skipAutoSeedIfEmpty) {
+        return { projects: [], activeProjectId: activeId };
+      }
       const sample = createSampleProject();
       saveProjectToLocalStorage(sample, undefined, { forceOverwrite: true, allowDeleted: true });
       return { projects: [sample], activeProjectId: sample.id };
@@ -814,6 +938,9 @@ export function loadProjectsFromLocalStorage(): {
       activeId && projects.some((p) => p.id === activeId) ? activeId : projects[0].id;
     return { projects, activeProjectId: resolvedActiveId };
   } catch {
+    if (options?.skipAutoSeedIfEmpty) {
+      return { projects: [], activeProjectId: null };
+    }
     const sample = createSampleProject();
     return { projects: [sample], activeProjectId: sample.id };
   }
@@ -831,7 +958,11 @@ export function deleteProjectFromLocalStorage(projectId: string): CreativeProjec
     const map = JSON.parse(raw) as Record<string, CreativeProject>;
     delete map[projectId];
     // Write the smaller projects map first so freeing space allows tombstone persistence even near quota
-    window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
+    try {
+      window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
+    } catch {
+      // Quota compaction handled in recordDeletedProjectId below
+    }
     recordDeletedProjectId(projectId);
 
     const deletedIds = getDeletedProjectIds();
@@ -842,14 +973,22 @@ export function deleteProjectFromLocalStorage(projectId: string): CreativeProjec
       const sample = createSampleProject();
       clearDeletedProjectId(sample.id);
       map[sample.id] = sample;
-      window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
-      window.localStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, sample.id);
+      try {
+        window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
+        window.localStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, sample.id);
+      } catch {
+        // Ignore quota error on fallback sample write
+      }
       return [sample];
     }
     const sorted = remaining.sort((a, b) => b.updatedAt - a.updatedAt);
     const currentActiveId = window.localStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY);
     if (currentActiveId === projectId) {
-      window.localStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, sorted[0].id);
+      try {
+        window.localStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, sorted[0].id);
+      } catch {
+        // Ignore quota error on active ID update
+      }
     }
     return sorted;
   } catch {
@@ -957,10 +1096,11 @@ export async function deleteProjectFromIndexedDb(
 export async function deleteProjectCompletely(projectId: string): Promise<{
   remaining: CreativeProject[];
   idbDeleted: boolean;
+  tombstonePersisted?: boolean;
   error?: string;
 }> {
-  recordDeletedProjectId(projectId);
   const remaining = deleteProjectFromLocalStorage(projectId);
+  const tombstonePersisted = recordDeletedProjectId(projectId);
   const idbRes = await deleteProjectFromIndexedDb(projectId);
   // Never force-overwrite a surviving project's IndexedDB record with a potentially
   // older localStorage copy. The active-project autosave will persist any newly
@@ -969,6 +1109,7 @@ export async function deleteProjectCompletely(projectId: string): Promise<{
   return {
     remaining,
     idbDeleted: idbRes.ok,
+    tombstonePersisted,
     error: idbRes.error,
   };
 }
@@ -1208,11 +1349,13 @@ export async function saveProjectToIndexedDb(
 }
 
 /**
- * Atomically persists a project with revision-based Compare-And-Swap (CAS) protection.
- * Does not report `saved: true` until the authoritative durable store succeeds:
- * - When IndexedDB is available, IndexedDB is the authoritative durable store (holding full snapshots,
- *   revision history, and media artifacts); localStorage is updated only after IndexedDB succeeds.
- * - Pre-checks localStorage CAS before mutating either store so cross-tab conflicts are caught cleanly.
+ * Persists a project with revision-based Compare-And-Swap (CAS) protection.
+ * Persistence contract:
+ * - When IndexedDB is available, IndexedDB is the single authoritative durable store (holding full snapshots,
+ *   revision history, Undo/Redo history, and media artifacts) using an atomic read-check-put IndexedDB transaction.
+ * - localStorage is treated strictly as a non-authoritative fast-hydration cache and legacy compatibility layer.
+ * - A localStorage cache failure or stale localStorage entry never invalidates an already-committed IndexedDB write;
+ *   instead, `saved: true` is returned alongside `cacheSynced: false` and `cacheWarning`.
  * - When IndexedDB is unavailable in the environment, falls back to localStorage as the durable store.
  */
 export async function persistProjectDurably(
@@ -1250,29 +1393,6 @@ export async function persistProjectDurably(
   const hasIndexedDb =
     typeof window !== 'undefined' && 'indexedDB' in window && Boolean(window.indexedDB);
 
-  // Pre-check localStorage CAS without mutating localStorage before the authoritative IDB write
-  if (!normalizedForce && hasLocalStorage) {
-    try {
-      const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
-      if (raw) {
-        const map = JSON.parse(raw) as Record<string, CreativeProject>;
-        const existingLocal = map[project.id];
-        const preConflict = evaluateCasConflict({
-          existing: existingLocal,
-          candidate: project,
-          rawExpected,
-          forceOverwrite: false,
-          storeLabel: 'localStorage',
-        });
-        if (preConflict) {
-          return preConflict;
-        }
-      }
-    } catch {
-      // Ignore malformed localStorage during pre-check; authoritative IDB check follows
-    }
-  }
-
   if (hasIndexedDb) {
     const idbRes = await saveProjectToIndexedDb(project, {
       expectedPersistedRevision: rawExpected,
@@ -1281,7 +1401,11 @@ export async function persistProjectDurably(
     });
 
     if (!idbRes.saved) {
-      return idbRes;
+      return {
+        ...idbRes,
+        authoritativeStore: 'indexeddb',
+        idbSaved: false,
+      };
     }
 
     if (!allowDeleted && getDeletedProjectIds().has(project.id)) {
@@ -1289,48 +1413,108 @@ export async function persistProjectDurably(
       return {
         ok: false,
         saved: false,
+        authoritativeStore: 'indexeddb',
+        idbSaved: false,
         error: `Project "${project.id}" was deleted during persistence.`,
       };
     }
 
+    const committedRevision = idbRes.persistedRevision ?? (project.revision ?? 1);
+
     if (hasLocalStorage) {
-      const localRes = saveProjectToLocalStorage(project, {
-        expectedPersistedRevision: rawExpected,
-        forceOverwrite: normalizedForce,
-        allowDeleted,
-      });
-      if (!localRes.saved && localRes.conflictDetected) {
-        return localRes;
-      }
-      if (!localRes.saved && localRes.quotaExceeded) {
+      // Synchronize non-authoritative localStorage cache with the authoritative IndexedDB state
+      const localRes = saveProjectToLocalStorage(
+        {
+          ...project,
+          revision: committedRevision,
+          persistedRevision: committedRevision,
+        },
+        {
+          forceOverwrite: true,
+          allowDeleted,
+        }
+      );
+
+      if (!localRes.saved) {
         return {
           ok: true,
           saved: true,
-          quotaExceeded: true,
-          persistedRevision: idbRes.persistedRevision ?? (project.revision ?? 1),
+          authoritativeStore: 'indexeddb',
+          idbSaved: true,
+          localSaved: false,
+          cacheSynced: false,
+          quotaExceeded: Boolean(localRes.quotaExceeded),
+          cacheWarning:
+            localRes.error ??
+            'Authoritative IndexedDB save succeeded, but localStorage cache synchronization failed.',
+          persistedRevision: committedRevision,
           error: localRes.error,
         };
       }
+
+      return {
+        ok: true,
+        saved: true,
+        authoritativeStore: 'indexeddb',
+        idbSaved: true,
+        localSaved: true,
+        cacheSynced: true,
+        persistedRevision: committedRevision,
+      };
     }
 
     return {
       ok: true,
       saved: true,
-      persistedRevision: idbRes.persistedRevision ?? (project.revision ?? 1),
+      authoritativeStore: 'indexeddb',
+      idbSaved: true,
+      localSaved: false,
+      cacheSynced: false,
+      persistedRevision: committedRevision,
     };
   }
 
-  return saveProjectToLocalStorage(project, {
+  const fallbackRes = saveProjectToLocalStorage(project, {
     expectedPersistedRevision: rawExpected,
     forceOverwrite: normalizedForce,
     allowDeleted,
   });
+  return {
+    ...fallbackRes,
+    authoritativeStore: 'localstorage',
+    idbSaved: false,
+    localSaved: Boolean(fallbackRes.saved),
+    cacheSynced: Boolean(fallbackRes.saved),
+  };
 }
 
-export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
-  if (typeof window === 'undefined' || !('indexedDB' in window) || !window.indexedDB) return [];
+/**
+ * Loads projects from IndexedDB with explicit status differentiation so callers can distinguish:
+ * - `'ok'`: 1 or more valid records loaded
+ * - `'empty'`: database opened and read cleanly, 0 non-deleted valid records exist
+ * - `'unavailable'`: IndexedDB API is not supported/present in this environment
+ * - `'read_error'`: IndexedDB open, transaction, or getAll request failed (must NEVER be treated as empty storage)
+ */
+export async function loadProjectsFromIndexedDbDetailed(): Promise<IndexedDbLoadResult> {
+  if (typeof window === 'undefined' || !('indexedDB' in window) || !window.indexedDB) {
+    return {
+      ok: false,
+      status: 'unavailable',
+      projects: [],
+      corruptRecordCount: 0,
+      corruptRecordErrors: [],
+      error: 'IndexedDB is unavailable in this environment.',
+    };
+  }
   const deletedIds = getDeletedProjectIds();
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (res: IndexedDbLoadResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(res);
+    };
+
     try {
       const req = window.indexedDB.open(IDB_NAME, 1);
       req.onupgradeneeded = () => {
@@ -1348,14 +1532,20 @@ export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
           allReq.onsuccess = () => {
             const rawList = Array.isArray(allReq.result) ? allReq.result : [];
             const migrated: CreativeProject[] = [];
+            let corruptRecordCount = 0;
+            const corruptRecordErrors: string[] = [];
+
             for (const item of rawList) {
               try {
                 const p = migrateProjectPayload(item);
                 if (!deletedIds.has(p.id)) {
                   migrated.push(p);
                 }
-              } catch {
-                // Ignore malformed record
+              } catch (migErr) {
+                corruptRecordCount += 1;
+                corruptRecordErrors.push(
+                  migErr instanceof Error ? migErr.message : 'Corrupt or unsupported project record.'
+                );
               }
             }
             try {
@@ -1363,30 +1553,105 @@ export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
             } catch {
               // Ignore close error
             }
-            resolve(migrated.sort((a, b) => b.updatedAt - a.updatedAt));
+            const sorted = migrated.sort((a, b) => b.updatedAt - a.updatedAt);
+            finish({
+              ok: true,
+              status: sorted.length > 0 ? 'ok' : 'empty',
+              projects: sorted,
+              corruptRecordCount,
+              corruptRecordErrors,
+            });
           };
           allReq.onerror = () => {
+            const errMsg =
+              allReq.error?.message ?? tx.error?.message ?? 'IndexedDB getAll read failed.';
             try {
               db.close();
             } catch {
               // Ignore close error
             }
-            resolve([]);
+            finish({
+              ok: false,
+              status: 'read_error',
+              projects: [],
+              corruptRecordCount: 0,
+              corruptRecordErrors: [],
+              error: errMsg,
+            });
           };
-        } catch {
+          tx.onerror = () => {
+            const errMsg = tx.error?.message ?? 'IndexedDB read transaction failed.';
+            try {
+              db.close();
+            } catch {
+              // Ignore close error
+            }
+            finish({
+              ok: false,
+              status: 'read_error',
+              projects: [],
+              corruptRecordCount: 0,
+              corruptRecordErrors: [],
+              error: errMsg,
+            });
+          };
+          tx.onabort = () => {
+            const errMsg = tx.error?.message ?? 'IndexedDB read transaction aborted.';
+            try {
+              db.close();
+            } catch {
+              // Ignore close error
+            }
+            finish({
+              ok: false,
+              status: 'read_error',
+              projects: [],
+              corruptRecordCount: 0,
+              corruptRecordErrors: [],
+              error: errMsg,
+            });
+          };
+        } catch (txErr) {
           try {
             db.close();
           } catch {
             // Ignore close error
           }
-          resolve([]);
+          finish({
+            ok: false,
+            status: 'read_error',
+            projects: [],
+            corruptRecordCount: 0,
+            corruptRecordErrors: [],
+            error: txErr instanceof Error ? txErr.message : 'IndexedDB read transaction exception.',
+          });
         }
       };
-      req.onerror = () => resolve([]);
-    } catch {
-      resolve([]);
+      req.onerror = () =>
+        finish({
+          ok: false,
+          status: 'read_error',
+          projects: [],
+          corruptRecordCount: 0,
+          corruptRecordErrors: [],
+          error: req.error?.message ?? 'Failed to open IndexedDB for reading.',
+        });
+    } catch (err) {
+      finish({
+        ok: false,
+        status: 'read_error',
+        projects: [],
+        corruptRecordCount: 0,
+        corruptRecordErrors: [],
+        error: err instanceof Error ? err.message : 'IndexedDB read exception.',
+      });
     }
   });
+}
+
+export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
+  const res = await loadProjectsFromIndexedDbDetailed();
+  return res.projects;
 }
 
 function isAutoSeededUntouchedSample(project: CreativeProject): boolean {
@@ -1452,8 +1717,14 @@ export function reconcileHydratedProjects(params: {
 
   if (validIdb.length === 0) {
     const reconstructedUndo =
-      activeUndoState.past.length === 0 && activeProject.revisions.length > 1
-        ? createUndoRedoState(activeProject.snapshot, activeProject.revisions)
+      activeUndoState.past.length === 0 &&
+      activeUndoState.future.length === 0 &&
+      (activeProject.revisions.length > 1 || Boolean(activeProject.undoHistory))
+        ? createUndoRedoState(
+            activeProject.snapshot,
+            activeProject.revisions,
+            activeProject.undoHistory
+          )
         : activeUndoState;
     return {
       savedProjects: validLocal,
@@ -1498,26 +1769,26 @@ export function reconcileHydratedProjects(params: {
     if (idbRev > localRev) {
       if (!ignoreDivergenceConflict && !hasRevisionLineage(ip, lp)) {
         divergenceConflictsById.set(ip.id, normalizedIp);
+      } else {
+        // IndexedDB has a strictly newer revision on the same lineage: adopt the ENTIRE IndexedDB project atomically
+        mergedById.set(ip.id, normalizedIp);
       }
-      // IndexedDB has a strictly newer revision: adopt the ENTIRE IndexedDB project atomically
-      mergedById.set(ip.id, normalizedIp);
     } else if (idbRev === localRev) {
       const sameSnapshot = isSnapshotSemanticallyEqual(lp.snapshot, ip.snapshot);
       if (!sameSnapshot && !ignoreDivergenceConflict) {
+        // Divergent creative decisions at the same revision: preserve local in mergedById and surface IDB as conflict
         divergenceConflictsById.set(ip.id, normalizedIp);
-        // Preserve local active branch until user resolves conflict, unless IDB has newer timestamp on reload
-        if (ip.updatedAt > lp.updatedAt) {
-          mergedById.set(ip.id, normalizedIp);
-        }
       } else {
         // Choose a single complete winning record without splicing snapshots and revisions across stores
         const preferIdb =
           ip.artifacts.length > lp.artifacts.length ||
           ip.revisions.length > lp.revisions.length ||
+          Boolean(ip.undoHistory && !lp.undoHistory) ||
           ip.updatedAt >= lp.updatedAt;
         const winner = preferIdb ? normalizedIp : lp;
         mergedById.set(ip.id, {
           ...winner,
+          undoHistory: winner.undoHistory ?? ip.undoHistory ?? lp.undoHistory,
           persistedRevision: Math.max(
             ip.persistedRevision ?? idbRev,
             lp.persistedRevision ?? localRev
@@ -1552,7 +1823,11 @@ export function reconcileHydratedProjects(params: {
     return {
       savedProjects,
       activeProject: fallback,
-      activeUndoState: createUndoRedoState(fallback.snapshot, fallback.revisions),
+      activeUndoState: createUndoRedoState(
+        fallback.snapshot,
+        fallback.revisions,
+        fallback.undoHistory
+      ),
       upgradedFromIndexedDb: true,
       conflictWithHydrated: null,
     };
@@ -1597,8 +1872,14 @@ export function reconcileHydratedProjects(params: {
       savedProjects,
       activeProject,
       activeUndoState:
-        activeUndoState.past.length === 0 && activeProject.revisions.length > 1
-          ? createUndoRedoState(activeProject.snapshot, activeProject.revisions)
+        activeUndoState.past.length === 0 &&
+        activeUndoState.future.length === 0 &&
+        (activeProject.revisions.length > 1 || Boolean(activeProject.undoHistory))
+          ? createUndoRedoState(
+              activeProject.snapshot,
+              activeProject.revisions,
+              activeProject.undoHistory
+            )
           : activeUndoState,
       upgradedFromIndexedDb: false,
       conflictWithHydrated: divergenceConflict,
@@ -1619,7 +1900,8 @@ export function reconcileHydratedProjects(params: {
       activeProject: reconciledActiveCandidate,
       activeUndoState: createUndoRedoState(
         reconciledActiveCandidate.snapshot,
-        reconciledActiveCandidate.revisions
+        reconciledActiveCandidate.revisions,
+        reconciledActiveCandidate.undoHistory
       ),
       upgradedFromIndexedDb: true,
       conflictWithHydrated: null,
@@ -1627,10 +1909,14 @@ export function reconcileHydratedProjects(params: {
   }
 
   const finalUndoState =
-    activeUndoState.past.length === 0 && reconciledActiveCandidate.revisions.length > 1
+    activeUndoState.past.length === 0 &&
+    activeUndoState.future.length === 0 &&
+    (reconciledActiveCandidate.revisions.length > 1 ||
+      Boolean(reconciledActiveCandidate.undoHistory))
       ? createUndoRedoState(
           reconciledActiveCandidate.snapshot,
-          reconciledActiveCandidate.revisions
+          reconciledActiveCandidate.revisions,
+          reconciledActiveCandidate.undoHistory
         )
       : activeUndoState;
 
@@ -1645,56 +1931,140 @@ export function reconcileHydratedProjects(params: {
 
 /**
  * Reloads the truly latest valid projects across both IndexedDB and localStorage,
- * preserving complete snapshots, revisions, Undo/Redo history, and media artifacts.
+ * preserving complete snapshots, revisions, Undo/Redo history (including Redo future stack), and media artifacts.
+ *
+ * Non-destructive conflict & error contract (FIX 1 & FIX 2):
+ * - If IndexedDB fails to read (`idbStatus === 'read_error'`), never overwrites IndexedDB or seeds sample data over it.
+ * - If localStorage and IndexedDB hold divergent snapshots at the same revision or divergent lineages,
+ *   does NOT silently overwrite the losing branch unless `options.resolution` is explicitly provided;
+ *   returns `conflictDetected: true` with both `activeProject` (local) and `conflictProject` (IndexedDB) preserved.
+ * - Verifies persistence results before reporting `persisted: true`.
  */
 export async function reloadLatestProjectsFromStorage(
-  preferredActiveProjectId?: string | null
+  preferredActiveProjectId?: string | null,
+  options?: {
+    resolution?: 'prefer-idb' | 'prefer-local';
+  }
 ): Promise<{
   projects: CreativeProject[];
   activeProject: CreativeProject;
   activeUndoState: UndoRedoState;
   upgradedFromIndexedDb: boolean;
+  idbStatus: IndexedDbLoadStatus;
+  idbError?: string;
+  corruptRecordCount?: number;
+  conflictDetected?: boolean;
+  conflictProject?: CreativeProject | null;
+  alternateProject?: CreativeProject | null;
+  persisted?: boolean;
+  persistenceWarning?: string;
 }> {
-  const localData = loadProjectsFromLocalStorage();
-  const idbProjects = await loadProjectsFromIndexedDb();
+  const localData = loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true });
+  const idbLoad = await loadProjectsFromIndexedDbDetailed();
+  const idbProjects = idbLoad.projects;
   const targetId = preferredActiveProjectId ?? localData.activeProjectId;
 
-  const initialCandidate =
+  // FIX 1: On IndexedDB read failure, never seed or overwrite IndexedDB
+  if (idbLoad.status === 'read_error') {
+    const fallbackProjects =
+      localData.projects.length > 0 ? localData.projects : [createSampleProject()];
+    const activeFallback =
+      fallbackProjects.find((p) => p.id === targetId) ?? fallbackProjects[0];
+    return {
+      projects: fallbackProjects,
+      activeProject: activeFallback,
+      activeUndoState: createUndoRedoState(
+        activeFallback.snapshot,
+        activeFallback.revisions,
+        activeFallback.undoHistory
+      ),
+      upgradedFromIndexedDb: false,
+      idbStatus: 'read_error',
+      idbError: idbLoad.error,
+      corruptRecordCount: idbLoad.corruptRecordCount,
+      conflictDetected: false,
+      conflictProject: null,
+      persisted: false,
+      persistenceWarning: idbLoad.error,
+    };
+  }
+
+  let initialCandidate =
     localData.projects.find((p) => p.id === targetId) ??
     idbProjects.find((p) => p.id === targetId) ??
     localData.projects[0] ??
-    idbProjects[0] ??
-    createSampleProject();
+    idbProjects[0];
+
+  if (!initialCandidate) {
+    initialCandidate = createSampleProject();
+    saveProjectToLocalStorage(initialCandidate, undefined, {
+      forceOverwrite: true,
+      allowDeleted: true,
+    });
+  }
 
   const reconciled = reconcileHydratedProjects({
-    localProjects: localData.projects,
+    localProjects: localData.projects.length > 0 ? localData.projects : [initialCandidate],
     idbProjects,
     activeProject: initialCandidate,
     activeUndoState: createUndoRedoState(
       initialCandidate.snapshot,
-      initialCandidate.revisions
+      initialCandidate.revisions,
+      initialCandidate.undoHistory
     ),
     hasLocalEditsSinceMount: false,
-    ignoreDivergenceConflict: true,
+    ignoreDivergenceConflict: Boolean(options?.resolution),
   });
 
-  // Ensure that when local and IDB had same revision but different timestamps on explicit reload,
-  // the strictly latest version across both stores is chosen.
   const localMatch = localData.projects.find((p) => p.id === reconciled.activeProject.id);
   const idbMatch = idbProjects.find((p) => p.id === reconciled.activeProject.id);
+
+  // FIX 2: If a semantic divergence or lineage conflict exists and no explicit resolution was requested,
+  // preserve both stores intact without destructive overwrites.
+  if (reconciled.conflictWithHydrated && !options?.resolution) {
+    const preservedLocal = localMatch ?? reconciled.activeProject;
+    return {
+      projects: reconciled.savedProjects,
+      activeProject: preservedLocal,
+      activeUndoState: createUndoRedoState(
+        preservedLocal.snapshot,
+        preservedLocal.revisions,
+        preservedLocal.undoHistory
+      ),
+      upgradedFromIndexedDb: false,
+      idbStatus: idbLoad.status,
+      corruptRecordCount: idbLoad.corruptRecordCount,
+      conflictDetected: true,
+      conflictProject: reconciled.conflictWithHydrated,
+      alternateProject: preservedLocal,
+      persisted: false,
+    };
+  }
+
   let chosenActive = reconciled.activeProject;
   if (localMatch && idbMatch) {
     const idbRev = idbMatch.revision ?? 1;
     const localRev = localMatch.revision ?? 1;
-    if (idbRev > localRev) {
-      chosenActive = { ...idbMatch, persistedRevision: idbMatch.revision };
+    if (options?.resolution === 'prefer-idb') {
+      chosenActive = { ...idbMatch, persistedRevision: idbRev };
+    } else if (options?.resolution === 'prefer-local') {
+      chosenActive = { ...localMatch, persistedRevision: localRev };
+    } else if (idbRev > localRev) {
+      chosenActive = { ...idbMatch, persistedRevision: idbRev };
     } else if (localRev > idbRev) {
-      chosenActive = { ...localMatch, persistedRevision: localMatch.revision };
+      chosenActive = { ...localMatch, persistedRevision: localRev };
     } else {
-      chosenActive =
-        idbMatch.updatedAt >= localMatch.updatedAt
-          ? { ...idbMatch, persistedRevision: idbMatch.revision }
-          : { ...localMatch, persistedRevision: localMatch.revision };
+      const preferIdb =
+        idbMatch.artifacts.length > localMatch.artifacts.length ||
+        idbMatch.revisions.length > localMatch.revisions.length ||
+        Boolean(idbMatch.undoHistory && !localMatch.undoHistory) ||
+        idbMatch.updatedAt >= localMatch.updatedAt;
+      const winner = preferIdb ? idbMatch : localMatch;
+      chosenActive = {
+        ...winner,
+        undoHistory: winner.undoHistory ?? idbMatch.undoHistory ?? localMatch.undoHistory,
+        persistedRevision: idbRev,
+      };
     }
   }
 
@@ -1702,18 +2072,55 @@ export async function reloadLatestProjectsFromStorage(
     p.id === chosenActive.id ? chosenActive : p
   );
 
-  // Synchronize the winning record across both stores so any prior divergence between
-  // localStorage and IndexedDB is durably resolved upon explicit reload.
+  let persisted = false;
+  let persistenceWarning: string | undefined;
+
   if (!getDeletedProjectIds().has(chosenActive.id)) {
-    saveProjectToLocalStorage(chosenActive, { forceOverwrite: true });
-    await saveProjectToIndexedDb(chosenActive, { forceOverwrite: true });
+    const idbSave =
+      idbLoad.status !== 'unavailable'
+        ? await saveProjectToIndexedDb(chosenActive, { forceOverwrite: true })
+        : { ok: true, saved: true, persistedRevision: chosenActive.revision };
+    const localSave = saveProjectToLocalStorage(chosenActive, { forceOverwrite: true });
+
+    if (idbLoad.status !== 'unavailable') {
+      persisted = Boolean(idbSave.saved);
+      if (idbSave.saved && idbSave.persistedRevision !== undefined) {
+        chosenActive = {
+          ...chosenActive,
+          persistedRevision: idbSave.persistedRevision,
+        };
+      }
+      if (!idbSave.saved) {
+        persistenceWarning = idbSave.error ?? 'Failed to synchronize reloaded project to IndexedDB.';
+      } else if (!localSave.saved) {
+        persistenceWarning =
+          localSave.error ?? 'Synchronized to IndexedDB, but localStorage cache could not be updated.';
+      }
+    } else {
+      persisted = Boolean(localSave.saved);
+      if (!localSave.saved) {
+        persistenceWarning = localSave.error;
+      }
+    }
   }
 
   return {
-    projects: finalProjects,
+    projects: finalProjects.map((p) => (p.id === chosenActive.id ? chosenActive : p)),
     activeProject: chosenActive,
-    activeUndoState: createUndoRedoState(chosenActive.snapshot, chosenActive.revisions),
-    upgradedFromIndexedDb: reconciled.upgradedFromIndexedDb,
+    activeUndoState: createUndoRedoState(
+      chosenActive.snapshot,
+      chosenActive.revisions,
+      chosenActive.undoHistory
+    ),
+    upgradedFromIndexedDb:
+      reconciled.upgradedFromIndexedDb || options?.resolution === 'prefer-idb',
+    idbStatus: idbLoad.status,
+    corruptRecordCount: idbLoad.corruptRecordCount,
+    conflictDetected: false,
+    conflictProject: null,
+    persisted,
+    persistenceWarning,
   };
 }
+
 

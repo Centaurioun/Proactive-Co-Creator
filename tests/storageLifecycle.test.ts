@@ -24,6 +24,7 @@ import {
   clearDeletedProjectId,
   deleteProjectCompletely,
   loadProjectsFromIndexedDb,
+  loadProjectsFromIndexedDbDetailed,
   loadProjectsFromLocalStorage,
   migrateProjectPayload,
   persistProjectDurably,
@@ -31,6 +32,7 @@ import {
   reloadLatestProjectsFromStorage,
   saveProjectToIndexedDb,
   saveProjectToLocalStorage,
+  simulateBrowserProcessRestartForTesting,
 } from '../lib/storageEngine.ts';
 import type { CreativeProject, GenerationArtifact } from '../shared/types.ts';
 
@@ -39,6 +41,7 @@ const SCHEMA_VERSION = 3;
 class MockLocalStorage {
   private store = new Map<string, string>();
   public quotaLimitBytes: number | null = null;
+  public failNextSetItemError: string | null = null;
   public setItemCalls = 0;
 
   getItem(key: string): string | null {
@@ -47,10 +50,21 @@ class MockLocalStorage {
 
   setItem(key: string, value: string): void {
     this.setItemCalls += 1;
-    if (this.quotaLimitBytes !== null && value.length > this.quotaLimitBytes) {
-      const err = new Error('QuotaExceededError: Mock localStorage quota exceeded');
-      err.name = 'QuotaExceededError';
-      throw err;
+    if (this.failNextSetItemError) {
+      const msg = this.failNextSetItemError;
+      this.failNextSetItemError = null;
+      throw new Error(msg);
+    }
+    if (this.quotaLimitBytes !== null) {
+      let currentTotal = 0;
+      for (const [k, v] of this.store.entries()) {
+        if (k !== key) currentTotal += v.length;
+      }
+      if (value.length > this.quotaLimitBytes || currentTotal + value.length > this.quotaLimitBytes) {
+        const err = new Error('QuotaExceededError: Mock localStorage quota exceeded');
+        err.name = 'QuotaExceededError';
+        throw err;
+      }
     }
     this.store.set(key, value);
   }
@@ -62,6 +76,7 @@ class MockLocalStorage {
   clear(): void {
     this.store.clear();
     this.quotaLimitBytes = null;
+    this.failNextSetItemError = null;
     this.setItemCalls = 0;
   }
 }
@@ -78,6 +93,7 @@ class FakeIndexedDB {
   public records = new Map<string, unknown>();
   public failNextDelete: string | null = null;
   public failNextPut: string | null = null;
+  public failNextGetAll: string | null = null;
   public abortNextPutWithQuota = false;
   public openDelayMs = 0;
   public getDelayMs = 0;
@@ -86,6 +102,7 @@ class FakeIndexedDB {
     this.records.clear();
     this.failNextDelete = null;
     this.failNextPut = null;
+    this.failNextGetAll = null;
     this.abortNextPutWithQuota = false;
     this.openDelayMs = 0;
     this.getDelayMs = 0;
@@ -156,10 +173,20 @@ class FakeIndexedDB {
               onerror: null,
             };
             setTimeout(() => {
+              tx.pendingOps -= 1;
               if (tx.aborted) return;
+              if (this.failNextGetAll) {
+                const msg = this.failNextGetAll;
+                this.failNextGetAll = null;
+                const err = new Error(msg);
+                r.error = err;
+                tx.error = err;
+                r.onerror?.();
+                tx.onerror?.();
+                return;
+              }
               r.result = Array.from(this.records.values()).map((v) => structuredClone(v));
               r.onsuccess?.();
-              tx.pendingOps -= 1;
               scheduleCompleteIfIdle();
             }, 0);
             return r;
@@ -764,5 +791,298 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
       mockStorage.getItem('proactive_co_creator_backup_v2'),
       'Expected v2 backup key to be preserved during v2 -> v3 migration'
     );
+  });
+
+  it('FIX 1: IndexedDB read errors are distinguished from empty storage and never overwrite existing IndexedDB records', async () => {
+    const existingUserProj: CreativeProject = {
+      ...createSampleProject(),
+      id: 'proj_precious_idb_1',
+      name: 'Precious User World',
+      revision: 7,
+      persistedRevision: 7,
+      snapshot: updateStoryBibleField(
+        createSampleProject().snapshot,
+        'setting',
+        'Irreplaceable Glass Citadel'
+      ),
+    };
+    await saveProjectToIndexedDb(existingUserProj, { forceOverwrite: true });
+
+    // Direct detailed load check on read error
+    fakeIdb.failNextGetAll = 'Simulated IndexedDB cursor read error';
+    const detailedErr = await loadProjectsFromIndexedDbDetailed();
+    assert.equal(detailedErr.status, 'read_error');
+    assert.ok(detailedErr.error?.includes('Simulated IndexedDB cursor read error'));
+
+    // Simulate an IndexedDB getAll read error during reloadLatestProjectsFromStorage while valid records exist in IndexedDB
+    fakeIdb.failNextGetAll = 'Transient IndexedDB I/O read failure';
+
+    const reloaded = await reloadLatestProjectsFromStorage();
+    assert.equal(
+      reloaded.idbStatus,
+      'read_error',
+      'Expected reloadLatestProjectsFromStorage to report idbStatus: "read_error" on IndexedDB read failure'
+    );
+    assert.equal(reloaded.persisted, false);
+
+    // Ensure the existing record in IndexedDB was NOT overwritten by an auto-seeded sample project
+    const rawIdbRecord = fakeIdb.records.get('proj_precious_idb_1') as CreativeProject | undefined;
+    assert.ok(rawIdbRecord, 'Precious IndexedDB record must still exist');
+    assert.equal(rawIdbRecord.revision, 7);
+    assert.equal(
+      rawIdbRecord.snapshot.storyBible.setting.value,
+      'Irreplaceable Glass Citadel'
+    );
+  });
+
+  it('FIX 2: reloadLatestProjectsFromStorage is non-destructive when localStorage and IndexedDB hold divergent Story Bible values at the same revision', async () => {
+    const base = createSampleProject();
+    const localVersion: CreativeProject = {
+      ...base,
+      revision: 3,
+      persistedRevision: 3,
+      updatedAt: 1000,
+      snapshot: updateStoryBibleField(base.snapshot, 'genre', 'Solar Punk Utopia'),
+    };
+    const idbVersion: CreativeProject = {
+      ...base,
+      revision: 3,
+      persistedRevision: 3,
+      updatedAt: 2000,
+      snapshot: updateStoryBibleField(base.snapshot, 'genre', 'Gothic Cyberpunk'),
+    };
+
+    saveProjectToLocalStorage(localVersion, { forceOverwrite: true });
+    await saveProjectToIndexedDb(idbVersion, { forceOverwrite: true });
+
+    // Calling reloadLatestProjectsFromStorage without explicit conflict resolution must NOT overwrite either store
+    const reloadRes = await reloadLatestProjectsFromStorage(base.id);
+    assert.equal(
+      reloadRes.conflictDetected,
+      true,
+      'Expected reloadLatestProjectsFromStorage to report conflictDetected: true on same-revision divergent Story Bible values'
+    );
+    assert.equal(reloadRes.persisted, false);
+    assert.ok(reloadRes.alternateProject, 'Expected alternateProject to be preserved for user comparison');
+
+    const localAfter = loadProjectsFromLocalStorage().projects.find((p) => p.id === base.id);
+    const idbAfter = (await loadProjectsFromIndexedDb()).find((p) => p.id === base.id);
+    assert.equal(
+      localAfter?.snapshot.storyBible.genre.value,
+      'Solar Punk Utopia',
+      'localStorage version must remain intact and recoverable until conflict is explicitly resolved'
+    );
+    assert.equal(
+      idbAfter?.snapshot.storyBible.genre.value,
+      'Gothic Cyberpunk',
+      'IndexedDB version must remain intact and recoverable until conflict is explicitly resolved'
+    );
+
+    // Explicit resolution ('prefer-idb') resolves the conflict and verifies persistence
+    const resolved = await reloadLatestProjectsFromStorage(base.id, { resolution: 'prefer-idb' });
+    assert.equal(resolved.conflictDetected, false);
+    assert.equal(resolved.persisted, true);
+    assert.equal(resolved.activeProject.snapshot.storyBible.genre.value, 'Gothic Cyberpunk');
+  });
+
+  it('FIX 3: persistProjectDurably treats IndexedDB as authoritative, never invalidates a committed IDB write on localStorage failure, and blocks stale same-revision writes', async () => {
+    const base = createSampleProject();
+    await persistProjectDurably(base, { forceOverwrite: true });
+
+    // 1. Stale same-revision write with a different snapshot must be rejected by CAS
+    const sameRevDivergent: CreativeProject = {
+      ...base,
+      revision: 1,
+      persistedRevision: 1,
+      updatedAt: base.updatedAt + 1000,
+      snapshot: updateStoryBibleField(base.snapshot, 'setting', 'Stale Same-Revision Mutation'),
+    };
+    const sameRevAttempt = await persistProjectDurably(sameRevDivergent, {
+      expectedPersistedRevision: 1,
+    });
+    assert.equal(
+      sameRevAttempt.saved,
+      false,
+      'Stale same-revision write with a divergent snapshot must not overwrite existing revision 1'
+    );
+    assert.equal(sameRevAttempt.conflictDetected, true);
+
+    // 2. IndexedDB saves revision 12, while localStorage has a stale higher revision or throws non-quota error
+    // Even if localStorage cache is out of sync or fails, committed IndexedDB revision 12 must succeed and report cache warning
+    const rev12: CreativeProject = {
+      ...base,
+      revision: 12,
+      persistedRevision: 1,
+      updatedAt: base.updatedAt + 5000,
+      snapshot: updateStoryBibleField(base.snapshot, 'setting', 'Authoritative Revision 12 Sanctuary'),
+    };
+    mockStorage.failNextSetItemError = 'SecurityError: localStorage access denied in iframe';
+    const save12Res = await persistProjectDurably(rev12, { expectedPersistedRevision: 1 });
+    assert.equal(save12Res.saved, true, 'Authoritative IndexedDB save of r12 must report saved: true');
+    assert.equal(save12Res.persistedRevision, 12);
+    assert.equal(
+      save12Res.cacheSynced,
+      false,
+      'Expected cacheSynced: false when localStorage cache write fails after IndexedDB commit'
+    );
+    assert.ok(
+      save12Res.cacheWarning,
+      'Expected cacheWarning when localStorage cache fails after IndexedDB commit'
+    );
+
+    const reloadedAfter12 = await reloadLatestProjectsFromStorage(base.id);
+    assert.equal(reloadedAfter12.activeProject.revision, 12);
+    assert.equal(
+      reloadedAfter12.activeProject.snapshot.storyBible.setting.value,
+      'Authoritative Revision 12 Sanctuary'
+    );
+  });
+
+  it('FIX 4: isSnapshotSemanticallyEqual compares answeredQuestions, skippedQuestions, clarification targets/options, and decision metadata', async () => {
+    const { isSnapshotSemanticallyEqual } = await import('../lib/historyEngine.ts');
+    const snapA = createSampleProject().snapshot;
+    const snapB = {
+      ...structuredClone(snapA),
+      answeredQuestions: [...snapA.answeredQuestions, 'q_host_motive'],
+    };
+    const snapC = {
+      ...structuredClone(snapA),
+      skippedQuestions: [...snapA.skippedQuestions, 'q_lighting'],
+    };
+    const snapD = structuredClone(snapA);
+    if (snapD.clarifications.length > 0) {
+      snapD.clarifications[0] = {
+        ...snapD.clarifications[0],
+        options: [...snapD.clarifications[0].options, 'Secret Society'],
+      };
+    }
+
+    assert.equal(
+      isSnapshotSemanticallyEqual(snapA, snapB),
+      false,
+      'Snapshots differing in answeredQuestions must not be semantically equal'
+    );
+    assert.equal(
+      isSnapshotSemanticallyEqual(snapA, snapC),
+      false,
+      'Snapshots differing in skippedQuestions must not be semantically equal'
+    );
+    assert.equal(
+      isSnapshotSemanticallyEqual(snapA, snapD),
+      false,
+      'Snapshots differing in clarification options/targets must not be semantically equal'
+    );
+  });
+
+  it('FIX 5: preserves Undo/Redo cursor and future stack across browser reloads (Edit -> Undo -> Save -> Reload -> Redo)', async () => {
+    let proj = createSampleProject();
+    let undo = createUndoRedoState(proj.snapshot, proj.revisions);
+
+    // Step 1: Edit (r1 -> r2)
+    const editedSnap = updateStoryBibleField(proj.snapshot, 'genre', 'Clockwork Fantasy');
+    ({ project: proj, undoState: undo } = commitSnapshotTransaction(
+      proj,
+      undo,
+      editedSnap,
+      'Set Genre Clockwork',
+      'Updated genre to Clockwork Fantasy'
+    ));
+    assert.equal(proj.revision, 2);
+
+    // Step 2: Undo (r2 -> r3, restoring r1 snapshot and placing r2 in undo.future)
+    const undone = commitUndoTransaction(proj, undo);
+    assert.equal(undone.changed, true);
+    proj = undone.project;
+    undo = undone.undoState;
+    assert.equal(proj.revision, 3);
+    assert.equal(undo.future.length, 1);
+
+    // Step 3: Save and Reload
+    await persistProjectDurably(proj, { forceOverwrite: true });
+    const reloaded = await reloadLatestProjectsFromStorage(proj.id);
+
+    // Step 4: Redo after reload must restore the Clockwork Fantasy snapshot!
+    assert.equal(
+      reloaded.activeUndoState.future.length,
+      1,
+      'Reloaded undoState must preserve the Redo future stack after Undo -> Save -> Reload'
+    );
+    const redone = commitRedoTransaction(reloaded.activeProject, reloaded.activeUndoState);
+    assert.equal(redone.changed, true);
+    assert.equal(redone.redoneLabel, 'Set Genre Clockwork');
+    assert.equal(redone.project.revision, 4);
+    assert.equal(redone.project.snapshot.storyBible.genre.value, 'Clockwork Fantasy');
+
+    // Step 5: Undo again, then make a new divergent edit -> Redo branch must be cleared
+    const undoneAgain = commitUndoTransaction(redone.project, redone.undoState);
+    assert.equal(undoneAgain.undoState.future.length, 1);
+    const divergentSnap = updateStoryBibleField(
+      undoneAgain.project.snapshot,
+      'genre',
+      'Mythic Western'
+    );
+    const afterNewEdit = commitSnapshotTransaction(
+      undoneAgain.project,
+      undoneAgain.undoState,
+      divergentSnap,
+      'Set Genre Mythic Western'
+    );
+    assert.equal(afterNewEdit.undoState.future.length, 0);
+  });
+
+  it('FIX 6: deleted project does not resurrect after browser reload even when IndexedDB deletion fails and localStorage is at quota', async () => {
+    const surviving: CreativeProject = {
+      ...createSampleProject(),
+      id: 'proj_surviving_fix6',
+      name: 'Surviving Project',
+      artifacts: [
+        {
+          id: 'art_large_cache',
+          projectId: 'proj_surviving_fix6',
+          mode: 'story',
+          createdAt: Date.now(),
+          revisionId: 'rev_1',
+          sourceRevision: 1,
+          promptUsed: 'Large cached story',
+          promptDigest: 'd1',
+          storyText: 'X'.repeat(5000),
+          isOutdated: false,
+        },
+      ],
+    };
+    const deletedProj: CreativeProject = {
+      ...createSampleProject(),
+      id: 'proj_deleted_fix6',
+      name: 'Deleted Project Under Quota',
+    };
+
+    saveProjectToLocalStorage(surviving, { forceOverwrite: true });
+    await saveProjectToIndexedDb(surviving, { forceOverwrite: true });
+    await saveProjectToIndexedDb(deletedProj, { forceOverwrite: true });
+
+    // Set localStorage quota limit tight enough that writing new full-size items fails unless cache is compacted,
+    // and force IndexedDB delete to fail
+    mockStorage.quotaLimitBytes = 2500;
+    fakeIdb.failNextDelete = 'IndexedDB disk lock prevented delete';
+
+    const delRes = await deleteProjectCompletely(deletedProj.id);
+    assert.equal(delRes.idbDeleted, false);
+    assert.equal(delRes.tombstonePersisted, true);
+
+    // Simulate full browser process restart (wiping both RAM tombstone set and sessionStorage)
+    simulateBrowserProcessRestartForTesting();
+
+    const reloaded = await reloadLatestProjectsFromStorage();
+    assert.equal(
+      reloaded.projects.some((p) => p.id === deletedProj.id),
+      false,
+      'Deleted project must not resurrect after browser reload even when IDB delete failed and localStorage was near quota'
+    );
+    assert.equal(
+      reloaded.projects.some((p) => p.id === surviving.id),
+      true,
+      'Surviving project must remain intact'
+    );
+    clearDeletedProjectId(deletedProj.id);
   });
 });

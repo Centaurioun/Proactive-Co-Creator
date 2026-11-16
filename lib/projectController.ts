@@ -14,6 +14,7 @@ import {
   pushCoalescedTransaction,
   pushUndoableTransaction,
   recordProjectRevision,
+  serializeUndoHistory,
   type UndoRedoState,
 } from './historyEngine.ts';
 import { applyProposedOperations } from './nlBatchEngine.ts';
@@ -193,6 +194,7 @@ export function reconcileAsyncAnalysisResponse(params: {
     ...targetProject,
     snapshot: mergedSnapshot,
     artifacts: refreshArtifactsCurrentness(targetProject.artifacts, mergedSnapshot),
+    undoHistory: nextUndo ? serializeUndoHistory(nextUndo) : targetProject.undoHistory,
   };
   updatedProject = recordProjectRevision(updatedProject, commitLabel, commitSummary, 1);
 
@@ -348,6 +350,7 @@ export function acceptAiPolishProposal(params: {
     ...project,
     snapshot: nextSnapshot,
     artifacts: refreshArtifactsCurrentness(project.artifacts, nextSnapshot),
+    undoHistory: serializeUndoHistory(nextUndoState),
   };
   nextProject = recordProjectRevision(
     nextProject,
@@ -541,6 +544,7 @@ export function commitSnapshotTransaction(
       ...project,
       snapshot: nextSnapshot,
       artifacts: refreshedArtifacts,
+      undoHistory: serializeUndoHistory(nextUndoState),
     },
     label,
     summary,
@@ -622,11 +626,18 @@ export function applyAsyncAnalysisCompletion(params: {
     preserveDraftAnswers
   );
 
+  const nextUndoForActive = isTargetActive
+    ? pushUndoableTransaction(activeUndoState, mergedSnapshot, label)
+    : undefined;
+
   const updatedTarget = recordProjectRevision(
     {
       ...targetProject,
       snapshot: mergedSnapshot,
       artifacts: refreshArtifactsCurrentness(targetProject.artifacts, mergedSnapshot),
+      undoHistory: nextUndoForActive
+        ? serializeUndoHistory(nextUndoForActive)
+        : targetProject.undoHistory,
     },
     label,
     summary,
@@ -637,11 +648,10 @@ export function applyAsyncAnalysisCompletion(params: {
     ? savedProjects.map((p) => (p.id === updatedTarget.id ? updatedTarget : p))
     : [updatedTarget, ...savedProjects];
 
-  if (isTargetActive) {
-    const nextUndo = pushUndoableTransaction(activeUndoState, mergedSnapshot, label);
+  if (isTargetActive && nextUndoForActive) {
     return {
       activeProject: updatedTarget,
-      activeUndoState: nextUndo,
+      activeUndoState: nextUndoForActive,
       savedProjects: nextSaved,
       appliedToActive: true,
       appliedToBackgroundProject: false,
@@ -968,6 +978,7 @@ export function commitUndoTransaction(
       ...project,
       snapshot: restoredSnapshot,
       artifacts: refreshedArtifacts,
+      undoHistory: serializeUndoHistory(nextUndoState),
     },
     `Undo: ${undoneLabel}`,
     `Undid "${undoneLabel}"`,
@@ -1008,6 +1019,7 @@ export function commitRedoTransaction(
       ...project,
       snapshot: redoneSnapshot,
       artifacts: refreshedArtifacts,
+      undoHistory: serializeUndoHistory(nextUndoState),
     },
     `Redo: ${redoneLabel}`,
     `Redid "${redoneLabel}"`,
