@@ -5,15 +5,16 @@
 
 import { ThinkingLevel, Type } from '@google/genai';
 import type {
+  BatchEditProposalResult,
   BeliefState,
   Clarification,
   ClarificationAnswer,
   GenerationMode,
   GraphUpdate,
   ImageGenerationResult,
-  VideoJobStatusResult,
 } from '../shared/types.ts';
 import {
+  parseAndValidateBatchEditResponse,
   parseAndValidateBeliefGraph,
   parseAndValidateClarifications,
 } from '../shared/schemas.ts';
@@ -21,11 +22,9 @@ import { AppApiError, classifyGeminiError } from './errors.ts';
 import { getGeminiClient } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
 import { withRetry } from './retry.ts';
-import { videoStore } from './videoStore.ts';
 
 const TEXT_TIMEOUT_MS = 45_000;
 const IMAGE_TIMEOUT_MS = 60_000;
-const VIDEO_TIMEOUT_MS = 60_000;
 const TARGET_IMAGE_COUNT = 4;
 const IMAGE_CONCURRENCY = 2;
 
@@ -89,41 +88,36 @@ export async function analyzeBeliefGraph(
   let specificInstructions: string;
   if (mode === 'image') {
     specificInstructions = `
-      - **The Image Entity:** Always include an entity named "The Image". Required Attributes: weather, location, time of day, atmosphere, camera angle, image style.
-      - **Human Subjects:** If an entity is human, include Attributes: age, gender, ethnicity, hair_style, clothing, expression, pose.
-      - **Objects:** Include Attributes: color, material, shape, size, texture, lighting.
-    `;
-  } else if (mode === 'video') {
-    specificInstructions = `
-      - **The Video Entity:** Always include an entity named "The Video". Required Attributes: camera_movement, lighting, atmosphere, video_style, pacing, duration_feel.
-      - **Subjects:** If an entity is active, include Attributes: movement, expression, action_speed, clothing.
-      - **Setting:** Include Attributes: location, weather, time_of_day, ambience.
+      - **The Image Entity:** Always include an entity named "The Image" (category: "scene"). Required Attributes: weather, location, time of day, atmosphere, camera angle, image style.
+      - **Subjects & Characters:** Include Attributes: age, personality, role, clothing, expression, pose.
+      - **Objects & Locations:** Include Attributes: color, material, shape, size, atmosphere, lighting.
     `;
   } else {
     specificInstructions = `
-      - **The Story Entity:** Always include an entity named "The Story". Required Attributes: genre, tone, narrative_perspective, pacing, central_conflict.
+      - **The Story Entity:** Always include an entity named "The Story" (category: "scene"). Required Attributes: genre, tone, narrative_perspective, pacing, central_conflict, setting.
       - **Characters:** Include Attributes: personality, motivation, role, age, background, emotional_state.
+      - **Locations / Objects / Events:** Include Attributes: atmosphere, significance, appearance, condition.
     `;
   }
 
   const generationPrompt = `
-Analyze the prompt and generate a complete **Belief Graph** representing the scene or story.
-Identify all entities, their detailed attributes, and their relationships.
+Analyze the prompt and generate a complete **Belief Graph** representing the story or scene.
+Identify all entities, their category ("character", "location", "object", "event", "group", or "scene"), their detailed attributes, and their relationships.
 
-Entity Types:
-- **Explicit Entities:** Clearly stated in the prompt (presence_in_prompt: True).
-- **Implicit Entities:** Entities not mentioned but logically necessary (presence_in_prompt: False). Limit to 2-3 key implicit entities.
+Entity Rules:
+- **Explicit Entities:** Clearly stated in the prompt (presence_in_prompt: true).
+- **Implicit Entities:** Entities not mentioned but logically helpful (presence_in_prompt: false). Limit to 2-3 key implicit entities.
 
 Attribute Rules:
-1. **Existence:** For EVERY entity, you **MUST** include an attribute named 'existence' (value "true" or "false").
+1. **Existence:** For EVERY entity, you **MUST** include an attribute named 'existence' (value ["true", "false"]).
 2. **Rich Attributes:** For every entity, generate 3-4 descriptive attributes based on these rules:
 ${specificInstructions}
 3. **Values:** For EVERY attribute, provide 2-3 plausible alternative candidate values as a list of strings. The first value should be the most likely one.
-4. **Inference:** If an attribute is not explicitly stated, infer a likely value and set "presence_in_prompt" to false.
+4. **Inference:** If an attribute is not explicitly stated in the prompt, infer a likely value and set "presence_in_prompt" to false.
 
 Relationships:
-- Identify logical relationships between entities (e.g., "holding", "next to", "part of").
-- Provide a label and alternatives (as strings).
+- Identify logical relationships between entities (e.g., "hosting", "sitting at", "friends with", "located in").
+- Provide a label and 2-3 alternatives (as strings).
 
 Input: ${JSON.stringify({ prompt })}
 OUTPUT JSON:`;
@@ -142,6 +136,7 @@ OUTPUT JSON:`;
     type: Type.OBJECT,
     properties: {
       name: { type: Type.STRING },
+      category: { type: Type.STRING },
       presence_in_prompt: { type: Type.BOOLEAN },
       description: { type: Type.STRING },
       alternatives: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
@@ -206,55 +201,32 @@ export async function generateClarificationsList(
   prompt: string,
   askedQuestions: string[],
   mode: GenerationMode,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  confirmedFacts: string[] = []
 ): Promise<Clarification[]> {
   const ai = getGeminiClient();
 
-  const imagePrompt = `You are an expert in text-to-image prompting. Your goal is to help a user refine their prompt by asking clarifying questions.
-First, reason about the user's prompt to identify entities, their attributes, and areas of visual uncertainty.
-Then, generate questions that target these uncertainties to gather more specific visual details.
+  const imagePrompt = `You are an expert in visual scene planning and text-to-image prompting. Your goal is to help a user refine their scene by asking adaptive, high-impact clarifying questions.`;
 
-Focus on:
-- Implicit entities (things not explicitly mentioned but likely to be in the scene).
-- Vague attributes (e.g., if it says "a car", ask about the color or model).
-- Ambiguous scene properties (e.g., location, time of day, style).`;
+  const storyPrompt = `You are an expert story architect and co-creator. Your goal is to help a user develop their story idea by asking insightful, context-aware clarifying questions that directly map to character traits, setting, conflict, or tone.`;
 
-  const videoPrompt = `You are an expert in AI video generation prompting. Your goal is to help a user refine their prompt by asking clarifying questions.
-First, reason about the user's prompt to identify the visual narrative, camera movement, and temporal dynamics.
-Then, generate questions that target these uncertainties.
-
-Focus on:
-- Movement and Action (e.g., "How does the character move?", "Is the action fast or slow?").
-- Camera Dynamics (e.g., "Should the camera zoom, pan, or stay static?").
-- Atmosphere and Lighting changes over time.`;
-
-  const storyPrompt = `You are a creative writing assistant. Your goal is to help a user develop their story idea by asking insightful clarifying questions based on their initial prompt.
-First, reason about the prompt to identify potential characters, settings, plot points, and themes.
-Then, generate questions that explore areas that would enrich the narrative.
-
-Focus on:
-- Character motivations or backstories.
-- Plot developments or potential conflicts.
-- Setting details that could influence the mood.
-- The overall tone or theme of the story.`;
-
-  const specificPrompt =
-    mode === 'story' ? storyPrompt : mode === 'video' ? videoPrompt : imagePrompt;
+  const specificPrompt = mode === 'story' ? storyPrompt : imagePrompt;
 
   const finalPrompt = `${specificPrompt}
 
 Follow these instructions EXACTLY:
-1. **Quantity:** Generate EXACTLY 3 questions.
-2. **Clarity & Conciseness:** Questions must be very clear, concise, and direct.
-3. **Ease of Answering:** Questions should be easy for a human to answer, ideally by selecting from predefined choices.
-4. **Information Diversity:** The three questions MUST be different from each other and aim to collect information about distinct aspects.
-5. **Answer Choices:** For EACH question, provide a list of 3-5 plausible and distinct answer choices.
-6. **Avoid Repetition**: DO NOT ask any of the following questions (or questions semantically identical to them), as they have already been answered or rejected by the user:
-${askedQuestions.map((q) => `- ${JSON.stringify(q)}`).join('\n') || 'N/A'}
+1. **Adaptive Quantity:** Generate between 2 and 4 high-impact questions (only ask questions that meaningfully shape the ${mode === 'story' ? 'narrative, characters, or setting' : 'visual scene'}).
+2. **Structured Target Linking:** Whenever a question targets a specific entity attribute (e.g., Cat's personality) or story property (e.g., tone, genre, setting, centralConflict), populate \`targetType\`, \`targetEntityName\`, \`targetAttributeName\`, or \`targetStoryField\`.
+3. **Answer Choices:** For EACH question, provide 3-4 distinct, evocative answer choices.
+4. **Never Repeat or Ask Confirmed Facts:** DO NOT ask any of the following questions or ask about facts already confirmed:
+Asked/Skipped Questions:
+${askedQuestions.map((q) => `- ${JSON.stringify(q)}`).join('\n') || 'None'}
+Confirmed Project Facts:
+${confirmedFacts.map((f) => `- ${JSON.stringify(f)}`).join('\n') || 'None'}
 
 User Prompt: ${JSON.stringify(prompt)}
 
-Return the output as a JSON array of objects, where each object has a 'question' and an 'options' array.`;
+Return a JSON array of objects.`;
 
   const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
   try {
@@ -274,6 +246,12 @@ Return the output as a JSON array of objects, where each object has a 'question'
                 properties: {
                   question: { type: Type.STRING },
                   options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  targetType: { type: Type.STRING },
+                  targetEntityName: { type: Type.STRING },
+                  targetAttributeName: { type: Type.STRING },
+                  targetStoryField: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  impact: { type: Type.STRING },
                 },
                 required: ['question', 'options'],
               },
@@ -293,6 +271,121 @@ Return the output as a JSON array of objects, where each object has a 'question'
       );
     }
     return parseAndValidateClarifications(text);
+  } catch (err) {
+    throw classifyGeminiError(err);
+  } finally {
+    cleanup();
+  }
+}
+
+export async function interpretBatchEditInstruction(
+  instruction: string,
+  context: {
+    prompt: string;
+    entities: Array<{
+      id?: string;
+      name: string;
+      category?: string;
+      excluded?: boolean;
+      attributes: Array<{ name: string; value: string; status?: string }>;
+    }>;
+    relationships: Array<{ id?: string; source: string; target: string; label: string }>;
+  },
+  signal?: AbortSignal
+): Promise<BatchEditProposalResult> {
+  const ai = getGeminiClient();
+
+  const systemPrompt = `You are a precision structured-editing compiler for a creative story workspace.
+Convert the user's natural-language batch edit instruction into a list of structured operations against the current entities, attributes, relationships, and story bible fields.
+
+Rules:
+1. NEVER guess when a pronoun or group reference is ambiguous (e.g., "make him older" when multiple characters exist). Instead, add an entry to \`ambiguities\` listing the candidate entities and a clarifyingQuestion.
+2. When a group reference is clear (e.g. "all animal guests" or "all characters except the cat"), emit separate \`set_attribute\` operations for each matching entity and respect any "except" exclusions.
+3. Supported operation types:
+   - \`set_attribute\`: requires \`entityName\`, \`attributeName\`, \`nextValue\`
+   - \`add_attribute\`: requires \`entityName\`, \`attributeName\`, \`nextValue\`
+   - \`add_entity\`: requires \`entityName\`, \`entityCategory\`, optional \`nextValue\` (description)
+   - \`rename_entity\`: requires \`entityName\`, \`newEntityName\`
+   - \`exclude_entity\`: requires \`entityName\`
+   - \`add_relationship\`: requires \`sourceEntityName\`, \`targetEntityName\`, \`nextValue\` (label)
+   - \`update_relationship\`: requires \`sourceEntityName\`, \`targetEntityName\`, \`nextValue\` (label)
+   - \`remove_relationship\`: requires \`sourceEntityName\`, \`targetEntityName\`
+   - \`update_story_bible\`: requires \`storyField\` (one of: genre, tone, narrativePerspective, intendedAudience, setting, themes, centralConflict, pacing, continuityRules, explicitExclusions, visualStyle, cameraAndLighting) and \`nextValue\`
+4. Flag any contradictory statements inside the instruction in \`warnings\`.
+
+Current Project Context:
+${JSON.stringify(context, null, 2)}
+
+User Batch Instruction: ${JSON.stringify(instruction)}`;
+
+  const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
+  try {
+    const response = await withRetry(
+      () =>
+        ai.models.generateContent({
+          model: GEMINI_MODELS.text,
+          contents: systemPrompt,
+          config: {
+            abortSignal: reqSignal,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                operations: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      type: { type: Type.STRING },
+                      summary: { type: Type.STRING },
+                      entityName: { type: Type.STRING },
+                      newEntityName: { type: Type.STRING },
+                      entityCategory: { type: Type.STRING },
+                      attributeName: { type: Type.STRING },
+                      nextValue: { type: Type.STRING },
+                      sourceEntityName: { type: Type.STRING },
+                      targetEntityName: { type: Type.STRING },
+                      storyField: { type: Type.STRING },
+                    },
+                    required: ['type', 'summary'],
+                  },
+                },
+                ambiguities: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      phrase: { type: Type.STRING },
+                      reason: { type: Type.STRING },
+                      candidates: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      clarifyingQuestion: { type: Type.STRING },
+                    },
+                    required: ['phrase', 'reason', 'candidates', 'clarifyingQuestion'],
+                  },
+                },
+                warnings: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: ['operations', 'ambiguities', 'warnings'],
+            },
+          },
+        }),
+      { maxAttempts: 3, signal: reqSignal }
+    );
+
+    const text = response.text;
+    if (!text || !text.trim()) {
+      throw new AppApiError(
+        'INVALID_RESPONSE',
+        'Model returned an empty batch-edit interpretation.',
+        502,
+        false
+      );
+    }
+    return parseAndValidateBatchEditResponse(text, instruction);
   } catch (err) {
     throw classifyGeminiError(err);
   } finally {
@@ -339,12 +432,12 @@ Original Prompt: ${JSON.stringify(originalPrompt)}
 ${updatesPromptSection}
 
 Instructions:
-1. **Integrate Attributes:** When an attribute is set (e.g., "color" to "blue"), ensure the entity is explicitly described with that attribute in the narrative.
+1. **Integrate Attributes:** When an attribute is set (e.g., "personality" to "mischievous"), ensure the entity is explicitly described with that attribute.
 2. **Update Relationships:** If a relationship changes, rewrite the interaction between the entities to reflect the new state.
 3. **Incorporate Answers:** Treat user answers from clarifications as definitive facts and weave them into the scene.
-4. **Preserve Context:** CRITICAL: Do NOT remove, summarize, or condense any existing details, entities, or stylistic elements from the "Original Prompt". The goal is accretion and modification, not summarization. Only remove details if they are explicitly contradicted by the edits.
+4. **Preserve Context:** CRITICAL: Do NOT remove, summarize, or condense any existing details, entities, or stylistic elements from the "Original Prompt". Only remove details if they are explicitly contradicted by the edits.
 5. **Exclusion:** CRITICAL: If an edit sets "existence" or "existence_in_image" to "false" (or "Absent"), you MUST remove that entity and its related descriptions entirely.
-6. **Style:** Maintain the original tone (e.g., if it's a story, keep it narrative; if an image prompt, keep it descriptive).
+6. **Style:** Maintain the original tone.
 
 Do not add any extra explanations, just return the updated prompt string.
 
@@ -387,9 +480,10 @@ export async function generateStoryText(
   signal?: AbortSignal
 ): Promise<string> {
   const ai = getGeminiClient();
-  const storyGenerationPrompt = `Based on the following idea, write a short, creative story. The story should be engaging, vivid, and well-structured.
+  const storyGenerationPrompt = `Based on the following structured story brief and creative constraints, write a vivid, engaging, well-structured story.
+Respect every confirmed character trait, relationship, setting detail, tone, and explicit exclusion.
 
-Idea: ${JSON.stringify(prompt)}
+Story Brief: ${JSON.stringify(prompt)}
 
 Story:`;
 
@@ -508,160 +602,4 @@ export async function generateImagesBatch(
     failedCount,
     warning,
   };
-}
-
-async function resolveVideoBytes(
-  videoPart: { data?: string; uri?: string; mime_type?: string },
-  signal: AbortSignal
-): Promise<{ buffer: Buffer; mimeType: string }> {
-  const mimeType = videoPart.mime_type || 'video/mp4';
-
-  if (videoPart.data) {
-    return {
-      buffer: Buffer.from(videoPart.data, 'base64'),
-      mimeType,
-    };
-  }
-
-  if (videoPart.uri) {
-    const apiKey = process.env.GEMINI_API_KEY?.trim();
-    const res = await fetch(videoPart.uri, {
-      headers: apiKey ? { 'x-goog-api-key': apiKey } : undefined,
-      signal,
-    });
-    if (!res.ok) {
-      throw new AppApiError(
-        'UPSTREAM_ERROR',
-        `Failed to retrieve generated video media (HTTP ${res.status}).`,
-        502,
-        true
-      );
-    }
-    const arrayBuffer = await res.arrayBuffer();
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      mimeType: res.headers.get('content-type') || mimeType,
-    };
-  }
-
-  throw new AppApiError(
-    'INVALID_RESPONSE',
-    'Video generation completed without video data or URI.',
-    502,
-    false
-  );
-}
-
-async function formatInteractionResult(
-  interaction: {
-    id: string;
-    status: string;
-    output_video?: { data?: string; uri?: string; mime_type?: string };
-  },
-  signal: AbortSignal
-): Promise<VideoJobStatusResult> {
-  if (interaction.status === 'completed') {
-    if (!interaction.output_video) {
-      throw new AppApiError(
-        'INVALID_RESPONSE',
-        'Video generation completed without output_video payload.',
-        502,
-        false
-      );
-    }
-    const { buffer, mimeType } = await resolveVideoBytes(interaction.output_video, signal);
-    const videoId = videoStore.put(buffer, mimeType);
-    return {
-      status: 'completed',
-      interactionId: interaction.id,
-      videoUrl: `/api/videos/${videoId}`,
-    };
-  }
-
-  if (
-    interaction.status === 'failed' ||
-    interaction.status === 'incomplete' ||
-    interaction.status === 'budget_exceeded'
-  ) {
-    return {
-      status: 'failed',
-      interactionId: interaction.id,
-      error: `Video generation ended with status "${interaction.status}".`,
-    };
-  }
-
-  if (interaction.status === 'cancelled') {
-    return {
-      status: 'cancelled',
-      interactionId: interaction.id,
-      error: 'Video generation was cancelled.',
-    };
-  }
-
-  return {
-    status: 'in_progress',
-    interactionId: interaction.id,
-  };
-}
-
-export async function startVideoGeneration(
-  prompt: string,
-  signal?: AbortSignal
-): Promise<VideoJobStatusResult> {
-  const ai = getGeminiClient();
-  const { signal: reqSignal, cleanup } = combineSignals(signal, VIDEO_TIMEOUT_MS);
-
-  try {
-    const interaction = await ai.interactions.create(
-      {
-        model: GEMINI_MODELS.video,
-        input: prompt,
-        background: true,
-        store: true,
-        stream: false,
-        response_format: {
-          type: 'video',
-          aspect_ratio: '16:9',
-          duration: '10s',
-          resolution: '720p',
-        },
-      },
-      { signal: reqSignal, timeout: VIDEO_TIMEOUT_MS }
-    );
-
-    return await formatInteractionResult(interaction, reqSignal);
-  } catch (err) {
-    throw classifyGeminiError(err);
-  } finally {
-    cleanup();
-  }
-}
-
-export async function getVideoGenerationStatus(
-  interactionId: string,
-  signal?: AbortSignal
-): Promise<VideoJobStatusResult> {
-  const ai = getGeminiClient();
-  const { signal: reqSignal, cleanup } = combineSignals(signal, VIDEO_TIMEOUT_MS);
-
-  try {
-    const interaction = await ai.interactions.get(interactionId, undefined, {
-      signal: reqSignal,
-      timeout: VIDEO_TIMEOUT_MS,
-    });
-    return await formatInteractionResult(interaction, reqSignal);
-  } catch (err) {
-    throw classifyGeminiError(err);
-  } finally {
-    cleanup();
-  }
-}
-
-export async function cancelVideoGeneration(interactionId: string): Promise<void> {
-  const ai = getGeminiClient();
-  try {
-    await ai.interactions.cancel(interactionId);
-  } catch {
-    // Best-effort cancellation on upstream job
-  }
 }

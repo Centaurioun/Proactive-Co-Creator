@@ -3,28 +3,74 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import BeliefGraph from './components/BeliefGraph';
-import ClarificationCard from './components/ClarificationCard';
-import Header from './components/Header';
+import ContextualInspector, { type RightPanelTab } from './components/ContextualInspector';
+import DecisionInboxPanel from './components/DecisionInboxPanel';
+import Header, { type WorkspaceSection } from './components/Header';
 import InfoModal from './components/InfoModal';
 import OutputDisplay from './components/OutputGallery';
 import PromptInput from './components/PromptInput';
-import { buildGraphUpdates } from './lib/pendingUpdates';
+import WorkspaceBottomBar from './components/WorkspaceBottomBar';
+import {
+  addEntity,
+  applyDecisionBatch,
+  createEmptyStoryBible,
+  createSampleProject,
+  makeStableId,
+  mergeAnalysisIntoSnapshot,
+  removeRelationship,
+  renameEntity,
+  setEntityAttribute,
+  updateStoryBibleField,
+  upsertRelationship,
+} from './lib/canonicalModel';
+import { evaluateProjectConsistency } from './lib/consistencyChecker';
+import {
+  createUndoRedoState,
+  performRedo,
+  performUndo,
+  pushUndoableTransaction,
+  recordProjectRevision,
+  restoreProjectRevision,
+  type UndoRedoState,
+} from './lib/historyEngine';
+import {
+  applyProposedOperations,
+  interpretBatchInstructionLocally,
+} from './lib/nlBatchEngine';
+import { synthesizeRefinedPrompt } from './lib/promptBuilder';
+import {
+  deleteProjectFromLocalStorage,
+  exportProjectToJson,
+  exportStoryBibleMarkdown,
+  loadProjectsFromLocalStorage,
+  migrateProjectPayload,
+  saveProjectToIndexedDb,
+  saveProjectToLocalStorage,
+} from './lib/storageEngine';
 import {
   analyzePromptToBeliefGraph,
   ClientApiError,
   generateClarifications,
   generateImagesFromPrompt,
   generateStoryFromPrompt,
-  generateVideoFromPrompt,
   isAbortError,
   refinePromptWithAllUpdates,
+  requestBatchEditInterpretation,
 } from './services/apiClient';
-import type { BeliefState, Clarification, GenerationMode } from './shared/types';
+import type {
+  BatchEditProposalResult,
+  CreativeProject,
+  DecisionItem,
+  EntityCategory,
+  GenerationMode,
+  ProjectSnapshot,
+  ProposedOperation,
+  StoryBibleFields,
+} from './shared/types';
 
-type ToolTab = 'clarify' | 'graph' | 'attributes';
-type MobileView = 'editor' | 'preview';
+type MobileTab = 'decisions' | 'graph' | 'inspector' | 'output';
 
 function getReadableErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ClientApiError) return error.message;
@@ -32,767 +78,920 @@ function getReadableErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function App() {
-  const [prompt, setPrompt] = useState('a cat hosting a party for its animal friends');
+function downloadTextFile(filename: string, content: string, mimeType: string = 'text/plain;charset=utf-8') {
+  const element = document.createElement('a');
+  const file = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(file);
+  element.href = url;
+  element.download = filename;
+  document.body.appendChild(element);
+  element.click();
+  document.body.removeChild(element);
+  setTimeout(() => URL.revokeObjectURL(url), 100);
+}
 
+function App() {
+  const initialData = useMemo(() => loadProjectsFromLocalStorage(), []);
+  const initialProject = useMemo(
+    () =>
+      initialData.projects.find((p) => p.id === initialData.activeProjectId) ??
+      initialData.projects[0] ??
+      createSampleProject(),
+    [initialData]
+  );
+
+  const [savedProjects, setSavedProjects] = useState<CreativeProject[]>(initialData.projects);
+  const [project, setProject] = useState<CreativeProject>(initialProject);
+  const [undoState, setUndoState] = useState<UndoRedoState>(() =>
+    createUndoRedoState(initialProject.snapshot)
+  );
+
+  const snapshot = undoState.present;
+  const mode = snapshot.mode;
+
+  // Selection & UI workspace navigation
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('inspector');
+  const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
+  const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(true);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
+  const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
+  const [statusNotification, setStatusNotification] = useState<string | null>(null);
+
+  // Loading & Error States
   const [isGraphLoading, setIsGraphLoading] = useState(false);
   const [isClarificationsLoading, setIsClarificationsLoading] = useState(false);
+  const [isBatchLoading, setIsBatchLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [isUpdatingPrompt, setIsUpdatingPrompt] = useState(false);
+  const [isPolishingPrompt, setIsPolishingPrompt] = useState(false);
 
-  const [isOutdated, setIsOutdated] = useState(false);
-  const [showModeChangePopup, setShowModeChangePopup] = useState(false);
-  const [showInfoModal, setShowInfoModal] = useState(false);
-  const [mode, setMode] = useState<GenerationMode>('image');
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [clarificationError, setClarificationError] = useState<string | null>(null);
+  const [galleryErrors, setGalleryErrors] = useState<Record<GenerationMode, string | null>>({
+    story: null,
+    image: null,
+  });
 
-  const modeRef = useRef<GenerationMode>(mode);
-  const graphRequestIdRef = useRef(0);
-  const clarifyRequestIdRef = useRef(0);
-  const generationRequestIdRef = useRef(0);
   const graphAbortRef = useRef<AbortController | null>(null);
   const clarifyAbortRef = useRef<AbortController | null>(null);
   const generationAbortRef = useRef<AbortController | null>(null);
-  const refineAbortRef = useRef<AbortController | null>(null);
 
-  const [images, setImages] = useState<string[]>([]);
-  const [imageWarning, setImageWarning] = useState<string | null>(null);
-  const [story, setStory] = useState<string | null>(null);
-  const [video, setVideo] = useState<string | null>(null);
-  const [galleryErrors, setGalleryErrors] = useState<Record<GenerationMode, string | null>>({
-    image: null,
-    story: null,
-    video: null,
-  });
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [clarificationError, setClarificationError] = useState<string | null>(null);
-
-  const [beliefGraph, setBeliefGraph] = useState<BeliefState | null>(null);
-  const [clarifications, setClarifications] = useState<Clarification[]>([]);
-  const [answeredQuestions, setAnsweredQuestions] = useState<string[]>([]);
-  const [skippedQuestions, setSkippedQuestions] = useState<string[]>([]);
-  const [hasGenerated, setHasGenerated] = useState(false);
-
-  const [lastAnalyzedPrompt, setLastAnalyzedPrompt] = useState<string | null>(null);
-  const [lastAnalyzedMode, setLastAnalyzedMode] = useState<GenerationMode | null>(null);
-
-  const [pendingAttributeUpdates, setPendingAttributeUpdates] = useState<Record<string, string>>(
-    {}
-  );
-  const [pendingRelationshipUpdates, setPendingRelationshipUpdates] = useState<
-    Record<string, string>
-  >({});
-  const [pendingClarificationAnswers, setPendingClarificationAnswers] = useState<
-    Record<string, string>
-  >({});
-
-  const [activeToolTab, setActiveToolTab] = useState<ToolTab>('clarify');
-  const [mobileView, setMobileView] = useState<MobileView>('editor');
-
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  const [statusNotification, setStatusNotification] = useState<string | null>(null);
+  // Derive synchronized active project with current undoState.present snapshot
+  const activeProject = useMemo<CreativeProject>(() => {
+    if (project.snapshot === undoState.present) return project;
+    const promptChanged = project.snapshot.refinedPrompt !== undoState.present.refinedPrompt;
+    const updatedArtifacts = promptChanged
+      ? project.artifacts.map((a) => ({ ...a, isOutdated: true }))
+      : project.artifacts;
+    return {
+      ...project,
+      snapshot: undoState.present,
+      artifacts: updatedArtifacts,
+    };
+  }, [project, undoState.present]);
 
   useEffect(() => {
-    if (isGenerating) {
-      setMobileView('preview');
-    }
-  }, [isGenerating]);
-
-  useEffect(() => {
-    modeRef.current = mode;
-  }, [mode]);
+    const timer = setTimeout(() => {
+      const res = saveProjectToLocalStorage(activeProject);
+      if (res.conflictDetected && res.error) {
+        setStatusNotification(res.error);
+      }
+      void saveProjectToIndexedDb(activeProject);
+      setSavedProjects((prev) => {
+        const idx = prev.findIndex((p) => p.id === activeProject.id);
+        if (idx === -1) return [activeProject, ...prev];
+        const copy = [...prev];
+        copy[idx] = activeProject;
+        return copy;
+      });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [activeProject]);
 
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
-      document.body.style.backgroundColor = '#111827';
+      document.body.style.backgroundColor = '#0d1117';
     } else {
       document.documentElement.classList.remove('dark');
       document.body.style.backgroundColor = '#f3f4f6';
     }
   }, [isDarkMode]);
 
+  // Keyboard shortcuts for Undo / Redo
   useEffect(() => {
-    return () => {
-      graphAbortRef.current?.abort();
-      clarifyAbortRef.current?.abort();
-      generationAbortRef.current?.abort();
-      refineAbortRef.current?.abort();
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          setUndoState((prev) => performRedo(prev).state);
+        } else {
+          setUndoState((prev) => performUndo(prev).state);
+        }
+      }
     };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const clearPendingUpdates = () => {
-    setPendingAttributeUpdates({});
-    setPendingRelationshipUpdates({});
-    setPendingClarificationAnswers({});
-  };
-
-  const handleModeChange = (newMode: GenerationMode) => {
-    if (newMode === mode) return;
-
-    graphRequestIdRef.current += 1;
-    clarifyRequestIdRef.current += 1;
-    generationRequestIdRef.current += 1;
-
-    graphAbortRef.current?.abort();
-    clarifyAbortRef.current?.abort();
-    generationAbortRef.current?.abort();
-    refineAbortRef.current?.abort();
-
-    setMode(newMode);
-    setIsGraphLoading(false);
-    setIsClarificationsLoading(false);
-    setIsGenerating(false);
-    setIsUpdatingPrompt(false);
-    setStatusNotification(null);
-    setShowModeChangePopup(true);
-  };
-
-  const refreshAnalysis = useCallback(
-    async (
-      currentPrompt: string,
-      currentAnsweredQuestions: string[],
-      currentMode: GenerationMode
-    ) => {
-      graphAbortRef.current?.abort();
-      clarifyAbortRef.current?.abort();
-      const graphController = new AbortController();
-      const clarifyController = new AbortController();
-      graphAbortRef.current = graphController;
-      clarifyAbortRef.current = clarifyController;
-
-      const graphReqId = ++graphRequestIdRef.current;
-      const clarifyReqId = ++clarifyRequestIdRef.current;
-      const isGraphCurrent = () =>
-        modeRef.current === currentMode && graphRequestIdRef.current === graphReqId;
-      const isClarifyCurrent = () =>
-        modeRef.current === currentMode && clarifyRequestIdRef.current === clarifyReqId;
-
-      setIsGraphLoading(true);
-      setIsClarificationsLoading(true);
-      setAnalysisError(null);
-      setClarificationError(null);
-
-      const graphPromise = analyzePromptToBeliefGraph(
-        currentPrompt,
-        currentMode,
-        graphController.signal
-      )
-        .then((graphStructure) => {
-          if (isGraphCurrent()) {
-            setBeliefGraph(graphStructure);
-          }
-        })
-        .catch((error: unknown) => {
-          if (isAbortError(error)) return;
-          if (isGraphCurrent()) {
-            setAnalysisError(
-              getReadableErrorMessage(error, 'Failed to extract belief graph.')
-            );
-          }
-        })
-        .finally(() => {
-          if (isGraphCurrent()) {
-            setIsGraphLoading(false);
-          }
-        });
-
-      const clarificationPromise = generateClarifications(
-        currentPrompt,
-        currentAnsweredQuestions,
-        currentMode,
-        clarifyController.signal
-      )
-        .then((generatedClarifications) => {
-          if (isClarifyCurrent()) {
-            setClarifications(generatedClarifications);
-          }
-        })
-        .catch((error: unknown) => {
-          if (isAbortError(error)) return;
-          if (isClarifyCurrent()) {
-            setClarificationError(
-              getReadableErrorMessage(error, 'Failed to generate clarifications.')
-            );
-          }
-        })
-        .finally(() => {
-          if (isClarifyCurrent()) {
-            setIsClarificationsLoading(false);
-          }
-        });
-
-      if (isGraphCurrent()) {
-        setLastAnalyzedPrompt(currentPrompt);
-        setLastAnalyzedMode(currentMode);
-      }
-
-      return Promise.all([graphPromise, clarificationPromise]);
+  const commitTransaction = useCallback(
+    (nextSnapshot: ProjectSnapshot, label: string, summary?: string, changeCount: number = 1) => {
+      setUndoState((prev) => pushUndoableTransaction(prev, nextSnapshot, label));
+      setProject((prev) =>
+        recordProjectRevision(
+          { ...prev, snapshot: nextSnapshot },
+          label,
+          summary ?? label,
+          changeCount
+        )
+      );
     },
     []
   );
 
-  const handleRefreshClarifications = useCallback(() => {
-    clarifyAbortRef.current?.abort();
-    const controller = new AbortController();
-    clarifyAbortRef.current = controller;
+  const selectedEntity = useMemo(() => {
+    if (!selectedEntityId) return null;
+    return (
+      snapshot.entities.find(
+        (e) => e.id === selectedEntityId || e.name === selectedEntityId
+      ) ?? null
+    );
+  }, [snapshot.entities, selectedEntityId]);
 
-    const requestId = ++clarifyRequestIdRef.current;
-    const requestMode = mode;
-    const isCurrent = () =>
-      modeRef.current === requestMode && clarifyRequestIdRef.current === requestId;
-
-    setIsClarificationsLoading(true);
-    setClarificationError(null);
-    setPendingClarificationAnswers({});
-    setStatusNotification(null);
-
-    const currentQuestions = clarifications.map((c) => c.question);
-    const newSkipped = [...skippedQuestions, ...currentQuestions];
-    setSkippedQuestions(newSkipped);
-
-    const excludeList = [...answeredQuestions, ...newSkipped];
-
-    generateClarifications(prompt, excludeList, requestMode, controller.signal)
-      .then((newClarifications) => {
-        if (isCurrent()) setClarifications(newClarifications);
-      })
-      .catch((error: unknown) => {
-        if (isAbortError(error)) return;
-        if (isCurrent()) {
-          setClarificationError(
-            getReadableErrorMessage(error, 'Failed to refresh clarifications.')
-          );
-        }
-      })
-      .finally(() => {
-        if (isCurrent()) {
-          setIsClarificationsLoading(false);
-        }
-      });
-  }, [prompt, answeredQuestions, mode, clarifications, skippedQuestions]);
-
-  const processRequest = useCallback(
-    async (
-      currentPrompt: string,
-      currentAnsweredQuestions: string[],
-      currentMode: GenerationMode,
-      skipAnalysis: boolean = false,
-      skipGeneration: boolean = false
-    ) => {
-      const genRequestId = ++generationRequestIdRef.current;
-      const requestMode = currentMode;
-      const isGenCurrent = () =>
-        modeRef.current === requestMode && generationRequestIdRef.current === genRequestId;
-
-      setGalleryErrors((prev) => ({ ...prev, [requestMode]: null }));
-
-      if (!skipGeneration) {
-        if (requestMode === 'image') {
-          setImages([]);
-          setImageWarning(null);
-        } else if (requestMode === 'story') {
-          setStory(null);
-        } else if (requestMode === 'video') {
-          setVideo(null);
-        }
-      }
-
-      setIsOutdated(false);
-      setStatusNotification(null);
-      setShowModeChangePopup(false);
-
-      if (!skipAnalysis) {
-        setBeliefGraph(null);
-        setClarifications([]);
-        clearPendingUpdates();
-        setSkippedQuestions([]);
-      }
-
-      const analysisPromise = !skipAnalysis
-        ? refreshAnalysis(currentPrompt, currentAnsweredQuestions, currentMode)
-        : Promise.resolve();
-
-      let generationPromise = Promise.resolve();
-
-      if (!skipGeneration) {
-        generationAbortRef.current?.abort();
-        const genController = new AbortController();
-        generationAbortRef.current = genController;
-
-        setIsGenerating(true);
-        generationPromise = (async () => {
-          try {
-            if (requestMode === 'image') {
-              const result = await generateImagesFromPrompt(
-                currentPrompt,
-                genController.signal
-              );
-              if (isGenCurrent()) {
-                setImages(result.images);
-                setImageWarning(result.warning);
-              }
-            } else if (requestMode === 'story') {
-              const generatedStory = await generateStoryFromPrompt(
-                currentPrompt,
-                genController.signal
-              );
-              if (isGenCurrent()) setStory(generatedStory);
-            } else if (requestMode === 'video') {
-              const generatedVideo = await generateVideoFromPrompt(
-                currentPrompt,
-                (msg) => {
-                  if (isGenCurrent()) setStatusNotification(msg);
-                },
-                genController.signal
-              );
-              if (isGenCurrent()) setVideo(generatedVideo);
-            }
-          } catch (error: unknown) {
-            if (isAbortError(error)) return;
-            if (isGenCurrent()) {
-              const message = getReadableErrorMessage(
-                error,
-                `An unknown error occurred during ${requestMode} generation.`
-              );
-              setGalleryErrors((prev) => ({ ...prev, [requestMode]: message }));
-            }
-          } finally {
-            if (isGenCurrent()) {
-              setIsGenerating(false);
-              setStatusNotification(null);
-            }
-          }
-        })();
-      }
-
-      await Promise.all([analysisPromise, generationPromise]);
-    },
-    [refreshAnalysis]
+  const consistencyIssues = useMemo(
+    () => evaluateProjectConsistency(snapshot),
+    [snapshot]
   );
 
-  const handlePromptSubmit = useCallback(() => {
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
-    setHasGenerated(true);
+  const latestStoryArtifact = useMemo(
+    () => project.artifacts.find((a) => a.mode === 'story' && a.storyText),
+    [project.artifacts]
+  );
 
-    const shouldSkipAnalysis =
-      trimmed === lastAnalyzedPrompt && mode === lastAnalyzedMode && beliefGraph !== null;
+  const latestImageArtifact = useMemo(
+    () => project.artifacts.find((a) => a.mode === 'image' && a.images && a.images.length > 0),
+    [project.artifacts]
+  );
 
-    if (shouldSkipAnalysis) {
-      void processRequest(trimmed, answeredQuestions, mode, true, false);
-    } else {
-      const newAnsweredQuestions: string[] = [];
-      setAnsweredQuestions(newAnsweredQuestions);
-      setClarifications([]);
-      void processRequest(trimmed, newAnsweredQuestions, mode, false, false);
-    }
-  }, [
-    prompt,
-    mode,
-    lastAnalyzedPrompt,
-    lastAnalyzedMode,
-    beliefGraph,
-    answeredQuestions,
-    processRequest,
-  ]);
+  const isCurrentOutputOutdated = useMemo(() => {
+    const activeArt = mode === 'story' ? latestStoryArtifact : latestImageArtifact;
+    return Boolean(activeArt?.isOutdated);
+  }, [mode, latestStoryArtifact, latestImageArtifact]);
 
-  const handleAnalyzeOnly = useCallback(() => {
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
-    const newAnsweredQuestions: string[] = [];
-    setAnsweredQuestions(newAnsweredQuestions);
-    setClarifications([]);
-    void processRequest(trimmed, newAnsweredQuestions, mode, false, true);
-  }, [prompt, mode, processRequest]);
+  // --- Handlers for Deterministic Local Creative Edits ---
 
-  const handleApplyAllUpdates = async () => {
-    if (isUpdatingPrompt) return;
+  const handleSetOriginalIdea = (newIdea: string) => {
+    const next: ProjectSnapshot = {
+      ...snapshot,
+      originalIdea: newIdea,
+    };
+    next.refinedPrompt = synthesizeRefinedPrompt(next);
+    setUndoState((prev) => ({ ...prev, present: next }));
+  };
 
-    const requestMode = mode;
-    const isCurrent = () => modeRef.current === requestMode;
+  const handleSetFreeformNotes = (notes: string) => {
+    const next: ProjectSnapshot = {
+      ...snapshot,
+      freeformNotes: notes,
+    };
+    next.refinedPrompt = synthesizeRefinedPrompt(next);
+    commitTransaction(next, 'Update Author Notes', 'Updated freeform author notes.');
+  };
 
-    refineAbortRef.current?.abort();
-    const controller = new AbortController();
-    refineAbortRef.current = controller;
-
-    setIsUpdatingPrompt(true);
-    setStatusNotification(null);
-
-    const qaPairs = Object.entries(pendingClarificationAnswers)
-      .filter(([, answer]) => answer.trim().length > 0)
-      .map(([question, answer]) => ({ question, answer: answer.trim() }));
-
-    const graphUpdates = buildGraphUpdates(
-      pendingAttributeUpdates,
-      pendingRelationshipUpdates,
-      beliefGraph?.relationships ?? []
+  const handleModeChange = (newMode: GenerationMode) => {
+    if (newMode === mode) return;
+    const next: ProjectSnapshot = {
+      ...snapshot,
+      mode: newMode,
+    };
+    next.refinedPrompt = synthesizeRefinedPrompt(next, newMode);
+    setUndoState((prev) => ({ ...prev, present: next }));
+    setStatusNotification(
+      `Switched to ${newMode === 'story' ? 'Story' : 'Image'} mode. Shared Story Bible and confirmed entities are preserved.`
     );
+  };
 
-    const newAnsweredQuestions = [...answeredQuestions, ...qaPairs.map((a) => a.question)];
+  const handleAttributeChange = (
+    entityName: string,
+    attributeName: string,
+    newValue: string
+  ) => {
+    const next = setEntityAttribute(snapshot, entityName, attributeName, newValue, 'user-edit');
+    commitTransaction(
+      next,
+      `Set ${entityName} → ${attributeName}: ${newValue}`,
+      `Updated ${entityName}'s ${attributeName} to "${newValue}".`
+    );
+  };
 
-    try {
-      const newRefinedPrompt = await refinePromptWithAllUpdates(
-        prompt,
-        qaPairs,
-        graphUpdates,
-        controller.signal
+  const handleRenameEntity = (entityIdOrName: string, newName: string) => {
+    const next = renameEntity(snapshot, entityIdOrName, newName, 'user-edit');
+    commitTransaction(
+      next,
+      `Rename entity to "${newName}"`,
+      `Renamed "${entityIdOrName}" to "${newName}" and updated all relationship references.`
+    );
+  };
+
+  const handleAddEntity = (name: string, category: EntityCategory, description: string) => {
+    const next = addEntity(snapshot, name, category, description, 'user-edit');
+    commitTransaction(
+      next,
+      `Add ${category}: ${name}`,
+      `Added new ${category} "${name}" to the Belief Graph.`
+    );
+  };
+
+  const handleUpsertRelationship = (source: string, target: string, label: string) => {
+    const next = upsertRelationship(snapshot, source, target, label, 'user-edit');
+    commitTransaction(
+      next,
+      `Relationship: ${source} → ${label} → ${target}`,
+      `Set relationship between ${source} and ${target} to "${label}".`
+    );
+  };
+
+  const handleRemoveRelationship = (relIdOrSource: string, target?: string) => {
+    const next = removeRelationship(snapshot, relIdOrSource, target);
+    commitTransaction(
+      next,
+      `Remove relationship`,
+      `Removed relationship from ${relIdOrSource}${target ? ` to ${target}` : ''}.`
+    );
+  };
+
+  const handleUpdateStoryBible = (field: keyof StoryBibleFields, value: string) => {
+    const next = updateStoryBibleField(snapshot, field, value, 'user-edit');
+    commitTransaction(
+      next,
+      `Update Story Bible: ${field}`,
+      `Set Story Bible ${field} to "${value}".`
+    );
+  };
+
+  const handleApplyDecisions = (
+    decisionIds: string[],
+    action: 'accept' | 'reject' | 'defer',
+    customValues?: Record<string, string>
+  ) => {
+    const res = applyDecisionBatch(snapshot, decisionIds, action, customValues);
+    if (res.conflicts.length > 0) {
+      setStatusNotification(res.conflicts[0]);
+      return;
+    }
+    if (res.appliedCount > 0) {
+      commitTransaction(
+        res.snapshot,
+        `${action === 'accept' ? 'Accept' : action === 'reject' ? 'Reject' : 'Defer'} ${res.appliedCount} decision${res.appliedCount === 1 ? '' : 's'}`,
+        `Applied batch ${action} to ${res.appliedCount} item(s) in Decision Inbox.`,
+        res.appliedCount
       );
+    }
+  };
 
-      if (!isCurrent()) return;
+  const handleAcceptAllPendingDecisions = () => {
+    const pendingIds = snapshot.decisions
+      .filter((d) => d.status === 'pending')
+      .map((d) => d.id);
+    if (pendingIds.length === 0) return;
+    handleApplyDecisions(pendingIds, 'accept');
+  };
 
-      setAnsweredQuestions(newAnsweredQuestions);
-      setPrompt(newRefinedPrompt);
-      setIsOutdated(true);
-      clearPendingUpdates();
-      setSkippedQuestions([]);
-
-      void refreshAnalysis(newRefinedPrompt, newAnsweredQuestions, requestMode);
-    } catch (error: unknown) {
-      if (isAbortError(error)) return;
-      if (isCurrent()) {
-        setGalleryErrors((prev) => ({
-          ...prev,
-          [requestMode]: getReadableErrorMessage(
-            error,
-            'Failed to refine prompt based on your changes.'
-          ),
-        }));
-      }
-    } finally {
-      if (isCurrent()) {
-        setIsUpdatingPrompt(false);
-        setStatusNotification(null);
+  const handleInspectDecisionTarget = (decision: DecisionItem) => {
+    if (decision.targetStoryField) {
+      setRightPanelTab('story-bible');
+      setMobileTab('inspector');
+      return;
+    }
+    if (decision.targetEntityId || decision.targetEntityName) {
+      const target = snapshot.entities.find(
+        (e) =>
+          e.id === decision.targetEntityId ||
+          e.name.toLowerCase() === decision.targetEntityName?.toLowerCase()
+      );
+      if (target) {
+        setSelectedEntityId(target.id ?? target.name);
+        setRightPanelTab('inspector');
+        setMobileTab('inspector');
       }
     }
   };
 
-  const ToolTabButton: React.FC<{ label: string; tab: ToolTab }> = ({ label, tab }) => (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={activeToolTab === tab}
-      onClick={() => setActiveToolTab(tab)}
-      className={`flex-1 py-3 px-2 text-xs sm:text-sm font-semibold text-center transition-colors relative whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 ${
-        activeToolTab === tab
-          ? 'text-blue-700 dark:text-blue-300 bg-white dark:bg-gray-800 border-b-2 border-blue-600 dark:border-blue-400'
-          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100/70 dark:hover:bg-gray-800/70 border-b border-gray-200 dark:border-gray-700'
-      }`}
-    >
-      {label}
-    </button>
-  );
+  // --- Natural-Language Batch Editing ---
 
-  const pendingClarificationCount = Object.keys(pendingClarificationAnswers).length;
-  const pendingGraphUpdatesCount =
-    Object.keys(pendingAttributeUpdates).length +
-    Object.keys(pendingRelationshipUpdates).length;
-  const totalUpdateCount = pendingClarificationCount + pendingGraphUpdatesCount;
+  const handlePreviewBatchInstruction = async (
+    instruction: string
+  ): Promise<BatchEditProposalResult> => {
+    // First run fast deterministic local interpreter
+    const localResult = interpretBatchInstructionLocally(instruction, snapshot);
+    if (localResult.operations.length > 0 || localResult.ambiguities.length > 0) {
+      return localResult;
+    }
+
+    // Fallback to server-side Gemini batch interpretation if local rules didn't match
+    setIsBatchLoading(true);
+    try {
+      const aiResult = await requestBatchEditInterpretation(instruction, {
+        prompt: snapshot.refinedPrompt,
+        entities: snapshot.entities.map((e) => ({
+          id: e.id,
+          name: e.name,
+          category: e.category,
+          excluded: e.excluded,
+          attributes: e.attributes.map((a) => ({
+            name: a.name,
+            value: a.confirmedValue ?? a.value[0]?.name ?? 'Unknown',
+            status: a.status,
+          })),
+        })),
+        relationships: snapshot.relationships.map((r) => ({
+          id: r.id,
+          source: r.source,
+          target: r.target,
+          label: r.label,
+        })),
+      });
+      return aiResult;
+    } catch {
+      return localResult;
+    } finally {
+      setIsBatchLoading(false);
+    }
+  };
+
+  const handleApplyBatchOperations = (
+    operations: ProposedOperation[],
+    instruction: string
+  ) => {
+    const res = applyProposedOperations(snapshot, operations);
+    if (res.appliedCount > 0) {
+      commitTransaction(
+        res.snapshot,
+        `Batch Edit (${res.appliedCount} ops)`,
+        `Applied natural-language batch edit: "${instruction}"`,
+        res.appliedCount
+      );
+      setStatusNotification(`Applied ${res.appliedCount} batch operation(s). Undo available.`);
+    }
+  };
+
+  // --- AI Analysis, Clarifications & Generation ---
+
+  const handleAnalyzeIdea = useCallback(async () => {
+    const trimmed = snapshot.originalIdea.trim();
+    if (!trimmed) return;
+
+    graphAbortRef.current?.abort();
+    clarifyAbortRef.current?.abort();
+    const graphController = new AbortController();
+    const clarifyController = new AbortController();
+    graphAbortRef.current = graphController;
+    clarifyAbortRef.current = clarifyController;
+
+    setIsGraphLoading(true);
+    setIsClarificationsLoading(true);
+    setAnalysisError(null);
+    setClarificationError(null);
+
+    const confirmedFacts = [
+      ...Object.entries(snapshot.storyBible)
+        .filter(([, f]) => f.status === 'confirmed' && f.value)
+        .map(([k, f]) => `${k}: ${f.value}`),
+      ...snapshot.entities
+        .filter((e) => !e.excluded)
+        .flatMap((e) =>
+          e.attributes
+            .filter((a) => a.status === 'confirmed' && a.confirmedValue)
+            .map((a) => `${e.name} ${a.name}: ${a.confirmedValue}`)
+        ),
+    ];
+
+    try {
+      const [newGraph, newClarifications] = await Promise.all([
+        analyzePromptToBeliefGraph(trimmed, mode, graphController.signal).catch((err) => {
+          if (!isAbortError(err)) {
+            setAnalysisError(
+              getReadableErrorMessage(err, 'Could not reach AI analysis service; local plan preserved.')
+            );
+          }
+          return null;
+        }),
+        generateClarifications(
+          trimmed,
+          [...snapshot.answeredQuestions, ...snapshot.skippedQuestions],
+          mode,
+          clarifyController.signal,
+          confirmedFacts
+        ).catch((err) => {
+          if (!isAbortError(err)) {
+            setClarificationError(
+              getReadableErrorMessage(err, 'Could not fetch new AI questions; existing decisions preserved.')
+            );
+          }
+          return null;
+        }),
+      ]);
+
+      if (newGraph || newClarifications) {
+        const merged = mergeAnalysisIntoSnapshot(snapshot, newGraph, newClarifications);
+        commitTransaction(
+          merged,
+          'Reanalyze Prompt with AI',
+          'Merged AI analysis while preserving confirmed user decisions.'
+        );
+      }
+    } finally {
+      setIsGraphLoading(false);
+      setIsClarificationsLoading(false);
+    }
+  }, [snapshot, mode, commitTransaction]);
+
+  const handleRefreshClarifications = useCallback(async () => {
+    clarifyAbortRef.current?.abort();
+    const controller = new AbortController();
+    clarifyAbortRef.current = controller;
+
+    setIsClarificationsLoading(true);
+    setClarificationError(null);
+
+    const confirmedFacts = snapshot.entities
+      .filter((e) => !e.excluded)
+      .flatMap((e) =>
+        e.attributes
+          .filter((a) => a.status === 'confirmed' && a.confirmedValue)
+          .map((a) => `${e.name} ${a.name}: ${a.confirmedValue}`)
+      );
+
+    try {
+      const freshClarifications = await generateClarifications(
+        snapshot.refinedPrompt || snapshot.originalIdea,
+        [...snapshot.answeredQuestions, ...snapshot.skippedQuestions],
+        mode,
+        controller.signal,
+        confirmedFacts
+      );
+      const merged = mergeAnalysisIntoSnapshot(snapshot, null, freshClarifications);
+      commitTransaction(merged, 'Request Additional Clarifications');
+    } catch (err) {
+      if (!isAbortError(err)) {
+        setClarificationError(
+          getReadableErrorMessage(err, 'Failed to request additional clarifications.')
+        );
+      }
+    } finally {
+      setIsClarificationsLoading(false);
+    }
+  }, [snapshot, mode, commitTransaction]);
+
+  const handleGenerateOutput = useCallback(async () => {
+    const promptToUse = (snapshot.refinedPrompt || snapshot.originalIdea).trim();
+    if (!promptToUse) return;
+
+    generationAbortRef.current?.abort();
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
+
+    const requestMode = mode;
+    setIsGenerating(true);
+    setShowOutputDrawer(true);
+    setGalleryErrors((prev) => ({ ...prev, [requestMode]: null }));
+
+    try {
+      if (requestMode === 'story') {
+        const generatedStory = await generateStoryFromPrompt(promptToUse, controller.signal);
+        const newArt = {
+          id: makeStableId('art_story'),
+          mode: 'story' as const,
+          createdAt: Date.now(),
+          revisionId: project.revisions[0]?.id ?? 'rev_latest',
+          promptUsed: promptToUse,
+          storyText: generatedStory,
+          isOutdated: false,
+        };
+        setProject((prev) => ({
+          ...prev,
+          updatedAt: Date.now(),
+          artifacts: [newArt, ...prev.artifacts.filter((a) => a.mode !== 'story')],
+        }));
+      } else {
+        const result = await generateImagesFromPrompt(promptToUse, controller.signal);
+        const newArt = {
+          id: makeStableId('art_img'),
+          mode: 'image' as const,
+          createdAt: Date.now(),
+          revisionId: project.revisions[0]?.id ?? 'rev_latest',
+          promptUsed: promptToUse,
+          images: result.images,
+          warning: result.warning,
+          isOutdated: false,
+        };
+        setProject((prev) => ({
+          ...prev,
+          updatedAt: Date.now(),
+          artifacts: [newArt, ...prev.artifacts.filter((a) => a.mode !== 'image')],
+        }));
+      }
+    } catch (err) {
+      if (!isAbortError(err)) {
+        const message = getReadableErrorMessage(
+          err,
+          `Failed to generate ${requestMode}. Check your server API key configuration.`
+        );
+        setGalleryErrors((prev) => ({ ...prev, [requestMode]: message }));
+      }
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [snapshot.refinedPrompt, snapshot.originalIdea, mode, project.revisions]);
+
+  const handlePolishPromptWithAi = async () => {
+    if (isPolishingPrompt) return;
+    setIsPolishingPrompt(true);
+    try {
+      const polished = await refinePromptWithAllUpdates(
+        snapshot.refinedPrompt,
+        [],
+        []
+      );
+      const next: ProjectSnapshot = {
+        ...snapshot,
+        refinedPrompt: polished,
+      };
+      commitTransaction(next, 'AI Polish Refined Prompt');
+    } catch (err) {
+      setStatusNotification(
+        getReadableErrorMessage(err, 'Could not run AI prompt polish; structured prompt preserved.')
+      );
+    } finally {
+      setIsPolishingPrompt(false);
+    }
+  };
+
+  // --- Persistence, History & Export/Import Handlers ---
+
+  const handleUndo = () => {
+    const { state, undoneLabel } = performUndo(undoState);
+    setUndoState(state);
+    if (undoneLabel) {
+      setStatusNotification(`Undid: ${undoneLabel}`);
+    }
+  };
+
+  const handleRedo = () => {
+    const { state, redoneLabel } = performRedo(undoState);
+    setUndoState(state);
+    if (redoneLabel) {
+      setStatusNotification(`Redid: ${redoneLabel}`);
+    }
+  };
+
+  const handleRestoreRevision = (revisionId: string) => {
+    const res = restoreProjectRevision(activeProject, undoState, revisionId);
+    if (!res) return;
+    setProject(res.project);
+    setUndoState(res.undoState);
+    setStatusNotification('Restored project revision safely (previous state saved in history).');
+  };
+
+  const handleResetSampleProject = () => {
+    const sample = createSampleProject();
+    setProject(sample);
+    setUndoState(createUndoRedoState(sample.snapshot));
+    setSelectedEntityId(null);
+    saveProjectToLocalStorage(sample);
+    setStatusNotification('Loaded sample story plan: "Cat’s Woodland Dinner Party".');
+  };
+
+  const handleSwitchProject = (projectId: string) => {
+    const target = savedProjects.find((p) => p.id === projectId);
+    if (!target) return;
+    setProject(target);
+    setUndoState(createUndoRedoState(target.snapshot));
+    setSelectedEntityId(null);
+  };
+
+  const handleCreateNewProject = (name: string, initialPrompt: string) => {
+    const now = Date.now();
+    const newSnap: ProjectSnapshot = {
+      originalIdea: initialPrompt,
+      refinedPrompt: initialPrompt,
+      freeformNotes: '',
+      mode: 'story',
+      entities: [],
+      relationships: [],
+      storyBible: createEmptyStoryBible(now),
+      clarifications: [],
+      decisions: [],
+      answeredQuestions: [],
+      skippedQuestions: [],
+    };
+    const newProj: CreativeProject = {
+      schemaVersion: 2,
+      id: makeStableId('proj'),
+      name,
+      createdAt: now,
+      updatedAt: now,
+      snapshot: newSnap,
+      artifacts: [],
+      revisions: [
+        {
+          id: makeStableId('rev'),
+          timestamp: now,
+          label: 'Created Project',
+          summary: `Created project "${name}"`,
+          changeCount: 0,
+          snapshot: structuredClone(newSnap),
+        },
+      ],
+    };
+    setProject(newProj);
+    setUndoState(createUndoRedoState(newSnap));
+    saveProjectToLocalStorage(newProj);
+  };
+
+  const handleDeleteProject = (projectId: string) => {
+    const remaining = deleteProjectFromLocalStorage(projectId);
+    setSavedProjects(remaining);
+    if (project.id === projectId && remaining.length > 0) {
+      setProject(remaining[0]);
+      setUndoState(createUndoRedoState(remaining[0].snapshot));
+    }
+  };
+
+  const handleExportJson = () => {
+    downloadTextFile(
+      `${activeProject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'project'}.json`,
+      exportProjectToJson(activeProject),
+      'application/json;charset=utf-8'
+    );
+  };
+
+  const handleExportStoryBibleMarkdown = () => {
+    downloadTextFile(
+      `${activeProject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'story'}-bible.md`,
+      exportStoryBibleMarkdown(activeProject),
+      'text/markdown;charset=utf-8'
+    );
+  };
+
+  const handleExportPromptText = () => {
+    downloadTextFile('refined-prompt.md', snapshot.refinedPrompt, 'text/markdown;charset=utf-8');
+  };
+
+  const handleImportProjectJson = (rawJson: string): { ok: boolean; error?: string } => {
+    try {
+      const parsed = JSON.parse(rawJson) as unknown;
+      const migrated = migrateProjectPayload(parsed);
+      setProject(migrated);
+      setUndoState(createUndoRedoState(migrated.snapshot));
+      saveProjectToLocalStorage(migrated);
+      setStatusNotification(`Imported project "${migrated.name}".`);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Invalid project JSON file.',
+      };
+    }
+  };
+
+  const handleSelectHeaderSection = (section: WorkspaceSection) => {
+    if (section === 'story-bible') {
+      setRightPanelTab('story-bible');
+      setMobileTab('inspector');
+    } else if (section === 'history') {
+      setRightPanelTab('history');
+      setMobileTab('inspector');
+    } else if (section === 'output') {
+      setShowOutputDrawer(true);
+      setMobileTab('output');
+    } else {
+      setRightPanelTab('inspector');
+      setMobileTab('graph');
+    }
+  };
+
+  const pendingDecisionCount = snapshot.decisions.filter((d) => d.status === 'pending').length;
 
   return (
     <div
       className={`${
         isDarkMode ? 'dark' : ''
-      } font-sans h-screen flex flex-col bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-200 overflow-hidden`}
+      } font-sans h-screen flex flex-col bg-gray-100 dark:bg-gray-950 text-gray-900 dark:text-gray-100 transition-colors duration-150 overflow-hidden`}
     >
       <Header
         isDarkMode={isDarkMode}
         toggleDarkMode={() => setIsDarkMode((prev) => !prev)}
         onShowInfo={() => setShowInfoModal(true)}
+        onSelectSection={handleSelectHeaderSection}
+        onLoadSampleProject={handleResetSampleProject}
       />
 
       {statusNotification && (
         <div
-          className="fixed top-20 left-1/2 -translate-x-1/2 z-[2000] animate-fade-in-down px-4 w-full max-w-md"
+          className="fixed top-16 left-1/2 -translate-x-1/2 z-[2000] px-4 w-full max-w-md"
           role="status"
           aria-live="polite"
         >
-          <div className="bg-amber-50 dark:bg-amber-900/95 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-100 px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 backdrop-blur-sm">
-            <span className="text-sm font-medium flex-1">{statusNotification}</span>
+          <div className="bg-gray-900 dark:bg-gray-800 border border-gray-700 text-white px-4 py-2.5 rounded-lg shadow-lg flex items-center justify-between gap-3 text-xs">
+            <span className="font-medium">{statusNotification}</span>
             <button
               type="button"
               onClick={() => setStatusNotification(null)}
-              className="text-amber-700 dark:text-amber-200 hover:text-amber-950 dark:hover:text-white p-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+              className="text-gray-300 hover:text-white px-1.5 py-0.5 rounded"
               aria-label="Dismiss status notification"
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-4 w-4"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                  clipRule="evenodd"
-                />
-              </svg>
+              &times;
             </button>
           </div>
         </div>
       )}
 
-      <main className="flex-1 flex flex-col w-full max-w-screen-2xl mx-auto xl:p-5 overflow-hidden min-h-0">
-        <div className="flex-1 flex flex-col xl:grid xl:grid-cols-2 xl:gap-5 min-h-0">
-          {/* Left Column: Prompt + Co-Creation Tools */}
-          <section
-            aria-label="Prompt editor and analysis tools"
-            className={`flex flex-col bg-white dark:bg-gray-800 xl:rounded-lg xl:border border-gray-200 dark:border-gray-700 transition-colors duration-200 ${
-              mobileView === 'editor' ? 'flex flex-1' : 'hidden xl:flex'
-            } h-full overflow-hidden`}
-          >
-            <div className="flex-shrink-0 z-10 border-b border-gray-200 dark:border-gray-700">
-              <PromptInput
-                prompt={prompt}
-                setPrompt={setPrompt}
-                onSubmit={handlePromptSubmit}
-                onAnalyze={handleAnalyzeOnly}
-                isLoading={isGenerating || isUpdatingPrompt}
-                isGenerating={isGenerating}
-                isFirstRun={!hasGenerated}
-                mode={mode}
-                setMode={handleModeChange}
-              />
-            </div>
+      {/* Unified Three-Panel Desktop Workspace */}
+      <main className="flex-1 grid grid-cols-1 xl:grid-cols-12 gap-3 p-3 overflow-hidden min-h-0">
+        {/* Left Panel (3 cols on xl): Decision Inbox, Clarifications 2.0 & Natural-Language Batch Editing */}
+        <div
+          className={`xl:col-span-3 h-full min-h-0 ${
+            mobileTab === 'decisions' ? 'flex flex-col' : 'hidden xl:flex xl:flex-col'
+          }`}
+        >
+          <DecisionInboxPanel
+            decisions={snapshot.decisions}
+            onApplyDecisions={handleApplyDecisions}
+            onInspectDecisionTarget={handleInspectDecisionTarget}
+            onRefreshClarifications={handleRefreshClarifications}
+            isClarificationsLoading={isClarificationsLoading}
+            clarificationError={clarificationError}
+            onPreviewBatchInstruction={handlePreviewBatchInstruction}
+            onApplyBatchOperations={handleApplyBatchOperations}
+            isBatchLoading={isBatchLoading}
+          />
+        </div>
 
-            <div
-              role="tablist"
-              aria-label="Co-creation analysis tools"
-              className="flex flex-shrink-0 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700"
-            >
-              <ToolTabButton label="Clarifications" tab="clarify" />
-              <ToolTabButton label="Belief Graph" tab="graph" />
-              <ToolTabButton
-                label={
-                  mode === 'image'
-                    ? 'Image Attributes'
-                    : mode === 'video'
-                      ? 'Video Attributes'
-                      : 'Story Attributes'
+        {/* Center Panel (6 cols on xl): Seed Prompt + Interactive Belief Graph 2.0 + Collapsible Output Deck */}
+        <div
+          className={`xl:col-span-6 h-full min-h-0 flex-col gap-3 ${
+            mobileTab === 'graph' || mobileTab === 'output' ? 'flex' : 'hidden xl:flex'
+          }`}
+        >
+          <PromptInput
+            prompt={snapshot.originalIdea}
+            setPrompt={handleSetOriginalIdea}
+            onSubmit={handleGenerateOutput}
+            onAnalyze={handleAnalyzeIdea}
+            isLoading={isGraphLoading || isGenerating}
+            isGenerating={isGenerating}
+            isFirstRun={!latestStoryArtifact && !latestImageArtifact}
+            mode={mode}
+            setMode={handleModeChange}
+          />
+
+          <div
+            className={`flex-1 min-h-0 flex flex-col ${
+              mobileTab === 'output' ? 'hidden xl:flex' : 'flex'
+            }`}
+          >
+            <BeliefGraph
+              data={{
+                prompt: snapshot.originalIdea,
+                entities: snapshot.entities,
+                relationships: snapshot.relationships,
+              }}
+              isLoading={isGraphLoading}
+              error={analysisError}
+              selectedEntity={selectedEntity}
+              onSelectEntity={(ent) => {
+                setSelectedEntityId(ent ? (ent.id ?? ent.name) : null);
+                if (ent) {
+                  setRightPanelTab('inspector');
                 }
-                tab="attributes"
+              }}
+              onRelationshipChange={handleUpsertRelationship}
+              onAttributeChange={handleAttributeChange}
+              currentPrompt={snapshot.originalIdea}
+            />
+          </div>
+
+          {(showOutputDrawer || mobileTab === 'output') && (
+            <div
+              className={`flex-shrink-0 ${
+                mobileTab === 'output'
+                  ? 'flex-1 min-h-0 xl:flex-none xl:h-64'
+                  : 'hidden xl:block xl:h-64'
+              }`}
+            >
+              <OutputDisplay
+                originalIdea={snapshot.originalIdea}
+                refinedPrompt={snapshot.refinedPrompt}
+                freeformNotes={snapshot.freeformNotes}
+                onChangeFreeformNotes={handleSetFreeformNotes}
+                onPolishPromptWithAi={handlePolishPromptWithAi}
+                isPolishingPrompt={isPolishingPrompt}
+                images={latestImageArtifact?.images ?? []}
+                imageWarning={latestImageArtifact?.warning ?? null}
+                story={latestStoryArtifact?.storyText ?? null}
+                mode={mode}
+                isLoading={isGenerating}
+                error={galleryErrors[mode]}
+                isOutdated={isCurrentOutputOutdated}
+                onGenerate={handleGenerateOutput}
               />
             </div>
+          )}
+        </div>
 
-            <div className="relative bg-gray-50/40 dark:bg-gray-900/30 flex-1 overflow-hidden flex flex-col min-h-[360px] pb-[3.5rem] xl:pb-0">
-              {totalUpdateCount > 0 && (
-                <div className="flex-shrink-0 bg-blue-50 dark:bg-blue-900/25 border-b border-blue-200 dark:border-blue-800 px-4 py-2.5 flex justify-between items-center z-20">
-                  <div className="text-xs text-blue-900 dark:text-blue-200 font-medium tabular-nums">
-                    {totalUpdateCount} pending change{totalUpdateCount !== 1 ? 's' : ''}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleApplyAllUpdates}
-                    disabled={isUpdatingPrompt}
-                    className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2 px-4 rounded-md flex items-center gap-2 transition-colors disabled:opacity-70 disabled:cursor-wait whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                  >
-                    {isUpdatingPrompt ? (
-                      <>
-                        <svg
-                          className="animate-spin h-3.5 w-3.5 text-white"
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          aria-hidden="true"
-                        >
-                          <circle
-                            className="opacity-25"
-                            cx="12"
-                            cy="12"
-                            r="10"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                          />
-                          <path
-                            className="opacity-75"
-                            fill="currentColor"
-                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                          />
-                        </svg>
-                        <span>Updating...</span>
-                      </>
-                    ) : (
-                      <span>Update Prompt</span>
-                    )}
-                  </button>
-                </div>
-              )}
-
-              <div
-                role="tabpanel"
-                className={`p-4 ${
-                  activeToolTab === 'clarify' ? 'flex flex-col' : 'hidden'
-                } h-full overflow-hidden`}
-              >
-                <ClarificationCard
-                  clarifications={clarifications}
-                  onRefresh={handleRefreshClarifications}
-                  isLoading={isClarificationsLoading}
-                  error={clarificationError}
-                  pendingAnswers={pendingClarificationAnswers}
-                  setPendingAnswers={setPendingClarificationAnswers}
-                  prompt={prompt}
-                />
-              </div>
-
-              <div
-                role="tabpanel"
-                className={`flex-1 w-full min-h-0 p-0 ${
-                  activeToolTab !== 'clarify' ? 'flex flex-col' : 'hidden'
-                }`}
-              >
-                <BeliefGraph
-                  data={beliefGraph}
-                  isLoading={isGraphLoading}
-                  error={analysisError}
-                  view={activeToolTab === 'attributes' ? 'attributes' : 'graph'}
-                  pendingAttributeUpdates={pendingAttributeUpdates}
-                  setPendingAttributeUpdates={setPendingAttributeUpdates}
-                  pendingRelationshipUpdates={pendingRelationshipUpdates}
-                  setPendingRelationshipUpdates={setPendingRelationshipUpdates}
-                  currentPrompt={prompt}
-                />
-              </div>
-            </div>
-          </section>
-
-          {/* Right Column: Output Preview */}
-          <section
-            aria-label="Generated output"
-            className={`flex flex-col xl:flex ${
-              mobileView === 'preview' ? 'flex' : 'hidden'
-            } flex-1 h-full min-h-0 pb-[3.5rem] xl:pb-0`}
-          >
-            <OutputDisplay
-              images={images}
-              imageWarning={imageWarning}
-              story={story}
-              video={video}
-              mode={mode}
-              isLoading={isGenerating}
-              statusMessage={statusNotification}
-              error={galleryErrors[mode]}
-              isOutdated={isOutdated}
-            />
-          </section>
+        {/* Right Panel (3 cols on xl): Contextual Inspector, Story Bible, Consistency, History & Export */}
+        <div
+          className={`xl:col-span-3 h-full min-h-0 ${
+            mobileTab === 'inspector' ? 'flex flex-col' : 'hidden xl:flex xl:flex-col'
+          }`}
+        >
+          <ContextualInspector
+            activeTab={rightPanelTab}
+            onSelectTab={setRightPanelTab}
+            project={activeProject}
+            savedProjects={savedProjects}
+            selectedEntity={selectedEntity}
+            selectedRelationship={null}
+            onSelectEntity={(ent) => setSelectedEntityId(ent ? (ent.id ?? ent.name) : null)}
+            onAttributeChange={handleAttributeChange}
+            onRenameEntity={handleRenameEntity}
+            onAddEntity={handleAddEntity}
+            onUpsertRelationship={handleUpsertRelationship}
+            onRemoveRelationship={handleRemoveRelationship}
+            onUpdateStoryBible={handleUpdateStoryBible}
+            consistencyIssues={consistencyIssues}
+            onRestoreRevision={handleRestoreRevision}
+            onSwitchProject={handleSwitchProject}
+            onCreateNewProject={handleCreateNewProject}
+            onDeleteProject={handleDeleteProject}
+            onExportJson={handleExportJson}
+            onExportStoryBibleMarkdown={handleExportStoryBibleMarkdown}
+            onExportPromptText={handleExportPromptText}
+            onImportProjectJson={handleImportProjectJson}
+            isLoading={isGraphLoading}
+          />
         </div>
       </main>
 
-      {/* Mobile Bottom Navigation */}
+      {/* Mobile Workspace Switcher (< xl) */}
       <nav
-        aria-label="Mobile view switcher"
-        className="xl:hidden bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 flex justify-around px-2 py-1.5 z-[200] fixed bottom-0 left-0 right-0"
-        style={{ paddingBottom: 'max(0.375rem, env(safe-area-inset-bottom))' }}
+        aria-label="Mobile workspace panels"
+        className="xl:hidden bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 grid grid-cols-4 gap-1 px-2 py-1.5 flex-shrink-0"
       >
-        <button
-          type="button"
-          onClick={() => setMobileView('editor')}
-          aria-current={mobileView === 'editor' ? 'page' : undefined}
-          className={`flex-1 flex flex-col items-center justify-center py-1 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-            mobileView === 'editor'
-              ? 'text-blue-600 dark:text-blue-400'
-              : 'text-gray-600 dark:text-gray-400'
-          }`}
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5 mb-0.5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            aria-hidden="true"
+        {(
+          [
+            ['decisions', `Inbox (${pendingDecisionCount})`],
+            ['graph', 'Belief Graph'],
+            ['inspector', 'Inspector'],
+            ['output', 'Output'],
+          ] as const
+        ).map(([tabKey, label]) => (
+          <button
+            key={tabKey}
+            type="button"
+            onClick={() => setMobileTab(tabKey)}
+            aria-current={mobileTab === tabKey ? 'page' : undefined}
+            className={`py-2 px-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap text-center ${
+              mobileTab === tabKey
+                ? 'text-blue-600 dark:text-blue-400 bg-blue-50/50 dark:bg-blue-950/40'
+                : 'text-gray-600 dark:text-gray-400'
+            }`}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-            />
-          </svg>
-          <span className="text-[11px] font-semibold">Editor</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setMobileView('preview')}
-          aria-current={mobileView === 'preview' ? 'page' : undefined}
-          className={`flex-1 flex flex-col items-center justify-center py-1 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-            mobileView === 'preview'
-              ? 'text-blue-600 dark:text-blue-400'
-              : 'text-gray-600 dark:text-gray-400'
-          }`}
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5 mb-0.5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-            />
-          </svg>
-          <span className="text-[11px] font-semibold">Preview</span>
-        </button>
+            {label}
+          </button>
+        ))}
       </nav>
 
-      <InfoModal isOpen={showInfoModal} onClose={() => setShowInfoModal(false)} />
+      {/* Bottom Area: Undo/Redo, Pending Change Review & Generation */}
+      <WorkspaceBottomBar
+        pendingDecisionCount={pendingDecisionCount}
+        canUndo={undoState.past.length > 0}
+        canRedo={undoState.future.length > 0}
+        undoLabel={undoState.past[undoState.past.length - 1]?.label}
+        redoLabel={undoState.future[0]?.label}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onAcceptAllPending={handleAcceptAllPendingDecisions}
+        onReviewChanges={() => {
+          setShowOutputDrawer(true);
+          setRightPanelTab('story-bible');
+        }}
+        mode={mode}
+        onModeChange={handleModeChange}
+        onGenerate={handleGenerateOutput}
+        isGenerating={isGenerating}
+        showOutputDrawer={showOutputDrawer}
+        onToggleOutputDrawer={() => setShowOutputDrawer((prev) => !prev)}
+        revisionCount={project.revisions.length}
+        isOutdated={isCurrentOutputOutdated}
+      />
 
-      {showModeChangePopup && (
-        <div className="fixed bottom-16 xl:bottom-4 right-4 z-[2000] animate-fade-in-up max-w-sm w-[calc(100%-2rem)]">
-          <div
-            role="status"
-            className="bg-white dark:bg-gray-800 border border-amber-300 dark:border-amber-700 rounded-lg shadow-xl p-4 relative flex items-start gap-3"
-          >
-            <svg
-              className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5"
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                fillRule="evenodd"
-                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                clipRule="evenodd"
-              />
-            </svg>
-            <div className="pr-6">
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                Mode Changed
-              </h3>
-              <p className="mt-1 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
-                The belief graph and clarifications are preserved from the previous mode for reference.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowModeChangePopup(false)}
-              className="absolute top-2.5 right-2.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 p-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              aria-label="Dismiss mode change notice"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-4 w-4"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      )}
+      <InfoModal isOpen={showInfoModal} onClose={() => setShowInfoModal(false)} />
     </div>
   );
 }

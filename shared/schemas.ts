@@ -4,9 +4,16 @@
  */
 
 import { z } from 'zod';
-import type { BeliefState, Clarification } from './types.ts';
+import type {
+  BatchEditProposalResult,
+  BeliefState,
+  Clarification,
+  EntityCategory,
+  QuestionTarget,
+  StoryBibleFields,
+} from './types.ts';
 
-export const GenerationModeSchema = z.enum(['image', 'story', 'video']);
+export const GenerationModeSchema = z.enum(['story', 'image']);
 
 export const NonEmptyPromptSchema = z
   .string()
@@ -23,6 +30,7 @@ export const ClarifyRequestSchema = z.object({
   prompt: NonEmptyPromptSchema,
   mode: GenerationModeSchema,
   askedQuestions: z.array(z.string().max(1000)).max(100).default([]),
+  confirmedFacts: z.array(z.string().max(1000)).max(200).optional().default([]),
 });
 
 export const ClarificationAnswerSchema = z.object({
@@ -56,6 +64,40 @@ export const GenerateMediaRequestSchema = z.object({
   prompt: NonEmptyPromptSchema,
 });
 
+export const BatchEditRequestSchema = z.object({
+  instruction: z.string().trim().min(1, 'Instruction cannot be empty.').max(2000),
+  prompt: z.string().max(8000).default(''),
+  entities: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        name: z.string(),
+        category: z.string().optional(),
+        excluded: z.boolean().optional(),
+        attributes: z
+          .array(
+            z.object({
+              name: z.string(),
+              value: z.string(),
+              status: z.string().optional(),
+            })
+          )
+          .default([]),
+      })
+    )
+    .default([]),
+  relationships: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        source: z.string(),
+        target: z.string(),
+        label: z.string(),
+      })
+    )
+    .default([]),
+});
+
 // --- Untrusted Gemini JSON output validation schemas ---
 
 const RawAttributeSchema = z.object({
@@ -66,6 +108,9 @@ const RawAttributeSchema = z.object({
 
 const RawEntitySchema = z.object({
   name: z.string().trim().min(1),
+  category: z
+    .enum(['character', 'location', 'object', 'event', 'group', 'scene'])
+    .optional(),
   presence_in_prompt: z.boolean(),
   description: z.string().default(''),
   alternatives: z.array(z.string().trim().min(1)).nullable().optional(),
@@ -87,9 +132,61 @@ export const RawBeliefGraphSchema = z.object({
 export const RawClarificationItemSchema = z.object({
   question: z.string().trim().min(1),
   options: z.array(z.string().trim().min(1)).min(1),
+  targetType: z
+    .enum(['entity_attribute', 'relationship', 'story_bible', 'general'])
+    .optional(),
+  targetEntityName: z.string().trim().optional(),
+  targetAttributeName: z.string().trim().optional(),
+  targetStoryField: z.string().trim().optional(),
+  category: z
+    .enum(['character', 'setting', 'plot', 'tone', 'visual', 'general'])
+    .optional(),
+  impact: z.string().trim().optional(),
 });
 
-export const RawClarificationsSchema = z.array(RawClarificationItemSchema).min(1);
+export const RawClarificationsSchema = z.array(RawClarificationItemSchema).min(1).max(6);
+
+export const RawBatchEditResponseSchema = z.object({
+  operations: z
+    .array(
+      z.object({
+        type: z.enum([
+          'set_attribute',
+          'add_attribute',
+          'add_entity',
+          'rename_entity',
+          'exclude_entity',
+          'add_relationship',
+          'update_relationship',
+          'remove_relationship',
+          'update_story_bible',
+        ]),
+        summary: z.string().trim().min(1),
+        entityName: z.string().optional(),
+        newEntityName: z.string().optional(),
+        entityCategory: z
+          .enum(['character', 'location', 'object', 'event', 'group', 'scene'])
+          .optional(),
+        attributeName: z.string().optional(),
+        nextValue: z.string().optional(),
+        sourceEntityName: z.string().optional(),
+        targetEntityName: z.string().optional(),
+        storyField: z.string().optional(),
+      })
+    )
+    .default([]),
+  ambiguities: z
+    .array(
+      z.object({
+        phrase: z.string(),
+        reason: z.string(),
+        candidates: z.array(z.string()).default([]),
+        clarifyingQuestion: z.string(),
+      })
+    )
+    .default([]),
+  warnings: z.array(z.string()).default([]),
+});
 
 export function stripMarkdownCodeFence(text: string): string {
   const trimmed = text.trim();
@@ -120,6 +217,7 @@ export function parseAndValidateBeliefGraph(rawText: string, prompt: string): Be
     prompt,
     entities: validated.data.entities.map((entity) => ({
       name: entity.name,
+      category: entity.category as EntityCategory | undefined,
       presence_in_prompt: entity.presence_in_prompt,
       description: entity.description,
       alternatives: (entity.alternatives ?? []).map((name) => ({ name })),
@@ -138,6 +236,21 @@ export function parseAndValidateBeliefGraph(rawText: string, prompt: string): Be
   };
 }
 
+const VALID_STORY_FIELDS = new Set<keyof StoryBibleFields>([
+  'genre',
+  'tone',
+  'narrativePerspective',
+  'intendedAudience',
+  'setting',
+  'themes',
+  'centralConflict',
+  'pacing',
+  'continuityRules',
+  'explicitExclusions',
+  'visualStyle',
+  'cameraAndLighting',
+]);
+
 export function parseAndValidateClarifications(rawText: string): Clarification[] {
   const cleaned = stripMarkdownCodeFence(rawText);
   let parsedJson: unknown;
@@ -154,8 +267,73 @@ export function parseAndValidateClarifications(rawText: string): Clarification[]
     );
   }
 
-  return validated.data.map((item) => ({
-    question: item.question,
-    options: item.options,
-  }));
+  return validated.data.map((item, idx) => {
+    let target: QuestionTarget | undefined;
+    if (item.targetType) {
+      const storyField =
+        item.targetStoryField && VALID_STORY_FIELDS.has(item.targetStoryField as keyof StoryBibleFields)
+          ? (item.targetStoryField as keyof StoryBibleFields)
+          : undefined;
+      target = {
+        type: item.targetType,
+        entityName: item.targetEntityName || undefined,
+        attributeName: item.targetAttributeName || undefined,
+        storyField,
+      };
+    }
+
+    return {
+      id: `clar_${Date.now()}_${idx}`,
+      question: item.question,
+      options: item.options,
+      target,
+      category: item.category ?? 'general',
+      impact: item.impact,
+      status: 'unanswered',
+    };
+  });
+}
+
+export function parseAndValidateBatchEditResponse(
+  rawText: string,
+  instruction: string
+): BatchEditProposalResult {
+  const cleaned = stripMarkdownCodeFence(rawText);
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(cleaned);
+  } catch {
+    throw new Error('INVALID_RESPONSE: Model returned malformed JSON for batch edit.');
+  }
+
+  const validated = RawBatchEditResponseSchema.safeParse(parsedJson);
+  if (!validated.success) {
+    throw new Error(
+      `INVALID_RESPONSE: Batch edit schema mismatch (${validated.error.issues[0]?.message ?? 'invalid structure'}).`
+    );
+  }
+
+  return {
+    instruction,
+    operations: validated.data.operations.map((op, index) => ({
+      id: `op_${Date.now()}_${index}`,
+      type: op.type,
+      summary: op.summary,
+      entityName: op.entityName,
+      newEntityName: op.newEntityName,
+      entityCategory: op.entityCategory,
+      attributeName: op.attributeName,
+      nextValue: op.nextValue,
+      sourceEntityName: op.sourceEntityName,
+      targetEntityName: op.targetEntityName,
+      storyField:
+        op.storyField && VALID_STORY_FIELDS.has(op.storyField as keyof StoryBibleFields)
+          ? (op.storyField as keyof StoryBibleFields)
+          : undefined,
+      destructive: op.type === 'exclude_entity' || op.type === 'remove_relationship',
+      selected: true,
+    })),
+    ambiguities: validated.data.ambiguities,
+    warnings: validated.data.warnings,
+  };
 }

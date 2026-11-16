@@ -5,85 +5,118 @@
 
 import React from 'react';
 
+export type WorkspaceSection = 'workspace' | 'story-bible' | 'output' | 'history';
+
 interface HeaderProps {
   isDarkMode: boolean;
   toggleDarkMode: () => void;
   onShowInfo: () => void;
+  activeSection?: WorkspaceSection;
+  onSelectSection?: (section: WorkspaceSection) => void;
+  onLoadSampleProject?: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ isDarkMode, toggleDarkMode, onShowInfo }) => {
+const Header: React.FC<HeaderProps> = ({
+  isDarkMode,
+  toggleDarkMode,
+  onShowInfo,
+  activeSection = 'workspace',
+  onSelectSection,
+  onLoadSampleProject,
+}) => {
   return (
-    <header className="bg-white dark:bg-gray-800 px-4 py-3 flex justify-between items-center gap-8 border-b border-gray-200 dark:border-gray-700 transition-colors duration-200 flex-shrink-0">
-      <h1 className="font-display text-lg sm:text-xl font-bold tracking-tight text-gray-900 dark:text-gray-100 whitespace-nowrap shrink-0">
+    <header className="bg-white dark:bg-gray-900 px-5 py-3 flex justify-between items-center gap-8 border-b border-gray-200 dark:border-gray-800 transition-colors duration-150 flex-shrink-0">
+      {/* Zone 1: Single text element Brand wordmark */}
+      <a
+        href="#workspace"
+        onClick={(e) => {
+          e.preventDefault();
+          onSelectSection?.('workspace');
+        }}
+        className="font-display text-lg font-bold tracking-tight text-gray-900 dark:text-gray-100 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded"
+      >
         Proactive Co-Creator
-      </h1>
+      </a>
 
-      <div className="flex items-center gap-2 shrink-0">
+      {/* Zone 2: 4–5 clean single-line text navigation links */}
+      <nav
+        aria-label="Workspace navigation"
+        className="hidden md:flex items-center gap-6 text-sm font-medium text-gray-600 dark:text-gray-300"
+      >
+        <button
+          type="button"
+          onClick={() => onSelectSection?.('workspace')}
+          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
+            activeSection === 'workspace'
+              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
+              : 'hover:underline'
+          }`}
+        >
+          Workspace
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelectSection?.('story-bible')}
+          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
+            activeSection === 'story-bible'
+              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
+              : 'hover:underline'
+          }`}
+        >
+          Story Bible
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelectSection?.('output')}
+          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
+            activeSection === 'output'
+              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
+              : 'hover:underline'
+          }`}
+        >
+          Prompt &amp; Output
+        </button>
+        <button
+          type="button"
+          onClick={() => onSelectSection?.('history')}
+          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
+            activeSection === 'history'
+              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
+              : 'hover:underline'
+          }`}
+        >
+          History &amp; Export
+        </button>
         <button
           type="button"
           onClick={onShowInfo}
-          className="min-w-[40px] min-h-[40px] p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center"
-          title="About & Feedback"
-          aria-label="About and feedback"
+          className="hover:text-gray-900 dark:hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-            />
-          </svg>
+          About
         </button>
+      </nav>
+
+      {/* Zone 3: Primary action & theme switch */}
+      <div className="flex items-center gap-2 shrink-0">
+        {onLoadSampleProject && (
+          <button
+            type="button"
+            onClick={onLoadSampleProject}
+            className="hidden sm:inline-flex items-center px-3.5 py-2 min-h-[38px] text-xs font-semibold text-gray-800 dark:text-gray-100 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          >
+            Reset Sample Plan
+          </button>
+        )}
 
         <button
           type="button"
           onClick={toggleDarkMode}
-          className="min-w-[40px] min-h-[40px] p-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center"
+          className="min-w-[38px] min-h-[38px] px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-xs font-medium whitespace-nowrap shrink-0"
           title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
           aria-pressed={isDarkMode}
         >
-          {isDarkMode ? (
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"
-              />
-            </svg>
-          ) : (
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"
-              />
-            </svg>
-          )}
+          {isDarkMode ? 'Light Theme' : 'Dark Theme'}
         </button>
       </div>
     </header>

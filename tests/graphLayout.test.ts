@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   getCanonicalEntityName,
   getHighestProbabilityValue,
+  inferEntityCategory,
   isSceneEntityName,
   normalizeAndDeduplicateRelationships,
   splitSceneAndObjectEntities,
@@ -26,17 +27,23 @@ const makeEntity = (name: string): Entity => ({
 });
 
 describe('lib/beliefGraphUtils & lib/graphLayout', () => {
-  it('separates scene entity from object entities across modes', () => {
+  it('separates scene entity from object entities across supported modes (story and image) and rejects video scene entity', () => {
     const entities = [makeEntity('The Image'), makeEntity('Cat'), makeEntity('Hat')];
     const { sceneEntity, objectEntities } = splitSceneAndObjectEntities(entities);
 
-    assert.equal(isSceneEntityName('the video'), true);
+    assert.equal(isSceneEntityName('the video'), false);
     assert.equal(isSceneEntityName('Story'), true);
+    assert.equal(isSceneEntityName('The Story'), true);
+    assert.equal(isSceneEntityName('The Image'), true);
     assert.equal(sceneEntity?.name, 'The Image');
     assert.deepEqual(
       objectEntities.map((e) => e.name),
       ['Cat', 'Hat']
     );
+    assert.equal(inferEntityCategory(makeEntity('Cat Host')), 'character');
+    assert.equal(inferEntityCategory(makeEntity('Dining Room')), 'location');
+    assert.equal(inferEntityCategory(makeEntity('Dining Table')), 'object');
+    assert.equal(inferEntityCategory(makeEntity('Animal Guests')), 'group');
   });
 
   it('extracts highest probability attribute value and truncates long labels', () => {

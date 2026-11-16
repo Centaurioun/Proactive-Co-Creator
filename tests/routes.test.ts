@@ -4,7 +4,6 @@ import http from 'node:http';
 import express from 'express';
 import { AppApiError } from '../server/errors.ts';
 import { createApiRouter, type AiServiceHandlers } from '../server/routes.ts';
-import { videoStore } from '../server/videoStore.ts';
 import type { BeliefState } from '../shared/types.ts';
 
 function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServiceHandlers {
@@ -12,7 +11,7 @@ function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServi
     prompt: 'a cat hosting a party',
     entities: [
       {
-        name: 'The Image',
+        name: 'The Story',
         presence_in_prompt: false,
         description: 'Scene attributes',
         alternatives: null,
@@ -41,6 +40,22 @@ function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServi
       { question: 'What is the theme?', options: ['Birthday', 'Garden', 'Tea'] },
     ],
     refinePromptText: async (orig) => `${orig}, warm lighting`,
+    interpretBatchEditInstruction: async (instruction) => ({
+      instruction,
+      summary: 'Proposed 1 operation',
+      warnings: [],
+      operations: [
+        {
+          id: 'op_1',
+          type: 'update_story_bible',
+          targetDescription: 'Story Bible • Tone',
+          summary: 'Set tone to mysterious',
+          storyBibleField: 'tone',
+          proposedValue: 'mysterious',
+          selected: true,
+        },
+      ],
+    }),
     generateStoryText: async () => 'Once upon a time, a cat threw a party.',
     generateImagesBatch: async () => ({
       images: ['data:image/png;base64,AAA', 'data:image/png;base64,BBB'],
@@ -48,16 +63,6 @@ function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServi
       failedCount: 2,
       warning: '2 of 4 images succeeded',
     }),
-    startVideoGeneration: async () => ({
-      status: 'in_progress',
-      interactionId: 'int-123',
-    }),
-    getVideoGenerationStatus: async (id) => ({
-      status: 'completed',
-      interactionId: id,
-      videoUrl: '/api/videos/vid-1',
-    }),
-    cancelVideoGeneration: async () => undefined,
     hasConfiguredGeminiKey: () => false,
     ...overrides,
   };
@@ -89,7 +94,7 @@ describe('server/routes API contract', () => {
     }
   });
 
-  it('serves /api/health without exposing secrets and reports configured state', async () => {
+  it('serves /api/health without exposing secrets or removed video model', async () => {
     const srv = await startTestServer(createStubHandlers());
     closeServer = srv.close;
 
@@ -100,10 +105,10 @@ describe('server/routes API contract', () => {
     assert.equal(body.configured, false);
     assert.equal(body.models.text, 'gemini-4-hydrogen');
     assert.equal(body.models.image, 'gemini-3.1-flash-lite-image');
-    assert.equal(body.models.video, 'gemini-omni-1.2-flash');
+    assert.equal('video' in body.models, false);
   });
 
-  it('handles /api/analyze, /api/clarify, and /api/refine validation and success', async () => {
+  it('handles /api/analyze, /api/clarify, /api/refine, and /api/batch-edit validation and success', async () => {
     let observedAbortedSignal: boolean | undefined;
     const srv = await startTestServer(
       createStubHandlers({
@@ -123,10 +128,17 @@ describe('server/routes API contract', () => {
     });
     assert.equal(badAnalyze.status, 400);
 
+    const videoModeAnalyze = await fetch(`${srv.baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'a cat hosting a party', mode: 'video' }),
+    });
+    assert.equal(videoModeAnalyze.status, 400);
+
     const okAnalyze = await fetch(`${srv.baseUrl}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'a cat hosting a party', mode: 'image' }),
+      body: JSON.stringify({ prompt: 'a cat hosting a party', mode: 'story' }),
     });
     assert.equal(okAnalyze.status, 200);
     assert.equal(observedAbortedSignal, false);
@@ -154,23 +166,24 @@ describe('server/routes API contract', () => {
     assert.equal(okRefine.status, 200);
     const refineJson = (await okRefine.json()) as { refinedPrompt: string };
     assert.equal(refineJson.refinedPrompt, 'a cat, warm lighting');
+
+    const okBatch = await fetch(`${srv.baseUrl}/api/batch-edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instruction: 'Make the party mysterious',
+        prompt: 'a cat hosting a party',
+        mode: 'story',
+      }),
+    });
+    assert.equal(okBatch.status, 200);
+    const batchJson = (await okBatch.json()) as { operations: Array<{ storyBibleField?: string }> };
+    assert.equal(batchJson.operations.length, 1);
+    assert.equal(batchJson.operations[0].storyBibleField, 'tone');
   });
 
-  it('handles /api/generate/images, /api/generate/story, video polling, cancel, and stored video streaming', async () => {
-    const videoId = videoStore.put(Buffer.from('FAKE_MP4_BYTES'), 'video/mp4');
-    let cancelledId = '';
-    const srv = await startTestServer(
-      createStubHandlers({
-        getVideoGenerationStatus: async (id) => ({
-          status: 'completed',
-          interactionId: id,
-          videoUrl: `/api/videos/${videoId}`,
-        }),
-        cancelVideoGeneration: async (id) => {
-          cancelledId = id;
-        },
-      })
-    );
+  it('handles /api/generate/images and /api/generate/story and returns 404 for removed video routes', async () => {
+    const srv = await startTestServer(createStubHandlers());
     closeServer = srv.close;
 
     const imgRes = await fetch(`${srv.baseUrl}/api/generate/images`, {
@@ -193,34 +206,18 @@ describe('server/routes API contract', () => {
     const storyJson = (await storyRes.json()) as { story: string };
     assert.match(storyJson.story, /cat threw a party/);
 
-    const startVid = await fetch(`${srv.baseUrl}/api/generate/video`, {
+    const removedVideoStart = await fetch(`${srv.baseUrl}/api/generate/video`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: 'a cat dancing' }),
     });
-    assert.equal(startVid.status, 200);
-    const startVidJson = (await startVid.json()) as { status: string; interactionId: string };
-    assert.equal(startVidJson.status, 'in_progress');
-    assert.equal(startVidJson.interactionId, 'int-123');
+    assert.equal(removedVideoStart.status, 404);
 
-    const pollVid = await fetch(`${srv.baseUrl}/api/generate/video/int-123`);
-    assert.equal(pollVid.status, 200);
-    const pollJson = (await pollVid.json()) as { status: string; videoUrl: string };
-    assert.equal(pollJson.status, 'completed');
+    const removedVideoPoll = await fetch(`${srv.baseUrl}/api/generate/video/int-123`);
+    assert.equal(removedVideoPoll.status, 404);
 
-    const streamVid = await fetch(`${srv.baseUrl}${pollJson.videoUrl}`);
-    assert.equal(streamVid.status, 200);
-    assert.equal(streamVid.headers.get('content-type'), 'video/mp4');
-    assert.equal(await streamVid.text(), 'FAKE_MP4_BYTES');
-
-    const missingVid = await fetch(`${srv.baseUrl}/api/videos/non-existent-id`);
-    assert.equal(missingVid.status, 404);
-
-    const cancelVid = await fetch(`${srv.baseUrl}/api/generate/video/int-123/cancel`, {
-      method: 'POST',
-    });
-    assert.equal(cancelVid.status, 200);
-    assert.equal(cancelledId, 'int-123');
+    const removedVideoStream = await fetch(`${srv.baseUrl}/api/videos/vid-1`);
+    assert.equal(removedVideoStream.status, 404);
   });
 
   it('returns structured MISSING_API_KEY error without leaking secrets', async () => {

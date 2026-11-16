@@ -7,41 +7,44 @@ import express from 'express';
 import type { Request, Response, Router } from 'express';
 import {
   AnalyzeRequestSchema,
+  BatchEditRequestSchema,
   ClarifyRequestSchema,
   GenerateMediaRequestSchema,
   RefineRequestSchema,
 } from '../shared/schemas.ts';
 import type {
+  BatchEditProposalResult,
   BeliefState,
   Clarification,
   ClarificationAnswer,
   GenerationMode,
   GraphUpdate,
   ImageGenerationResult,
-  VideoJobStatusResult,
 } from '../shared/types.ts';
 import {
   analyzeBeliefGraph,
-  cancelVideoGeneration,
   generateClarificationsList,
   generateImagesBatch,
   generateStoryText,
-  getVideoGenerationStatus,
+  interpretBatchEditInstruction,
   refinePromptText,
-  startVideoGeneration,
 } from './aiService.ts';
 import { AppApiError, classifyGeminiError } from './errors.ts';
 import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
-import { videoStore } from './videoStore.ts';
 
 export interface AiServiceHandlers {
-  analyzeBeliefGraph: (prompt: string, mode: GenerationMode, signal?: AbortSignal) => Promise<BeliefState>;
+  analyzeBeliefGraph: (
+    prompt: string,
+    mode: GenerationMode,
+    signal?: AbortSignal
+  ) => Promise<BeliefState>;
   generateClarificationsList: (
     prompt: string,
     askedQuestions: string[],
     mode: GenerationMode,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    confirmedFacts?: string[]
   ) => Promise<Clarification[]>;
   refinePromptText: (
     originalPrompt: string,
@@ -49,11 +52,23 @@ export interface AiServiceHandlers {
     graphUpdates: GraphUpdate[],
     signal?: AbortSignal
   ) => Promise<string>;
+  interpretBatchEditInstruction?: (
+    instruction: string,
+    context: {
+      prompt: string;
+      entities: Array<{
+        id?: string;
+        name: string;
+        category?: string;
+        excluded?: boolean;
+        attributes: Array<{ name: string; value: string; status?: string }>;
+      }>;
+      relationships: Array<{ id?: string; source: string; target: string; label: string }>;
+    },
+    signal?: AbortSignal
+  ) => Promise<BatchEditProposalResult>;
   generateStoryText: (prompt: string, signal?: AbortSignal) => Promise<string>;
   generateImagesBatch: (prompt: string, signal?: AbortSignal) => Promise<ImageGenerationResult>;
-  startVideoGeneration: (prompt: string, signal?: AbortSignal) => Promise<VideoJobStatusResult>;
-  getVideoGenerationStatus: (interactionId: string, signal?: AbortSignal) => Promise<VideoJobStatusResult>;
-  cancelVideoGeneration: (interactionId: string) => Promise<void>;
   hasConfiguredGeminiKey: () => boolean;
 }
 
@@ -61,11 +76,9 @@ const defaultHandlers: AiServiceHandlers = {
   analyzeBeliefGraph,
   generateClarificationsList,
   refinePromptText,
+  interpretBatchEditInstruction,
   generateStoryText,
   generateImagesBatch,
-  startVideoGeneration,
-  getVideoGenerationStatus,
-  cancelVideoGeneration,
   hasConfiguredGeminiKey,
 };
 
@@ -145,7 +158,8 @@ export function createApiRouter(handlers: AiServiceHandlers = defaultHandlers): 
         parsed.data.prompt,
         parsed.data.askedQuestions,
         parsed.data.mode,
-        controller.signal
+        controller.signal,
+        parsed.data.confirmedFacts
       );
       res.json({ clarifications });
     } catch (err) {
@@ -175,6 +189,37 @@ export function createApiRouter(handlers: AiServiceHandlers = defaultHandlers): 
         controller.signal
       );
       res.json({ refinedPrompt });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.post('/batch-edit', async (req, res) => {
+    const parsed = BatchEditRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError(
+        'VALIDATION_ERROR',
+        parsed.error.issues[0]?.message ?? 'Invalid batch-edit request.',
+        400,
+        false
+      );
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const handler = handlers.interpretBatchEditInstruction ?? interpretBatchEditInstruction;
+      const result = await handler(
+        parsed.data.instruction,
+        {
+          prompt: parsed.data.prompt,
+          entities: parsed.data.entities,
+          relationships: parsed.data.relationships,
+        },
+        controller.signal
+      );
+      res.json(result);
     } catch (err) {
       sendErrorResponse(res, err);
     }
@@ -228,80 +273,6 @@ export function createApiRouter(handlers: AiServiceHandlers = defaultHandlers): 
     } catch (err) {
       sendErrorResponse(res, err);
     }
-  });
-
-  router.post('/generate/video', async (req, res) => {
-    const parsed = GenerateMediaRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError(
-        'VALIDATION_ERROR',
-        parsed.error.issues[0]?.message ?? 'Invalid video generation request.',
-        400,
-        false
-      );
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const result = await handlers.startVideoGeneration(
-        parsed.data.prompt,
-        controller.signal
-      );
-      res.json(result);
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.get('/generate/video/:interactionId', async (req, res) => {
-    const interactionId = req.params.interactionId?.trim();
-    if (!interactionId || interactionId.length > 200) {
-      const err = new AppApiError('VALIDATION_ERROR', 'Invalid interaction ID.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const result = await handlers.getVideoGenerationStatus(interactionId, controller.signal);
-      res.json(result);
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/generate/video/:interactionId/cancel', async (req, res) => {
-    const interactionId = req.params.interactionId?.trim();
-    if (!interactionId || interactionId.length > 200) {
-      res.status(400).json({
-        error: new AppApiError('VALIDATION_ERROR', 'Invalid interaction ID.', 400, false).toPayload(),
-      });
-      return;
-    }
-
-    await handlers.cancelVideoGeneration(interactionId);
-    res.json({ cancelled: true });
-  });
-
-  router.get('/videos/:videoId', (req, res) => {
-    const videoId = req.params.videoId?.trim();
-    if (!videoId) {
-      res.status(404).json({ error: 'Video not found.' });
-      return;
-    }
-
-    const entry = videoStore.get(videoId);
-    if (!entry) {
-      res.status(404).json({ error: 'Video not found or expired.' });
-      return;
-    }
-
-    res.setHeader('Content-Type', entry.mimeType);
-    res.setHeader('Content-Length', entry.buffer.length.toString());
-    res.setHeader('Cache-Control', 'private, max-age=1800');
-    res.send(entry.buffer);
   });
 
   return router;

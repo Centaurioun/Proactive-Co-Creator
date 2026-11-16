@@ -1,50 +1,42 @@
-# Proactive Co-Creator
+# Proactive Co-Creator 2.0
 
-An interactive, multi-modal creative co-pilot powered by Gemini. The application helps users transform brief ideas into rich **Images**, **Stories**, and **Videos** by extracting an inspectable **Belief Graph** of entities, attributes, and relationships alongside targeted **Clarifications** that refine the prompt before and between generations.
+An intelligent, interactive visual story-planning and prompt-refinement workspace powered by Gemini. **Proactive Co-Creator 2.0** transforms initial story and visual ideas into structured **Belief Graphs**, synchronized **Story Bibles**, batched **Decision Inboxes**, and natural-language **Batch Edits** before generating **Stories** or **Images**.
+
+## Key Capabilities in 2.0
+
+1. **Unified Three-Panel Creative Workspace**
+   - **Left Panel — Decision Inbox & Natural-Language Batch Edit:** Review AI-generated clarifications and inferred attributes individually or in batches (`Select All`, `Accept Selected`, `Defer`, `Reject`), or type multi-entity natural-language instructions (e.g., *"Make all the animal guests elderly, but keep the cat young. The party should be mysterious rather than cheerful."*) with an interactive diff preview.
+   - **Center Panel — Interactive Belief Graph 2.0 & Output Deck:** Explore entities and relationships with search, category filters (`character`, `location`, `object`, `event`, `group`), Focus Selected, Highlight Links, Inferred toggle, Group/Expand Guests, Excluded toggle, Fit to View, and a structured Table View toggle.
+   - **Right Panel — Persistent Contextual Inspector, Story Bible, Consistency Checks & History:** Edit entity attributes, existence (`Present`/`Absent`), aliases, and relationships without covering the graph canvas; manage high-level Story Bible properties; review automated consistency checks; and restore named revisions or export/import projects.
+   - **Bottom Bar — Transaction Undo/Redo & Explicit Generation:** Full multi-step Undo/Redo (`Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`), one-click `Accept All Pending`, mode selector (`Story` default, `Image` secondary), and explicit user-triggered generation.
+2. **Canonical Creative Data Model & User Authority**
+   - Stable internal IDs (`ent_*`, `attr_*`, `rel_*`, `dec_*`, `rev_*`), decision provenance (`prompt-explicit`, `user-edit`, `accepted-suggestion`, `ai-inferred`, `imported`), and approval statuses (`confirmed`, `pending`, `rejected`).
+   - Reanalyzing a prompt or refreshing clarifications never overwrites confirmed user edits, renames, or explicit exclusions.
+3. **Autosave, Version History & Export/Import**
+   - Automatic persistence in `localStorage` and `IndexedDB` (`schemaVersion: 2`) with multi-tab overwrite conflict detection and legacy v1 (`mode: 'video'`) migration to Story mode.
+   - Export full project JSON, readable Story Bible Markdown (`.md`), Refined Prompt Markdown, or generated Story text (`.txt`).
 
 ## Architecture & Security
 
-- **Frontend:** React 19, TypeScript (strict mode), Vite 6, Tailwind CSS v4
-- **Backend:** Express 5 (`server.ts`) mounting Vite in development and serving the compiled `dist/` bundle in production
-- **AI Integration:** Server-side `@google/genai` SDK (`server/aiService.ts`) behind `/api/*` endpoints with Zod schema validation (`shared/schemas.ts`), bounded exponential retry/backoff (`server/retry.ts`), request cancellation (`AbortController`), and in-memory MP4 media streaming (`server/videoStore.ts`)
+- **Frontend:** React 19, TypeScript (strict mode), Vite 6, Tailwind CSS v4, D3 zoom/pan
+- **Backend:** Express 5 (`server.ts`) mounting Vite in development and serving `dist/` in production
+- **AI Integration:** Server-side `@google/genai` SDK (`server/aiService.ts`) behind `/api/*` endpoints (`/api/analyze`, `/api/clarify`, `/api/refine`, `/api/batch-edit`, `/api/generate/story`, `/api/generate/images`) with Zod schema validation (`shared/schemas.ts`) and bounded retry/backoff (`server/retry.ts`)
 - **Models Configured (`server/models.ts`):**
-  - Text, Belief Graph, Clarifications, Prompt Refinement & Story: `gemini-4-hydrogen`
+  - Text, Belief Graph, Clarifications, Batch Edit Interpretation, Prompt Refinement & Story: `gemini-4-hydrogen`
   - Image Batch Generation (4 × 1:1 images): `gemini-3.1-flash-lite-image`
-  - Asynchronous Video Generation (16:9, 720p, 10s via Interactions API): `gemini-omni-1.2-flash`
 
 All Gemini API requests execute exclusively on the server using `process.env.GEMINI_API_KEY`. No API keys or AI SDKs are shipped to the browser.
 
-## Prerequisites
+## Local Setup & Scripts
 
-- **Node.js 22+** (`node -v` >= 22.0.0, supporting native TypeScript execution for `npm start`)
-- A Gemini API key configured on the server as `GEMINI_API_KEY`
+```bash
+npm install
+cp .env.example .env.local # Set GEMINI_API_KEY=your_key (or configure in AI Studio Settings > Secrets)
+npm run dev                # Start Express + Vite workspace on http://localhost:3000
+```
 
-## Local Setup
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Configure environment variables (copy `.env.example` to `.env.local` or export `GEMINI_API_KEY` in your shell / AI Studio **Settings > Secrets**):
-   ```bash
-   cp .env.example .env.local
-   # Set GEMINI_API_KEY=your_server_side_key
-   ```
-3. Start the development server (runs Express + Vite on port `3000`):
-   ```bash
-   npm run dev
-   ```
-   *(If using `.env.local` locally outside AI Studio, run with `NODE_OPTIONS="--env-file=.env.local" npm run dev` or export `GEMINI_API_KEY` in your shell.)*
-
-## Available Scripts
-
-- `npm run dev` — Start Express + Vite dev server (`tsx server.ts`) on port `3000`
-- `npm run build` — Build optimized client assets into `dist/`
-- `npm start` — Run the production Express server (`node server.ts`) serving `dist/` and `/api/*`
-- `npm run typecheck` — Run strict TypeScript checking (`tsc --noEmit`)
-- `npm run lint` — Run ESLint across the codebase
-- `npm test` — Run unit and integration test suites (`tsx --test tests/*.test.ts`)
-
-## Documentation
-
-Modernization audit, target architecture, implementation plan, progress, and verification artifacts live under `docs/modernization/`.
+- `npm test` — Run all 32 unit, schema, canonical state, batch edit, persistence, and API route tests (`tsx --test tests/*.test.ts`)
+- `npm run typecheck` — Run strict TypeScript validation (`tsc --noEmit`)
+- `npm run lint` — Run ESLint across client, server, shared, and test files
+- `npm run build` — Compile production assets into `dist/`
+- `npm start` — Run the production server (`node server.ts`)

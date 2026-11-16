@@ -1,10 +1,28 @@
-# Proactive Co-Creator Modernization Progress
+# Proactive Co-Creator 2.0 — Implementation Progress
 
-- [x] Stage 1: Baseline audit & recoverable backup (`.backup-original/`)
-- [x] Stage 1: Six-cycle iterative refinement & design (`docs/modernization/design.md`)
-- [x] Stage 2 & 3: Dependencies, lockfile (`package-lock.json`), Tailwind v4, ESLint 10, TypeScript strictness, `metadata.json`
-- [x] Stage 4: Shared types/schemas (`shared/`), pure domain modules (`lib/`), unit & integration tests (`tests/`)
-- [x] Stage 4: Express 5 backend (`server.ts`, `server/*.ts`) & server-side `@google/genai` v3.3.0 migration (`gemini-4-hydrogen`, `gemini-3.1-flash-lite-image`, `gemini-omni-1.2-flash`)
-- [x] Stage 5 & 6: Frontend refactoring, `AbortController` cancellation, dark-mode SVG contrast, auto-fit graph viewport, accessibility & UI fixes
-- [x] Stage 7: Automated tests (24/24 passing), build/lint/typecheck checks, Node 22 production server check, and Playwright browser verification (Rounds 1 & 2)
-- [x] Stage 8: Documentation (`README.md`, `docs/modernization/verification-report.md`) & final review
+- [x] **Phase 0: Discovery, Six-Cycle Iterative Refinement & Superpowers Spec/Plan**
+  - Audited existing repository, UX friction points, and feature preservation requirements.
+  - Authored `docs/superpowers/specs/2026-11-14-proactive-co-creator-2-design.md`, `docs/superpowers/plans/2026-11-14-proactive-co-creator-2-implementation.md`, and `docs/modernization/feature-preservation-matrix.md`.
+- [x] **Phase 1: Complete Video Generation Removal**
+  - Deleted `server/videoStore.ts`.
+  - Restricted `GenerationMode` to `'story' | 'image'` with `'story'` as default.
+  - Removed `/api/generate/video*` and `/api/videos/*` routes, `GEMINI_MODELS.video`, and client video polling/UI branches.
+  - Added legacy `'video'` project migration to `'story'` in `lib/storageEngine.ts`.
+- [x] **Phase 2: Canonical Creative Data Model & Prompt Synthesis**
+  - Implemented `lib/canonicalModel.ts` with stable internal IDs, provenance tracking, approval statuses, and strict User Authority during reanalysis.
+  - Implemented `lib/promptBuilder.ts` deriving structured prompts from confirmed Story Bible fields, confirmed entities/attributes, confirmed relationships, explicit exclusions, and author notes.
+- [x] **Phase 3: Unified Three-Panel Workspace, Decision Inbox & Clarifications 2.0**
+  - Built `components/DecisionInboxPanel.tsx` supporting single and batch decisions (`Select All`, `Accept Selected`, `Defer`, `Reject`), custom value overrides, category/status filters, search, and target inspection.
+  - Upgraded clarifications to include structured `target` metadata and refresh deduplication.
+- [x] **Phase 4: Belief Graph 2.0 & Persistent Contextual Inspector**
+  - Enhanced `components/BeliefGraph.tsx` with search, category filter, Focus Selected, Highlight Links, Inferred toggle, Group/Expand Guests, Excluded toggle, Graph/Table view switch, and stable layout positions.
+  - Built `components/ContextualInspector.tsx` replacing the floating graph overlay with a persistent 4-tab right inspector (`Inspector`, `Story Bible`, `Checks`, `History & Export`).
+- [x] **Phase 5: Story Bible & Consistency Checker**
+  - Synchronized Story Bible fields with the scene entity and implemented deterministic consistency checks in `lib/consistencyChecker.ts`.
+- [x] **Phase 6: Natural-Language Batch Editing**
+  - Implemented `lib/nlBatchEngine.ts` and `POST /api/batch-edit` supporting group operations, exceptions, pronoun ambiguity warnings, per-operation preview checkboxes, and single-step Undo.
+- [x] **Phase 7: Undo/Redo, Revision History, Autosave & Export/Import**
+  - Implemented `lib/historyEngine.ts` and `lib/storageEngine.ts` with localStorage + IndexedDB persistence, multi-tab conflict detection, JSON export/import, and Story Bible Markdown export.
+- [x] **Phase 8: Comprehensive Verification & Documentation**
+  - 32/32 automated unit and route contract tests passing across 7 suites (`npm test`).
+  - Strict TypeScript (`npm run typecheck`), ESLint (`npm run lint`), production build (`npm run build`), and Playwright browser verification completed.

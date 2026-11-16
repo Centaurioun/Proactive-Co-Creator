@@ -119,14 +119,16 @@ export function computeForceLayout(params: {
   const width = containerWidth > 0 ? containerWidth : 600;
   const height = containerHeight > 0 ? containerHeight : 400;
 
-  const SIMULATION_TICKS = 800;
-  const REPULSION_STRENGTH = 60000;
-  const LINK_STRENGTH = 0.2;
-  const CENTER_GRAVITY = 0.002;
-  const COLLISION_PADDING = 70;
-  const DAMPING = 0.8;
+  const SIMULATION_TICKS = 600;
+  const REPULSION_STRENGTH = 26000;
+  const LINK_STRENGTH = 0.22;
+  const CENTER_GRAVITY_X = 0.002;
+  const CENTER_GRAVITY_Y = 0.0075;
+  const COLLISION_PADDING = 52;
+  const DAMPING = 0.78;
 
-  const initRadius = Math.min(width, height) * 0.4;
+  const initRadiusX = width * 0.32;
+  const initRadiusY = height * 0.26;
   const nodes: SimNode[] = objectEntities.map((entity, i) => {
     const prev = previousPositions[entity.name];
     const dims = nodeDimensions[entity.name] ?? { width: 90, height: 36 };
@@ -148,8 +150,8 @@ export function computeForceLayout(params: {
       id: entity.name,
       width: dims.width,
       height: dims.height,
-      x: width / 2 + initRadius * Math.cos(angle),
-      y: height / 2 + initRadius * Math.sin(angle),
+      x: width / 2 + initRadiusX * Math.cos(angle),
+      y: height / 2 + initRadiusY * Math.sin(angle),
       vx: 0,
       vy: 0,
       fx: 0,
@@ -205,9 +207,9 @@ export function computeForceLayout(params: {
         let dist = Math.sqrt(dx * dx + dy * dy);
         if (dist === 0) dist = 1;
         const threshold =
-          labelWidth / 2 + Math.max(node.width, node.height) / 2 + 20;
+          labelWidth / 2 + Math.max(node.width, node.height) / 2 + 16;
         if (dist < threshold) {
-          const forceStrength = (threshold - dist) * 1.5;
+          const forceStrength = (threshold - dist) * 1.2;
           node.fx += (dx / dist) * forceStrength;
           node.fy += (dy / dist) * forceStrength;
         }
@@ -228,11 +230,11 @@ export function computeForceLayout(params: {
         let dist = Math.sqrt(dx * dx + dy * dy);
         if (dist === 0) dist = 0.1;
         const minDist =
-          ((l1.label?.length || 0) * 9 + 50 + (l2.label?.length || 0) * 9 + 50) /
+          ((l1.label?.length || 0) * 7 + 36 + (l2.label?.length || 0) * 7 + 36) /
             2 +
-          30;
+          20;
         if (dist < minDist) {
-          const force = (minDist - dist) * 1.0;
+          const force = (minDist - dist) * 0.8;
           l1.source.fx += (dx / dist) * force * 0.5;
           l1.source.fy += (dy / dist) * force * 0.5;
           l1.target.fx += (dx / dist) * force * 0.5;
@@ -252,7 +254,7 @@ export function computeForceLayout(params: {
       const distance = Math.sqrt(dx * dx + dy * dy);
       const sourceR = link.source.width / 2;
       const targetR = link.target.width / 2;
-      const idealVisibleLength = (link.label || '').length * 8 + 50;
+      const idealVisibleLength = (link.label || '').length * 5.5 + 34;
       const targetDist = sourceR + targetR + idealVisibleLength;
       if (distance > 0) {
         const diff = distance - targetDist;
@@ -266,8 +268,8 @@ export function computeForceLayout(params: {
 
     // Center gravity & velocity integration
     for (const node of nodes) {
-      node.fx += (width / 2 - node.x) * CENTER_GRAVITY;
-      node.fy += (height / 2 - node.y) * CENTER_GRAVITY;
+      node.fx += (width / 2 - node.x) * CENTER_GRAVITY_X;
+      node.fy += (height / 2 - node.y) * CENTER_GRAVITY_Y;
       node.vx = (node.vx + node.fx) * DAMPING;
       node.vy = (node.vy + node.fy) * DAMPING;
       node.x += node.vx;
