@@ -23,12 +23,35 @@ export interface UndoRedoState {
 const MAX_UNDO_STACK = 40;
 const MAX_REVISIONS = 25;
 
-export function createUndoRedoState(initialSnapshot: ProjectSnapshot): UndoRedoState {
+export function createUndoRedoState(
+  initialSnapshot: ProjectSnapshot,
+  revisions?: ProjectRevision[]
+): UndoRedoState {
+  const past: UndoRedoEntry[] = [];
+  if (Array.isArray(revisions) && revisions.length > 1) {
+    for (let i = revisions.length - 1; i >= 1; i--) {
+      const older = revisions[i];
+      const newer = revisions[i - 1];
+      if (older?.snapshot && newer) {
+        past.push({
+          id: newer.id || makeStableId('undo'),
+          label: newer.label || `Revision #${newer.revisionNumber ?? i}`,
+          timestamp: typeof newer.timestamp === 'number' ? newer.timestamp : Date.now(),
+          coalesceKey: newer.coalesceKey,
+          snapshot: structuredClone(older.snapshot),
+        });
+      }
+    }
+  }
   return {
-    past: [],
+    past: past.slice(-MAX_UNDO_STACK),
     present: structuredClone(initialSnapshot),
     future: [],
   };
+}
+
+export function createUndoRedoStateFromProject(project: CreativeProject): UndoRedoState {
+  return createUndoRedoState(project.snapshot, project.revisions);
 }
 
 /**

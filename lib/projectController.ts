@@ -18,6 +18,7 @@ import {
 } from './historyEngine.ts';
 import { applyProposedOperations } from './nlBatchEngine.ts';
 import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts';
+import { getDeletedProjectIds } from './storageEngine.ts';
 import type {
   AiPolishProposal,
   AiRequestAction,
@@ -586,6 +587,17 @@ export function applyAsyncAnalysisCompletion(params: {
     summary = 'Merged AI analysis while preserving confirmed user decisions.',
   } = params;
 
+  if (getDeletedProjectIds().has(ticket.projectId)) {
+    return {
+      activeProject,
+      activeUndoState,
+      savedProjects: savedProjects.filter((p) => p.id !== ticket.projectId),
+      appliedToActive: false,
+      appliedToBackgroundProject: false,
+      rebasedOntoNewerRevision: false,
+    };
+  }
+
   const isTargetActive = activeProject.id === ticket.projectId;
   const targetProject = isTargetActive
     ? activeProject
@@ -674,6 +686,15 @@ export function applyAsyncGenerationCompletion(params: {
     warning = null,
     now = Date.now(),
   } = params;
+
+  if (getDeletedProjectIds().has(ticket.projectId)) {
+    return {
+      activeProject,
+      savedProjects: savedProjects.filter((p) => p.id !== ticket.projectId),
+      artifact: null,
+      appliedToActive: false,
+    };
+  }
 
   const isTargetActive = activeProject.id === ticket.projectId;
   const targetProject = isTargetActive
