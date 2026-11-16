@@ -851,10 +851,10 @@ export async function deleteProjectCompletely(projectId: string): Promise<{
   recordDeletedProjectId(projectId);
   const remaining = deleteProjectFromLocalStorage(projectId);
   const idbRes = await deleteProjectFromIndexedDb(projectId);
-  // If deleting the last project created a replacement sample project, persist it to IDB too
-  if (remaining.length === 1 && remaining[0].id !== projectId) {
-    await saveProjectToIndexedDb(remaining[0], { forceOverwrite: true });
-  }
+  // Never force-overwrite a surviving project's IndexedDB record with a potentially
+  // older localStorage copy. The active-project autosave will persist any newly
+  // created replacement sample through normal revision-aware persistence.
+  // Deleting project A must not modify project B's durable data.
   return {
     remaining,
     idbDeleted: idbRes.ok,
