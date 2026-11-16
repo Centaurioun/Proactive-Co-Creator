@@ -102,8 +102,19 @@ function sendErrorResponse(res: Response, err: unknown): void {
   res.status(classified.statusCode).json({ error: classified.toPayload() });
 }
 
-export function createApiRouter(handlers: AiServiceHandlers = defaultHandlers): Router {
+export interface ApiRouterOptions {
+  rateLimitWindowMs?: number;
+  maxRequestsPerWindow?: number;
+}
+
+export function createApiRouter(
+  handlers: AiServiceHandlers = defaultHandlers,
+  options: ApiRouterOptions = {}
+): Router {
   const router = express.Router();
+  const windowMs = options.rateLimitWindowMs ?? 60_000;
+  const maxRequests = options.maxRequestsPerWindow ?? 60;
+  const clientWindows = new Map<string, { count: number; resetAt: number }>();
 
   router.get('/health', (_req, res) => {
     res.json({
@@ -111,6 +122,35 @@ export function createApiRouter(handlers: AiServiceHandlers = defaultHandlers): 
       configured: handlers.hasConfiguredGeminiKey(),
       models: GEMINI_MODELS,
     });
+  });
+
+  router.use((req, res, next) => {
+    if (maxRequests <= 0) {
+      next();
+      return;
+    }
+    const now = Date.now();
+    const clientIp = req.ip || req.socket?.remoteAddress || 'local';
+    const existing = clientWindows.get(clientIp);
+    if (!existing || now >= existing.resetAt) {
+      clientWindows.set(clientIp, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+    if (existing.count >= maxRequests) {
+      const retryAfterSec = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSec));
+      const err = new AppApiError(
+        'RATE_LIMITED',
+        `Rate limit exceeded (${maxRequests} requests per ${Math.round(windowMs / 1000)}s). Please wait ${retryAfterSec}s before retrying.`,
+        429,
+        true
+      );
+      res.status(429).json({ error: err.toPayload() });
+      return;
+    }
+    existing.count += 1;
+    next();
   });
 
   router.post('/analyze', async (req, res) => {

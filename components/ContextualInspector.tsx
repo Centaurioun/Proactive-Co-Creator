@@ -52,57 +52,148 @@ interface ContextualInspectorProps {
   isLoading: boolean;
 }
 
+type StoryBibleDomain = 'core' | 'narrative' | 'constraints' | 'visual';
+
+const STORY_BIBLE_DOMAINS: Array<{ id: StoryBibleDomain; label: string; description: string }> = [
+  {
+    id: 'core',
+    label: 'World & Atmosphere',
+    description: 'Foundational genre, mood, and primary backdrop',
+  },
+  {
+    id: 'narrative',
+    label: 'Narrative Arc & Voice',
+    description: 'Perspective, pacing, themes, audience, and central tension',
+  },
+  {
+    id: 'constraints',
+    label: 'Canon & Exclusions',
+    description: 'Continuity rules and elements that must never appear',
+  },
+  {
+    id: 'visual',
+    label: 'Visual & Camera Direction',
+    description: 'Shared art direction and lighting for Image Mode',
+  },
+];
+
 const STORY_BIBLE_CONFIG: Array<{
   key: keyof StoryBibleFields;
   label: string;
+  shortLabel: string;
+  domain: StoryBibleDomain;
+  span: 'half' | 'full';
   placeholder: string;
   multiline?: boolean;
+  examples?: string[];
 }> = [
-  { key: 'genre', label: 'Genre', placeholder: 'e.g. Cozy Anthropomorphic Fable, Sci-Fi Mystery' },
-  { key: 'tone', label: 'Tone & Atmosphere', placeholder: 'e.g. Mysterious, Warm and whimsical' },
+  {
+    key: 'genre',
+    label: 'Genre',
+    shortLabel: 'Genre',
+    domain: 'core',
+    span: 'half',
+    placeholder: 'e.g. Cozy Anthropomorphic Fable',
+    examples: ['Cozy Anthropomorphic Fable', 'Woodland Mystery', 'Whimsical Fantasy'],
+  },
+  {
+    key: 'tone',
+    label: 'Tone & Atmosphere',
+    shortLabel: 'Tone',
+    domain: 'core',
+    span: 'half',
+    placeholder: 'e.g. Warm and whimsical',
+    examples: ['Warm and whimsical', 'Mysterious & candlelit', 'Witty & theatrical'],
+  },
   {
     key: 'setting',
     label: 'Primary Setting',
+    shortLabel: 'Primary Setting',
+    domain: 'core',
+    span: 'full',
     placeholder: 'e.g. Lantern-lit conservatory dining room',
+    examples: ['Lantern-lit conservatory dining room', 'Sunlit garden under string lights'],
   },
   {
     key: 'narrativePerspective',
     label: 'Narrative Perspective',
-    placeholder: 'e.g. Third-person limited, First-person',
+    shortLabel: 'Point of View',
+    domain: 'narrative',
+    span: 'half',
+    placeholder: 'e.g. Third-person limited',
+    examples: ['Third-person limited', 'Omniscient narrator', 'First-person host'],
+  },
+  {
+    key: 'pacing',
+    label: 'Pacing',
+    shortLabel: 'Pacing',
+    domain: 'narrative',
+    span: 'half',
+    placeholder: 'e.g. Unhurried conversational',
+    examples: ['Unhurried conversational', 'Brisk & comedic', 'Slow-burn suspense'],
+  },
+  {
+    key: 'themes',
+    label: 'Themes',
+    shortLabel: 'Core Themes',
+    domain: 'narrative',
+    span: 'half',
+    placeholder: 'e.g. Hospitality, friendship',
+    examples: ['Hospitality & belonging', 'Hidden secrets among friends'],
+  },
+  {
+    key: 'intendedAudience',
+    label: 'Intended Audience',
+    shortLabel: 'Audience',
+    domain: 'narrative',
+    span: 'half',
+    placeholder: 'e.g. General readers',
+    examples: ['All-ages fable readers', 'Young adult', 'Literary fiction'],
   },
   {
     key: 'centralConflict',
     label: 'Central Conflict',
+    shortLabel: 'Central Conflict',
+    domain: 'narrative',
+    span: 'full',
     placeholder: 'What drives tension or curiosity in the scene?',
     multiline: true,
-  },
-  { key: 'themes', label: 'Themes', placeholder: 'e.g. Hospitality, friendship, hidden secrets' },
-  { key: 'pacing', label: 'Pacing', placeholder: 'e.g. Unhurried conversational, brisk' },
-  {
-    key: 'intendedAudience',
-    label: 'Intended Audience',
-    placeholder: 'e.g. General readers, young adult',
+    examples: ['A missing heirloom recipe card at the table', 'Keeping a midnight dish secret'],
   },
   {
     key: 'continuityRules',
     label: 'Continuity Rules & Plot Notes',
+    shortLabel: 'Continuity Rules',
+    domain: 'constraints',
+    span: 'full',
     placeholder: 'Important canon rules or constraints...',
     multiline: true,
   },
   {
     key: 'explicitExclusions',
     label: 'Explicit Exclusions (Never Include)',
+    shortLabel: 'Explicit Exclusions',
+    domain: 'constraints',
+    span: 'full',
     placeholder: 'Comma-separated items or characters to exclude',
   },
   {
     key: 'visualStyle',
     label: 'Visual Style (Shared for Image Mode)',
-    placeholder: 'e.g. Storybook watercolor, cinematic 35mm',
+    shortLabel: 'Visual Style',
+    domain: 'visual',
+    span: 'half',
+    placeholder: 'e.g. Storybook watercolor',
+    examples: ['Storybook watercolor & ink', 'Painterly oil illustration', 'Cinematic 35mm'],
   },
   {
     key: 'cameraAndLighting',
     label: 'Camera & Lighting (Shared for Image Mode)',
-    placeholder: 'e.g. Warm candlelit glow, eye-level medium shot',
+    shortLabel: 'Camera & Lighting',
+    domain: 'visual',
+    span: 'half',
+    placeholder: 'e.g. Warm candlelit glow',
+    examples: ['Warm lantern glow, eye-level', 'Wide banquet table composition'],
   },
 ];
 
@@ -143,6 +234,11 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   const activeRelKey = selectedRelationship?.id ?? 'default';
   const activeRelLabel =
     relLabelDrafts[activeRelKey] ?? selectedRelationship?.label ?? '';
+
+  // Story Bible view & filter state
+  const [bibleViewMode, setBibleViewMode] = useState<'grid' | 'list'>('grid');
+  const [bibleDomainFilter, setBibleDomainFilter] = useState<'all' | StoryBibleDomain>('all');
+  const [bibleStatusFilter, setBibleStatusFilter] = useState<'all' | 'confirmed' | 'pending' | 'unset'>('all');
 
   // New entity state
   const [newEntityName, setNewEntityName] = useState('');
@@ -738,70 +834,387 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
         </div>
       )}
 
-      {/* Tab 2: Synchronized Story Bible */}
-      {activeTab === 'story-bible' && (
-        <div className="flex-1 overflow-y-auto p-4 space-y-3.5 min-h-0">
-          <div>
-            <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
-              Synchronized Story Bible
-            </h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              Authoritative narrative properties shared across the Belief Graph and Refined Prompt.
-            </p>
-          </div>
+      {/* Tab 2: Synchronized Story Bible (Structured Editable Grid & List View) */}
+      {activeTab === 'story-bible' && (() => {
+        const bibleStats = STORY_BIBLE_CONFIG.reduce(
+          (acc, item) => {
+            const f = snapshot.storyBible[item.key];
+            const hasValue = f.value.trim().length > 0;
+            if (!hasValue) {
+              acc.unset += 1;
+            } else if (f.status === 'confirmed') {
+              acc.confirmed += 1;
+            } else if (f.status === 'pending') {
+              acc.pending += 1;
+            } else {
+              acc.unset += 1;
+            }
+            return acc;
+          },
+          { confirmed: 0, pending: 0, unset: 0 }
+        );
 
-          <div className="space-y-3">
-            {STORY_BIBLE_CONFIG.map(({ key, label, placeholder, multiline }) => {
-              const field = snapshot.storyBible[key];
-              return (
-                <div key={key} className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <label
-                      htmlFor={`bible-${key}`}
-                      className="font-semibold text-gray-800 dark:text-gray-200"
+        const pendingWithValues = STORY_BIBLE_CONFIG.filter(({ key }) => {
+          const f = snapshot.storyBible[key];
+          return f.status === 'pending' && f.value.trim().length > 0;
+        });
+
+        const matchesFilters = (item: (typeof STORY_BIBLE_CONFIG)[number]) => {
+          if (bibleDomainFilter !== 'all' && item.domain !== bibleDomainFilter) {
+            return false;
+          }
+          const f = snapshot.storyBible[item.key];
+          const hasValue = f.value.trim().length > 0;
+          if (bibleStatusFilter === 'confirmed') {
+            return hasValue && f.status === 'confirmed';
+          }
+          if (bibleStatusFilter === 'pending') {
+            return hasValue && f.status === 'pending';
+          }
+          if (bibleStatusFilter === 'unset') {
+            return !hasValue;
+          }
+          return true;
+        };
+
+        const filteredItems = STORY_BIBLE_CONFIG.filter(matchesFilters);
+
+        return (
+          <div className="flex-1 overflow-y-auto p-3.5 space-y-3 min-h-0">
+            {/* Story Bible Header & View Switcher */}
+            <div className="flex flex-wrap items-start justify-between gap-2 pb-2.5 border-b border-gray-200 dark:border-gray-800">
+              <div>
+                <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
+                  Synchronized Story Bible
+                </h3>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">
+                  <span className="font-semibold text-emerald-700 dark:text-emerald-400">
+                    {bibleStats.confirmed} confirmed
+                  </span>
+                  <span aria-hidden="true"> · </span>
+                  <span className="font-semibold text-amber-700 dark:text-amber-400">
+                    {bibleStats.pending} pending
+                  </span>
+                  <span aria-hidden="true"> · </span>
+                  <span>{bibleStats.unset} unset</span>
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {pendingWithValues.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      for (const item of pendingWithValues) {
+                        onUpdateStoryBible(item.key, snapshot.storyBible[item.key].value);
+                      }
+                    }}
+                    className="px-2 py-1 text-[11px] font-semibold rounded bg-emerald-600 hover:bg-emerald-700 text-white transition-colors whitespace-nowrap"
+                  >
+                    Confirm Pending ({pendingWithValues.length})
+                  </button>
+                )}
+
+                <div
+                  role="group"
+                  aria-label="Story Bible layout mode"
+                  className="flex bg-gray-100 dark:bg-gray-800 p-0.5 rounded-md border border-gray-200 dark:border-gray-700"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setBibleViewMode('grid')}
+                    aria-pressed={bibleViewMode === 'grid'}
+                    className={`px-2 py-0.5 text-[11px] font-semibold rounded transition-colors ${
+                      bibleViewMode === 'grid'
+                        ? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Grid
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBibleViewMode('list')}
+                    aria-pressed={bibleViewMode === 'list'}
+                    className={`px-2 py-0.5 text-[11px] font-semibold rounded transition-colors ${
+                      bibleViewMode === 'list'
+                        ? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                    }`}
+                  >
+                    List
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Domain & Status Filters */}
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <div
+                role="group"
+                aria-label="Filter Story Bible by domain"
+                className="flex flex-wrap gap-1"
+              >
+                {(
+                  [
+                    ['all', 'All'],
+                    ['core', 'World'],
+                    ['narrative', 'Arc & Voice'],
+                    ['constraints', 'Rules'],
+                    ['visual', 'Visual'],
+                  ] as const
+                ).map(([domainKey, domainLabel]) => (
+                  <button
+                    key={domainKey}
+                    type="button"
+                    onClick={() => setBibleDomainFilter(domainKey)}
+                    aria-pressed={bibleDomainFilter === domainKey}
+                    className={`px-2 py-0.5 text-[11px] font-medium rounded border transition-colors ${
+                      bibleDomainFilter === domainKey
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-semibold'
+                        : 'border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 hover:text-gray-900'
+                    }`}
+                  >
+                    {domainLabel}
+                  </button>
+                ))}
+              </div>
+
+              <select
+                aria-label="Filter Story Bible by status"
+                value={bibleStatusFilter}
+                onChange={(e) =>
+                  setBibleStatusFilter(e.target.value as typeof bibleStatusFilter)
+                }
+                className="text-[11px] bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-2 py-0.5 text-gray-700 dark:text-gray-200"
+              >
+                <option value="all">All ({STORY_BIBLE_CONFIG.length})</option>
+                <option value="confirmed">Confirmed ({bibleStats.confirmed})</option>
+                <option value="pending">Pending ({bibleStats.pending})</option>
+                <option value="unset">Unset ({bibleStats.unset})</option>
+              </select>
+            </div>
+
+            {filteredItems.length === 0 ? (
+              <div className="p-4 text-center rounded-md border border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-950/40 text-xs text-gray-500 dark:text-gray-400">
+                No Story Bible fields match the active filter.
+              </div>
+            ) : bibleViewMode === 'grid' ? (
+              /* Structured Domain-Grouped Editable Grid View */
+              <div
+                className="space-y-4"
+                role="region"
+                aria-label="Story Bible structured grid"
+              >
+                {STORY_BIBLE_DOMAINS.map((domainMeta) => {
+                  const domainFields = filteredItems.filter(
+                    (item) => item.domain === domainMeta.id
+                  );
+                  if (domainFields.length === 0) return null;
+
+                  return (
+                    <section
+                      key={domainMeta.id}
+                      aria-label={domainMeta.label}
+                      className="space-y-2"
                     >
-                      {label}
-                    </label>
-                    <div className="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
-                      <span className="capitalize">{field.status}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{field.provenance}</span>
-                      {field.status !== 'confirmed' && field.value.trim() && (
-                        <button
-                          type="button"
-                          onClick={() => onUpdateStoryBible(key, field.value)}
-                          className="text-blue-600 dark:text-blue-400 font-semibold hover:underline ml-1"
+                      <div className="flex items-center justify-between gap-2">
+                        <h4
+                          title={domainMeta.description}
+                          className="text-[11px] font-bold uppercase tracking-wider text-gray-600 dark:text-gray-300"
                         >
-                          Confirm
-                        </button>
+                          {domainMeta.label}
+                        </h4>
+                        <span className="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums">
+                          {domainFields.length} {domainFields.length === 1 ? 'field' : 'fields'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {domainFields.map(
+                          ({
+                            key,
+                            label,
+                            shortLabel,
+                            span,
+                            placeholder,
+                            multiline,
+                            examples,
+                          }) => {
+                            const field = snapshot.storyBible[key];
+                            const hasValue = field.value.trim().length > 0;
+                            const isConfirmed = hasValue && field.status === 'confirmed';
+                            const isPending = hasValue && field.status === 'pending';
+
+                            return (
+                              <div
+                                key={key}
+                                className={`${
+                                  span === 'full' ? 'sm:col-span-2' : 'col-span-1'
+                                } min-w-0 overflow-hidden rounded-md border p-2.5 flex flex-col justify-between gap-1.5 transition-colors ${
+                                  isConfirmed
+                                    ? 'border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/20 dark:bg-emerald-950/15'
+                                    : isPending
+                                      ? 'border-amber-300 dark:border-amber-800 border-dashed bg-amber-50/25 dark:bg-amber-950/15'
+                                      : 'border-gray-200 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-950/30'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-1.5 min-w-0">
+                                  <label
+                                    htmlFor={`bible-${key}`}
+                                    title={label}
+                                    className="text-xs font-semibold text-gray-900 dark:text-gray-100 truncate"
+                                  >
+                                    {shortLabel}
+                                  </label>
+
+                                  <span
+                                    className={`text-[10px] px-1.5 py-0.2 rounded font-semibold uppercase tracking-wide shrink-0 ${
+                                      isConfirmed
+                                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300'
+                                        : isPending
+                                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300'
+                                          : 'bg-gray-200/70 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                                    }`}
+                                  >
+                                    {isConfirmed
+                                      ? 'Confirmed'
+                                      : isPending
+                                        ? 'Pending'
+                                        : 'Unset'}
+                                  </span>
+                                </div>
+
+                                {multiline ? (
+                                  <textarea
+                                    id={`bible-${key}`}
+                                    rows={2}
+                                    value={field.value}
+                                    onChange={(e) => onUpdateStoryBible(key, e.target.value)}
+                                    placeholder={placeholder}
+                                    className="w-full text-xs bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                                  />
+                                ) : (
+                                  <input
+                                    id={`bible-${key}`}
+                                    type="text"
+                                    value={field.value}
+                                    onChange={(e) => onUpdateStoryBible(key, e.target.value)}
+                                    placeholder={placeholder}
+                                    className="w-full text-xs bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded px-2 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  />
+                                )}
+
+                                {/* Provenance, Quick Suggestion Chips & Confirm/Clear Actions */}
+                                <div className="flex flex-wrap items-center justify-between gap-1 pt-0.5 min-w-0">
+                                  {!hasValue && examples && examples.length > 0 ? (
+                                    <div className="flex flex-wrap items-center gap-1 min-w-0">
+                                      {examples.slice(0, 1).map((example) => (
+                                        <button
+                                          key={example}
+                                          type="button"
+                                          onClick={() => onUpdateStoryBible(key, example)}
+                                          className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-300 truncate max-w-full"
+                                          title={`Set ${shortLabel} to "${example}"`}
+                                        >
+                                          + {example}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate">
+                                      {field.provenance}
+                                    </span>
+                                  )}
+
+                                  <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                                    {isPending && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onUpdateStoryBible(key, field.value)}
+                                        className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white"
+                                        title={`Confirm ${label}`}
+                                      >
+                                        Confirm
+                                      </button>
+                                    )}
+                                    {hasValue && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onUpdateStoryBible(key, '')}
+                                        className="text-[10px] text-gray-400 hover:text-red-600 dark:hover:text-red-400"
+                                        title={`Clear ${shortLabel}`}
+                                      >
+                                        Clear
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+                        )}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Classic Compact Vertical List View */
+              <div className="space-y-3" role="region" aria-label="Story Bible list">
+                {filteredItems.map(({ key, label, placeholder, multiline }) => {
+                  const field = snapshot.storyBible[key];
+                  return (
+                    <div key={key} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <label
+                          htmlFor={`bible-${key}`}
+                          className="font-semibold text-gray-800 dark:text-gray-200"
+                        >
+                          {label}
+                        </label>
+                        <div className="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+                          <span className="capitalize">{field.status}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{field.provenance}</span>
+                          {field.status !== 'confirmed' && field.value.trim() && (
+                            <button
+                              type="button"
+                              onClick={() => onUpdateStoryBible(key, field.value)}
+                              className="text-blue-600 dark:text-blue-400 font-semibold hover:underline ml-1"
+                            >
+                              Confirm
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {multiline ? (
+                        <textarea
+                          id={`bible-${key}`}
+                          rows={2}
+                          value={field.value}
+                          onChange={(e) => onUpdateStoryBible(key, e.target.value)}
+                          placeholder={placeholder}
+                          className="w-full text-xs bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      ) : (
+                        <input
+                          id={`bible-${key}`}
+                          type="text"
+                          value={field.value}
+                          onChange={(e) => onUpdateStoryBible(key, e.target.value)}
+                          placeholder={placeholder}
+                          className="w-full text-xs bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-2.5 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
                       )}
                     </div>
-                  </div>
-                  {multiline ? (
-                    <textarea
-                      id={`bible-${key}`}
-                      rows={2}
-                      value={field.value}
-                      onChange={(e) => onUpdateStoryBible(key, e.target.value)}
-                      placeholder={placeholder}
-                      className="w-full text-xs bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  ) : (
-                    <input
-                      id={`bible-${key}`}
-                      type="text"
-                      value={field.value}
-                      onChange={(e) => onUpdateStoryBible(key, e.target.value)}
-                      placeholder={placeholder}
-                      className="w-full text-xs bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-2.5 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  )}
-                </div>
-              );
-            })}
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Tab 3: Consistency Checker */}
       {activeTab === 'consistency' && (

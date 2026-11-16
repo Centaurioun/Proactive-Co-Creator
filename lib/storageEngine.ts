@@ -11,6 +11,7 @@ import {
   syncStoryBibleWithSceneEntity,
 } from './canonicalModel.ts';
 import { inferEntityCategory } from './beliefGraphUtils.ts';
+import { createUndoRedoState, type UndoRedoState } from './historyEngine.ts';
 import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts';
 import type {
   CreativeProject,
@@ -25,6 +26,7 @@ export const CURRENT_SCHEMA_VERSION = 3;
 export const LOCAL_STORAGE_PROJECTS_KEY = 'proactive_co_creator_projects_v2';
 export const LOCAL_STORAGE_ACTIVE_ID_KEY = 'proactive_co_creator_active_id_v2';
 export const LOCAL_STORAGE_BACKUP_V2_KEY = 'proactive_co_creator_backup_v2';
+export const LOCAL_STORAGE_DELETED_IDS_KEY = 'proactive_co_creator_deleted_ids_v2';
 const IDB_NAME = 'proactive_co_creator_db_v2';
 const IDB_STORE = 'projects';
 
@@ -524,12 +526,51 @@ export function exportStoryBibleMarkdown(project: CreativeProject): string {
 
 // --- Browser Local Storage + IndexedDB Persistence Engine ---
 
+export function getDeletedProjectIds(): Set<string> {
+  if (typeof window === 'undefined' || !window.localStorage) return new Set();
+  try {
+    const raw = window.localStorage.getItem(LOCAL_STORAGE_DELETED_IDS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((id): id is string => typeof id === 'string'));
+    }
+    return new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function recordDeletedProjectId(projectId: string): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const set = getDeletedProjectIds();
+    set.add(projectId);
+    const list = Array.from(set).slice(-200);
+    window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, JSON.stringify(list));
+  } catch {
+    // Ignore storage error when recording tombstone
+  }
+}
+
+export function clearDeletedProjectId(projectId: string): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const set = getDeletedProjectIds();
+    if (!set.has(projectId)) return;
+    set.delete(projectId);
+    window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, JSON.stringify(Array.from(set)));
+  } catch {
+    // Ignore storage error
+  }
+}
+
 export function saveProjectToLocalStorage(
   project: CreativeProject,
   expectedBaseRevisionOrOptions?:
     | number
-    | { expectedPersistedRevision?: number; forceOverwrite?: boolean },
-  options?: { forceOverwrite?: boolean }
+    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean },
+  options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): StorageSaveResult {
   if (typeof window === 'undefined' || !window.localStorage) {
     return { ok: false, saved: false, error: 'Browser localStorage is unavailable.' };
@@ -539,6 +580,19 @@ export function saveProjectToLocalStorage(
     typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
       ? Boolean(expectedBaseRevisionOrOptions.forceOverwrite)
       : Boolean(options?.forceOverwrite);
+
+  const allowDeleted =
+    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+      ? Boolean(expectedBaseRevisionOrOptions.allowDeleted)
+      : Boolean(options?.allowDeleted);
+
+  if (!allowDeleted && getDeletedProjectIds().has(project.id)) {
+    return {
+      ok: false,
+      saved: false,
+      error: `Project "${project.id}" was deleted and cannot be resurrected by an in-flight save.`,
+    };
+  }
 
   const rawExpected =
     typeof expectedBaseRevisionOrOptions === 'number'
@@ -650,6 +704,7 @@ export function loadProjectsFromLocalStorage(): {
   }
 
   try {
+    const deletedIds = getDeletedProjectIds();
     const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
     const activeId = window.localStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY);
     if (!raw) {
@@ -672,7 +727,10 @@ export function loadProjectsFromLocalStorage(): {
         needsPreMigrationBackup = true;
       }
       try {
-        projects.push(migrateProjectPayload(val));
+        const migrated = migrateProjectPayload(val);
+        if (!deletedIds.has(migrated.id)) {
+          projects.push(migrated);
+        }
       } catch {
         // Ignore corrupted individual entry without crashing workspace
       }
@@ -705,13 +763,17 @@ export function loadProjectsFromLocalStorage(): {
 }
 
 export function deleteProjectFromLocalStorage(projectId: string): CreativeProject[] {
+  recordDeletedProjectId(projectId);
   if (typeof window === 'undefined' || !window.localStorage) return [];
   try {
     const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
     if (!raw) return [];
     const map = JSON.parse(raw) as Record<string, CreativeProject>;
     delete map[projectId];
-    const remaining = Object.values(map).map((p) => migrateProjectPayload(p));
+    const deletedIds = getDeletedProjectIds();
+    const remaining = Object.values(map)
+      .map((p) => migrateProjectPayload(p))
+      .filter((p) => !deletedIds.has(p.id));
     if (remaining.length === 0) {
       const sample = createSampleProject();
       map[sample.id] = sample;
@@ -720,18 +782,92 @@ export function deleteProjectFromLocalStorage(projectId: string): CreativeProjec
       return [sample];
     }
     window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
-    return remaining.sort((a, b) => b.updatedAt - a.updatedAt);
+    const sorted = remaining.sort((a, b) => b.updatedAt - a.updatedAt);
+    const currentActiveId = window.localStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY);
+    if (currentActiveId === projectId) {
+      window.localStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, sorted[0].id);
+    }
+    return sorted;
   } catch {
     return [];
   }
+}
+
+export async function deleteProjectFromIndexedDb(
+  projectId: string
+): Promise<{ ok: boolean; error?: string }> {
+  recordDeletedProjectId(projectId);
+  if (typeof window === 'undefined' || !('indexedDB' in window)) {
+    return { ok: false, error: 'IndexedDB is unavailable in this environment.' };
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const req = window.indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        const store = tx.objectStore(IDB_STORE);
+        store.delete(projectId);
+        tx.oncomplete = () => {
+          db.close();
+          resolve({ ok: true });
+        };
+        tx.onerror = () => {
+          const errMsg = tx.error?.message ?? 'IndexedDB delete transaction failed.';
+          db.close();
+          resolve({ ok: false, error: errMsg });
+        };
+      };
+      req.onerror = () =>
+        resolve({
+          ok: false,
+          error: req.error?.message ?? 'Failed to open IndexedDB for deletion.',
+        });
+    } catch (err) {
+      resolve({
+        ok: false,
+        error: err instanceof Error ? err.message : 'IndexedDB delete exception.',
+      });
+    }
+  });
+}
+
+/**
+ * Deletes a project from both localStorage and IndexedDB and records a deletion tombstone
+ * so neither hydration nor in-flight autosave timers can resurrect it (F-06).
+ */
+export async function deleteProjectCompletely(projectId: string): Promise<{
+  remaining: CreativeProject[];
+  idbDeleted: boolean;
+  error?: string;
+}> {
+  recordDeletedProjectId(projectId);
+  const remaining = deleteProjectFromLocalStorage(projectId);
+  const idbRes = await deleteProjectFromIndexedDb(projectId);
+  // If deleting the last project created a replacement sample project, persist it to IDB too
+  if (remaining.length === 1 && remaining[0].id !== projectId) {
+    await saveProjectToIndexedDb(remaining[0], { forceOverwrite: true });
+  }
+  return {
+    remaining,
+    idbDeleted: idbRes.ok,
+    error: idbRes.error,
+  };
 }
 
 export async function saveProjectToIndexedDb(
   project: CreativeProject,
   expectedBaseRevisionOrOptions?:
     | number
-    | { expectedPersistedRevision?: number; forceOverwrite?: boolean },
-  options?: { forceOverwrite?: boolean }
+    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean },
+  options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): Promise<StorageSaveResult> {
   if (typeof window === 'undefined' || !('indexedDB' in window)) {
     return { ok: false, saved: false, error: 'IndexedDB is unavailable in this environment.' };
@@ -740,6 +876,19 @@ export async function saveProjectToIndexedDb(
     typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
       ? Boolean(expectedBaseRevisionOrOptions.forceOverwrite)
       : Boolean(options?.forceOverwrite);
+  const allowDeleted =
+    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+      ? Boolean(expectedBaseRevisionOrOptions.allowDeleted)
+      : Boolean(options?.allowDeleted);
+
+  if (!allowDeleted && getDeletedProjectIds().has(project.id)) {
+    return {
+      ok: false,
+      saved: false,
+      error: `Project "${project.id}" was deleted and cannot be written to IndexedDB.`,
+    };
+  }
+
   const rawExpected =
     typeof expectedBaseRevisionOrOptions === 'number'
       ? expectedBaseRevisionOrOptions
@@ -767,21 +916,35 @@ export async function saveProjectToIndexedDb(
               ? rawExpected
               : project.persistedRevision;
 
-          if (
-            !normalizedForce &&
-            existing &&
-            baseRev !== undefined &&
-            (existing.revision ?? 1) > baseRev
-          ) {
-            db.close();
-            resolve({
-              ok: false,
-              saved: false,
-              conflictDetected: true,
-              storedProject: migrateProjectPayload(existing),
-              error: `IndexedDB has a newer revision (r${existing.revision ?? 1}) than expected base r${baseRev}.`,
-            });
-            return;
+          if (!normalizedForce && existing) {
+            const existingRev = existing.revision ?? 1;
+            if (baseRev !== undefined && existingRev > baseRev) {
+              db.close();
+              resolve({
+                ok: false,
+                saved: false,
+                conflictDetected: true,
+                storedProject: migrateProjectPayload(existing),
+                error: `IndexedDB has a newer revision (r${existingRev}) than expected base r${baseRev}.`,
+              });
+              return;
+            }
+            if (
+              baseRev !== undefined &&
+              existingRev === baseRev &&
+              project.revision === baseRev &&
+              existing.updatedAt > project.updatedAt
+            ) {
+              db.close();
+              resolve({
+                ok: false,
+                saved: false,
+                conflictDetected: true,
+                storedProject: migrateProjectPayload(existing),
+                error: 'A newer version of this project was saved in another browser tab.',
+              });
+              return;
+            }
           }
 
           const nextRev = project.revision ?? 1;
@@ -817,6 +980,7 @@ export async function saveProjectToIndexedDb(
 
 export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
   if (typeof window === 'undefined' || !('indexedDB' in window)) return [];
+  const deletedIds = getDeletedProjectIds();
   return new Promise((resolve) => {
     try {
       const req = window.indexedDB.open(IDB_NAME, 1);
@@ -836,7 +1000,10 @@ export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
           const migrated: CreativeProject[] = [];
           for (const item of rawList) {
             try {
-              migrated.push(migrateProjectPayload(item));
+              const p = migrateProjectPayload(item);
+              if (!deletedIds.has(p.id)) {
+                migrated.push(p);
+              }
             } catch {
               // Ignore malformed record
             }
@@ -854,4 +1021,167 @@ export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
       resolve([]);
     }
   });
+}
+
+/**
+ * Reconciles initial localStorage projects with asynchronous IndexedDB hydration (F-02, IA-04, IA-05).
+ * Ensures that when IndexedDB holds a newer revision (e.g. r6 after a localStorage quota failure on r5),
+ * the COMPLETE project (snapshot, revision, persistedRevision, revisions, artifacts, and undoState)
+ * is recovered atomically without splicing old snapshots with newer artifacts.
+ * Also guards against overwriting newer in-memory user edits made while hydration was in flight.
+ */
+export function reconcileHydratedProjects(params: {
+  localProjects: CreativeProject[];
+  idbProjects: CreativeProject[];
+  activeProject: CreativeProject;
+  activeUndoState: UndoRedoState;
+  hasLocalEditsSinceMount?: boolean;
+  deletedProjectIds?: Iterable<string>;
+}): {
+  savedProjects: CreativeProject[];
+  activeProject: CreativeProject;
+  activeUndoState: UndoRedoState;
+  upgradedFromIndexedDb: boolean;
+  conflictWithHydrated: CreativeProject | null;
+} {
+  const {
+    localProjects,
+    idbProjects,
+    activeProject,
+    activeUndoState,
+    hasLocalEditsSinceMount = false,
+    deletedProjectIds,
+  } = params;
+
+  const deletedSet = new Set<string>(deletedProjectIds ?? getDeletedProjectIds());
+  const validLocal = localProjects.filter((p) => !deletedSet.has(p.id));
+  const validIdb = idbProjects.filter((p) => !deletedSet.has(p.id));
+
+  if (validIdb.length === 0) {
+    return {
+      savedProjects: validLocal,
+      activeProject,
+      activeUndoState,
+      upgradedFromIndexedDb: false,
+      conflictWithHydrated: null,
+    };
+  }
+
+  const mergedById = new Map<string, CreativeProject>();
+  for (const lp of validLocal) {
+    mergedById.set(lp.id, lp);
+  }
+
+  for (const ip of validIdb) {
+    const lp = mergedById.get(ip.id);
+    if (!lp) {
+      mergedById.set(ip.id, {
+        ...ip,
+        persistedRevision: ip.persistedRevision ?? ip.revision,
+      });
+      continue;
+    }
+
+    const idbRev = ip.revision ?? 1;
+    const localRev = lp.revision ?? 1;
+
+    if (idbRev > localRev) {
+      // IndexedDB has a strictly newer revision: adopt the ENTIRE IndexedDB project
+      mergedById.set(ip.id, {
+        ...ip,
+        persistedRevision: ip.persistedRevision ?? idbRev,
+      });
+    } else if (idbRev === localRev) {
+      // Same revision: prefer fuller artifacts and latest updatedAt
+      const useIdbSnapshot = ip.updatedAt > lp.updatedAt;
+      const baseWinner = useIdbSnapshot ? ip : lp;
+      const bestArtifacts =
+        ip.artifacts.length >= lp.artifacts.length ? ip.artifacts : lp.artifacts;
+      const bestRevisions =
+        ip.revisions.length >= lp.revisions.length ? ip.revisions : lp.revisions;
+      mergedById.set(ip.id, {
+        ...baseWinner,
+        persistedRevision: Math.max(
+          ip.persistedRevision ?? idbRev,
+          lp.persistedRevision ?? localRev
+        ),
+        artifacts: bestArtifacts,
+        revisions: bestRevisions,
+      });
+    } else {
+      // LocalStorage has a newer revision than IndexedDB
+      mergedById.set(lp.id, {
+        ...lp,
+        artifacts: lp.artifacts.length > 0 ? lp.artifacts : ip.artifacts,
+      });
+    }
+  }
+
+  const savedProjects = Array.from(mergedById.values()).sort(
+    (a, b) => b.updatedAt - a.updatedAt
+  );
+
+  const idbMatch = validIdb.find((ip) => ip.id === activeProject.id);
+  const reconciledActiveCandidate = mergedById.get(activeProject.id);
+
+  if (!reconciledActiveCandidate) {
+    const fallback = savedProjects[0] ?? activeProject;
+    return {
+      savedProjects,
+      activeProject: fallback,
+      activeUndoState: createUndoRedoState(fallback.snapshot),
+      upgradedFromIndexedDb: true,
+      conflictWithHydrated: null,
+    };
+  }
+
+  const idbRev = idbMatch?.revision ?? 0;
+  const activeRev = activeProject.revision ?? 1;
+
+  // If the user already edited the active project in memory since mount and IDB also had a newer revision than the initial base
+  if (hasLocalEditsSinceMount) {
+    if (idbMatch && idbRev > (activeProject.persistedRevision ?? 1)) {
+      return {
+        savedProjects,
+        activeProject,
+        activeUndoState,
+        upgradedFromIndexedDb: false,
+        conflictWithHydrated: idbMatch,
+      };
+    }
+    return {
+      savedProjects: savedProjects.map((p) =>
+        p.id === activeProject.id ? activeProject : p
+      ),
+      activeProject,
+      activeUndoState,
+      upgradedFromIndexedDb: false,
+      conflictWithHydrated: null,
+    };
+  }
+
+  const upgradedFromIndexedDb =
+    Boolean(idbMatch) &&
+    (idbRev > activeRev ||
+      (idbRev === activeRev &&
+        (idbMatch!.updatedAt > activeProject.updatedAt ||
+          idbMatch!.artifacts.length > activeProject.artifacts.length)));
+
+  if (upgradedFromIndexedDb) {
+    return {
+      savedProjects,
+      activeProject: reconciledActiveCandidate,
+      activeUndoState: createUndoRedoState(reconciledActiveCandidate.snapshot),
+      upgradedFromIndexedDb: true,
+      conflictWithHydrated: null,
+    };
+  }
+
+  return {
+    savedProjects,
+    activeProject: reconciledActiveCandidate,
+    activeUndoState,
+    upgradedFromIndexedDb: false,
+    conflictWithHydrated: null,
+  };
 }

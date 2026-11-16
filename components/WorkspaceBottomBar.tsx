@@ -16,6 +16,7 @@ interface WorkspaceBottomBarProps {
   onRedo: () => void;
   onAcceptAllPending: () => void;
   onReviewChanges: () => void;
+  reviewButtonRef?: React.RefObject<HTMLButtonElement | null>;
   mode: GenerationMode;
   onModeChange: (mode: GenerationMode) => void;
   onGenerate: () => void;
@@ -36,6 +37,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
   onRedo,
   onAcceptAllPending,
   onReviewChanges,
+  reviewButtonRef,
   mode,
   onModeChange,
   onGenerate,
@@ -94,6 +96,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
         )}
 
         <button
+          ref={reviewButtonRef}
           type="button"
           onClick={onReviewChanges}
           className="px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors whitespace-nowrap inline-flex items-center"

@@ -4,20 +4,25 @@
  */
 
 import {
+  applyDecisionBatch,
   makeStableId,
   mergeAnalysisIntoSnapshot,
 } from './canonicalModel.ts';
 import {
+  performRedo,
+  performUndo,
   pushCoalescedTransaction,
   pushUndoableTransaction,
   recordProjectRevision,
   type UndoRedoState,
 } from './historyEngine.ts';
+import { applyProposedOperations } from './nlBatchEngine.ts';
 import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts';
 import type {
   AiPolishProposal,
   AiRequestAction,
   AiRequestTicket,
+  BatchCommitResult,
   BatchEditProposalResult,
   BeliefState,
   Clarification,
@@ -25,6 +30,7 @@ import type {
   GenerationArtifact,
   GenerationMode,
   ProjectSnapshot,
+  ReviewDiffItem,
 } from '../shared/types.ts';
 
 export type InFlightTicketsMap = Record<string, AiRequestTicket>;
@@ -243,17 +249,78 @@ export function reconcileAsyncPolishResponse(params: {
     status: 'staged',
     tickets: nextTickets,
     proposal: {
+      requestId: ticket.requestId,
       projectId: targetProject.id,
-      baseRevision: targetProject.revision ?? 1,
+      baseRevision: ticket.baseRevision,
+      sourcePromptDigest:
+        ticket.promptDigest ?? computePromptDigest(currentPrompt, targetProject.snapshot.mode),
       originalPrompt: currentPrompt,
       polishedPrompt: candidatePrompt,
+      proposedPrompt: candidatePrompt,
+      isNoOp: false,
       createdAt: Date.now(),
     },
   };
 }
 
+export interface PolishAcceptanceValidation {
+  ok: boolean;
+  status: 'accepted' | 'wrong-project' | 'stale-revision' | 'stale-digest' | 'noop';
+  reason?: string;
+}
+
+export function validatePolishProposalAcceptance(
+  project: CreativeProject,
+  proposal: AiPolishProposal
+): PolishAcceptanceValidation {
+  if (project.id !== proposal.projectId) {
+    return {
+      ok: false,
+      status: 'wrong-project',
+      reason: `This AI Polish proposal was drafted for project "${proposal.projectId}", not "${project.id}".`,
+    };
+  }
+
+  const candidateText = (proposal.polishedPrompt || proposal.proposedPrompt || '').trim();
+  const currentPrompt = project.snapshot.refinedPrompt.trim();
+
+  if (proposal.isNoOp || !candidateText || candidateText === proposal.originalPrompt.trim()) {
+    return {
+      ok: false,
+      status: 'noop',
+      reason: 'AI Polish produced identical text; no changes or new revisions are needed.',
+    };
+  }
+
+  const currentRev = project.revision ?? 1;
+  if (proposal.baseRevision !== currentRev) {
+    return {
+      ok: false,
+      status: 'stale-revision',
+      reason: `Stale AI Polish proposal: drafted at revision r${proposal.baseRevision}, but project is now at revision r${currentRev}. Re-run AI Polish so your latest edits are preserved.`,
+    };
+  }
+
+  const currentDigest = computePromptDigest(currentPrompt, project.snapshot.mode);
+  const expectedDigest =
+    proposal.sourcePromptDigest ??
+    computePromptDigest(proposal.originalPrompt, project.snapshot.mode);
+
+  if (currentDigest !== expectedDigest || currentPrompt !== proposal.originalPrompt.trim()) {
+    return {
+      ok: false,
+      status: 'stale-digest',
+      reason:
+        'Stale AI Polish proposal: the refined prompt changed since this proposal was generated. Re-run AI Polish on the current prompt.',
+    };
+  }
+
+  return { ok: true, status: 'accepted' };
+}
+
 /**
  * Commits an accepted AI Polish proposal into the target project's snapshot and revision history.
+ * Rejects stale proposals (when project revision or prompt digest changed) or cross-project proposals.
  */
 export function acceptAiPolishProposal(params: {
   project: CreativeProject;
@@ -261,11 +328,13 @@ export function acceptAiPolishProposal(params: {
   proposal: AiPolishProposal;
 }): { project: CreativeProject; undoState: UndoRedoState } | null {
   const { project, undoState, proposal } = params;
-  if (project.id !== proposal.projectId) return null;
+  const validation = validatePolishProposalAcceptance(project, proposal);
+  if (!validation.ok) return null;
 
+  const candidateText = (proposal.polishedPrompt || proposal.proposedPrompt || '').trim();
   const nextSnapshot: ProjectSnapshot = {
     ...structuredClone(project.snapshot),
-    refinedPrompt: proposal.polishedPrompt.trim(),
+    refinedPrompt: candidateText,
   };
 
   const nextUndoState = pushUndoableTransaction(
@@ -663,14 +732,20 @@ export function applyAsyncGenerationCompletion(params: {
 export function createPolishProposal(
   project: CreativeProject,
   polishedText: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  baseRevisionOverride?: number,
+  sourceOriginalPromptOverride?: string
 ): AiPolishProposal {
-  const originalPrompt = project.snapshot.refinedPrompt.trim();
+  const originalPrompt = (
+    sourceOriginalPromptOverride ?? project.snapshot.refinedPrompt
+  ).trim();
   const cleanPolished = polishedText.trim();
+  const baseRevision = baseRevisionOverride ?? (project.revision ?? 1);
   return {
     requestId: makeStableId('polish'),
     projectId: project.id,
-    baseRevision: project.revision ?? 1,
+    baseRevision,
+    sourcePromptDigest: computePromptDigest(originalPrompt, project.snapshot.mode),
     originalPrompt,
     polishedPrompt: cleanPolished,
     proposedPrompt: cleanPolished,
@@ -683,8 +758,404 @@ export function acceptPolishProposal(
   project: CreativeProject,
   undoState: UndoRedoState,
   proposal: AiPolishProposal
-): { project: CreativeProject; undoState: UndoRedoState } {
+): {
+  ok: boolean;
+  status: PolishAcceptanceValidation['status'];
+  reason?: string;
+  project: CreativeProject;
+  undoState: UndoRedoState;
+} {
+  const validation = validatePolishProposalAcceptance(project, proposal);
+  if (!validation.ok) {
+    return {
+      ok: false,
+      status: validation.status,
+      reason: validation.reason,
+      project,
+      undoState,
+    };
+  }
   const res = acceptAiPolishProposal({ project, undoState, proposal });
-  return res ?? { project, undoState };
+  if (!res) {
+    return {
+      ok: false,
+      status: 'stale-revision',
+      reason: 'Could not apply AI Polish proposal.',
+      project,
+      undoState,
+    };
+  }
+  return {
+    ok: true,
+    status: 'accepted',
+    project: res.project,
+    undoState: res.undoState,
+  };
+}
+
+/**
+ * Commits a staged natural-language batch preview against the authoritative project state.
+ * Enforces F-01 & U-02:
+ * - Rejects cross-project apply (WRONG_PROJECT)
+ * - Rejects stale base revision apply (STALE_REVISION)
+ * - Rejects duplicate apply of the same proposalId (ALREADY_APPLIED)
+ * - Pre-validates all selected operations atomically (VALIDATION_FAILED)
+ */
+export function commitBatchPreviewToProject(params: {
+  project: CreativeProject;
+  undoState: UndoRedoState;
+  preview: BatchEditProposalResult;
+  appliedProposalIds?: Set<string> | ReadonlySet<string> | string[];
+}): {
+  project: CreativeProject;
+  undoState: UndoRedoState;
+  result: BatchCommitResult;
+} {
+  const { project, undoState, preview, appliedProposalIds } = params;
+
+  const appliedSet =
+    appliedProposalIds instanceof Set
+      ? appliedProposalIds
+      : new Set(appliedProposalIds ?? []);
+
+  if (preview.proposalId && appliedSet.has(preview.proposalId)) {
+    const msg = 'This batch preview has already been applied.';
+    return {
+      project,
+      undoState,
+      result: {
+        ok: false,
+        reason: 'ALREADY_APPLIED',
+        message: msg,
+        errors: [{ code: 'ALREADY_APPLIED', message: msg }],
+      },
+    };
+  }
+
+  if (preview.baseProjectId !== undefined && preview.baseProjectId !== project.id) {
+    const msg = `Batch preview was created for project "${preview.baseProjectId}", but the active project is "${project.name}" (${project.id}). Switch back or click Re-preview for this project.`;
+    return {
+      project,
+      undoState,
+      result: {
+        ok: false,
+        reason: 'WRONG_PROJECT',
+        message: msg,
+        errors: [{ operationId: 'batch_project', code: 'WRONG_PROJECT', message: msg }],
+      },
+    };
+  }
+
+  const currentRev = project.revision ?? 1;
+  if (preview.baseRevision !== undefined && preview.baseRevision !== currentRev) {
+    const msg = `Batch preview is stale: it was generated at revision r${preview.baseRevision}, while this project is now at revision r${currentRev}. Click Re-preview to recalculate against the latest state.`;
+    return {
+      project,
+      undoState,
+      result: {
+        ok: false,
+        reason: 'STALE_REVISION',
+        message: msg,
+        errors: [{ operationId: 'batch_base', code: 'STALE_BASE', message: msg }],
+      },
+    };
+  }
+
+  const selectedOps = preview.operations.filter((op) => op.selected);
+  if (selectedOps.length === 0) {
+    const msg = 'Select at least one proposed operation to apply.';
+    return {
+      project,
+      undoState,
+      result: {
+        ok: false,
+        reason: 'NO_SELECTED_OPERATIONS',
+        message: msg,
+        errors: [],
+      },
+    };
+  }
+
+  const applied = applyProposedOperations(project.snapshot, preview.operations, {
+    expectedProjectId: preview.baseProjectId,
+    currentProjectId: project.id,
+    expectedBaseRevision: preview.baseRevision,
+    currentRevision: currentRev,
+  });
+
+  if (applied.errors.length > 0) {
+    return {
+      project,
+      undoState,
+      result: {
+        ok: false,
+        reason: 'VALIDATION_FAILED',
+        message: applied.errors[0].message,
+        errors: applied.errors,
+      },
+    };
+  }
+
+  if (preview.proposalId && appliedProposalIds instanceof Set) {
+    appliedProposalIds.add(preview.proposalId);
+  }
+
+  const committed = commitSnapshotTransaction(
+    project,
+    undoState,
+    applied.snapshot,
+    `Batch Edit (${applied.appliedCount} ops)`,
+    `Applied natural-language batch edit: "${preview.instruction}"`,
+    applied.appliedCount
+  );
+
+  return {
+    project: committed.project,
+    undoState: committed.undoState,
+    result: {
+      ok: true,
+      appliedCount: applied.appliedCount,
+      revision: committed.project.revision,
+      proposalId: preview.proposalId,
+    },
+  };
+}
+
+/**
+ * Performs an Undo step as a monotonic durable revision on the project while moving the UndoRedoState cursor.
+ * Enforces F-04: Undo restores prior snapshot content, advances monotonic project.revision,
+ * refreshes artifact currentness, and keeps the redo branch intact. No-op when past stack is empty.
+ */
+export function commitUndoTransaction(
+  project: CreativeProject,
+  undoState: UndoRedoState
+): {
+  project: CreativeProject;
+  undoState: UndoRedoState;
+  undoneLabel: string | null;
+  changed: boolean;
+} {
+  const { state: nextUndoState, undoneLabel } = performUndo(undoState);
+  if (!undoneLabel) {
+    return { project, undoState, undoneLabel: null, changed: false };
+  }
+
+  const restoredSnapshot = nextUndoState.present;
+  const refreshedArtifacts = refreshArtifactsCurrentness(project.artifacts, restoredSnapshot);
+  const nextProject = recordProjectRevision(
+    {
+      ...project,
+      snapshot: restoredSnapshot,
+      artifacts: refreshedArtifacts,
+    },
+    `Undo: ${undoneLabel}`,
+    `Undid "${undoneLabel}"`,
+    1
+  );
+
+  return {
+    project: nextProject,
+    undoState: nextUndoState,
+    undoneLabel,
+    changed: true,
+  };
+}
+
+/**
+ * Performs a Redo step as a monotonic durable revision on the project while moving the UndoRedoState cursor.
+ * Enforces F-04: Redo reapplies the undone snapshot, advances monotonic project.revision,
+ * refreshes artifact currentness, and preserves Undo/Redo stack entries. No-op when future stack is empty.
+ */
+export function commitRedoTransaction(
+  project: CreativeProject,
+  undoState: UndoRedoState
+): {
+  project: CreativeProject;
+  undoState: UndoRedoState;
+  redoneLabel: string | null;
+  changed: boolean;
+} {
+  const { state: nextUndoState, redoneLabel } = performRedo(undoState);
+  if (!redoneLabel) {
+    return { project, undoState, redoneLabel: null, changed: false };
+  }
+
+  const redoneSnapshot = nextUndoState.present;
+  const refreshedArtifacts = refreshArtifactsCurrentness(project.artifacts, redoneSnapshot);
+  const nextProject = recordProjectRevision(
+    {
+      ...project,
+      snapshot: redoneSnapshot,
+      artifacts: refreshedArtifacts,
+    },
+    `Redo: ${redoneLabel}`,
+    `Redid "${redoneLabel}"`,
+    1
+  );
+
+  return {
+    project: nextProject,
+    undoState: nextUndoState,
+    redoneLabel,
+    changed: true,
+  };
+}
+
+/**
+ * Builds a structured Before/After diff model for the Review Plan & Prompt Changes modal (U-01).
+ */
+export function buildReviewDiffModel(params: {
+  project: CreativeProject;
+  selectedDecisionIds?: string[];
+  draftDecisionValues?: Record<string, string>;
+  stagedBatch?: BatchEditProposalResult | null;
+  polishProposal?: AiPolishProposal | null;
+}): {
+  projectId: string;
+  revision: number;
+  items: ReviewDiffItem[];
+  beforePrompt: string;
+  afterPrompt: string;
+  hasChanges: boolean;
+} {
+  const {
+    project,
+    selectedDecisionIds,
+    draftDecisionValues = {},
+    stagedBatch = null,
+    polishProposal = null,
+  } = params;
+  const { snapshot } = project;
+  const items: ReviewDiffItem[] = [];
+
+  const pendingDecisions = snapshot.decisions.filter((d) => d.status === 'pending');
+  const targetDecisions =
+    selectedDecisionIds && selectedDecisionIds.length > 0
+      ? pendingDecisions.filter((d) => selectedDecisionIds.includes(d.id))
+      : pendingDecisions;
+
+  for (const dec of targetDecisions) {
+    const proposed = draftDecisionValues[dec.id] ?? dec.proposedValue;
+    let beforeVal = dec.currentValue ?? 'Unspecified';
+
+    if (dec.targetStoryField) {
+      const f = snapshot.storyBible[dec.targetStoryField];
+      beforeVal = f?.status === 'confirmed' && f.value.trim() ? f.value.trim() : 'Unspecified';
+    } else if (dec.targetEntityName && dec.targetAttributeName) {
+      const ent = snapshot.entities.find(
+        (e) =>
+          e.id === dec.targetEntityId ||
+          e.name.toLowerCase() === dec.targetEntityName!.toLowerCase()
+      );
+      const attr = ent?.attributes.find(
+        (a) => a.name.toLowerCase() === dec.targetAttributeName!.toLowerCase()
+      );
+      beforeVal =
+        attr?.status === 'confirmed' && attr.confirmedValue
+          ? attr.confirmedValue
+          : 'Unconfirmed';
+    } else if (dec.category === 'relationship') {
+      const rel = snapshot.relationships.find((r) => r.id === dec.targetRelationshipId);
+      beforeVal = rel?.status === 'confirmed' ? rel.label : 'Unconfirmed (Pending)';
+    }
+
+    const targetLabel = dec.targetStoryField
+      ? `Story Bible · ${dec.targetStoryField}`
+      : dec.targetEntityName && dec.targetAttributeName
+        ? `${dec.targetEntityName} · ${dec.targetAttributeName}`
+        : dec.targetSourceEntityName && dec.targetTargetEntityName
+          ? `Relationship · ${dec.targetSourceEntityName} → ${dec.targetTargetEntityName}`
+          : dec.title;
+
+    items.push({
+      id: dec.id,
+      source: 'decision',
+      category: dec.category,
+      targetLabel,
+      beforeValue: beforeVal,
+      afterValue: proposed,
+      provenance: dec.provenance,
+      conflictWarning: dec.conflictWith,
+    });
+  }
+
+  let simulatedSnapshot = structuredClone(snapshot);
+  if (targetDecisions.length > 0) {
+    const appliedDec = applyDecisionBatch(
+      simulatedSnapshot,
+      targetDecisions.map((d) => d.id),
+      'accept',
+      draftDecisionValues
+    );
+    simulatedSnapshot = appliedDec.snapshot;
+  }
+
+  if (stagedBatch && stagedBatch.baseProjectId === project.id) {
+    const selectedOps = stagedBatch.operations.filter((o) => o.selected);
+    for (const op of selectedOps) {
+      const targetLabel =
+        op.type === 'update_story_bible'
+          ? `Story Bible · ${op.storyField ?? 'field'}`
+          : op.type === 'add_relationship' ||
+              op.type === 'update_relationship' ||
+              op.type === 'remove_relationship'
+            ? `Relationship · ${op.sourceEntityName ?? '?'} → ${op.targetEntityName ?? '?'}`
+            : `${op.entityName ?? 'Entity'}${op.attributeName ? ` · ${op.attributeName}` : ''}`;
+
+      items.push({
+        id: op.id,
+        source: 'batch-preview',
+        category: op.type,
+        targetLabel,
+        beforeValue: op.previousValue ?? 'Unspecified',
+        afterValue: op.nextValue ?? op.newEntityName ?? (op.type === 'exclude_entity' ? 'Absent' : ''),
+        provenance: 'user-edit',
+        conflictWarning: op.conflictWarning,
+      });
+    }
+
+    if (selectedOps.length > 0) {
+      const appliedBatch = applyProposedOperations(simulatedSnapshot, selectedOps);
+      if (appliedBatch.errors.length === 0) {
+        simulatedSnapshot = appliedBatch.snapshot;
+      }
+    }
+  }
+
+  let afterPrompt = synthesizeRefinedPrompt(simulatedSnapshot, snapshot.mode);
+
+  if (
+    polishProposal &&
+    polishProposal.projectId === project.id &&
+    !polishProposal.isNoOp &&
+    polishProposal.polishedPrompt.trim()
+  ) {
+    const isStale = !validatePolishProposalAcceptance(project, polishProposal).ok;
+    items.push({
+      id: polishProposal.requestId ?? 'polish_proposal',
+      source: 'ai-polish',
+      category: 'ai-polish',
+      targetLabel: 'Refined Generation Prompt (AI Polish)',
+      beforeValue: polishProposal.originalPrompt,
+      afterValue: polishProposal.polishedPrompt,
+      provenance: 'accepted-suggestion',
+      conflictWarning: isStale
+        ? 'Stale proposal: project state changed since this AI Polish was drafted.'
+        : undefined,
+    });
+    if (!isStale && targetDecisions.length === 0 && !stagedBatch) {
+      afterPrompt = polishProposal.polishedPrompt.trim();
+    }
+  }
+
+  const beforePrompt = snapshot.refinedPrompt;
+  return {
+    projectId: project.id,
+    revision: project.revision ?? 1,
+    items,
+    beforePrompt,
+    afterPrompt,
+    hasChanges: items.length > 0 || beforePrompt !== afterPrompt,
+  };
 }
 

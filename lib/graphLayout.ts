@@ -172,7 +172,10 @@ export function computeForceLayout(params: {
   const width = containerWidth > 0 ? containerWidth : 600;
   const height = containerHeight > 0 ? containerHeight : 400;
 
-  const SIMULATION_TICKS = 600;
+  const nodeCount = objectEntities.length;
+  const SIMULATION_TICKS =
+    nodeCount <= 30 ? 600 : nodeCount <= 100 ? 220 : nodeCount <= 250 ? 90 : 40;
+  const COLLISION_PASSES = nodeCount <= 30 ? 3 : nodeCount <= 100 ? 2 : 1;
   const REPULSION_STRENGTH = 26000;
   const LINK_STRENGTH = 0.22;
   const CENTER_GRAVITY_X = 0.002;
@@ -248,54 +251,56 @@ export function computeForceLayout(params: {
       }
     }
 
-    // Keep nodes away from edge midpoint labels
-    for (const link of links) {
-      const midX = (link.source.x + link.target.x) / 2;
-      const midY = (link.source.y + link.target.y) / 2;
-      const labelWidth = (link.label || '').length * 6 + 10;
-      for (const node of nodes) {
-        if (node === link.source || node === link.target) continue;
-        const dx = node.x - midX;
-        const dy = node.y - midY;
-        let dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist === 0) dist = 1;
-        const threshold =
-          labelWidth / 2 + Math.max(node.width, node.height) / 2 + 16;
-        if (dist < threshold) {
-          const forceStrength = (threshold - dist) * 1.2;
-          node.fx += (dx / dist) * forceStrength;
-          node.fy += (dy / dist) * forceStrength;
+    if (nodeCount <= 120) {
+      // Keep nodes away from edge midpoint labels
+      for (const link of links) {
+        const midX = (link.source.x + link.target.x) / 2;
+        const midY = (link.source.y + link.target.y) / 2;
+        const labelWidth = (link.label || '').length * 6 + 10;
+        for (const node of nodes) {
+          if (node === link.source || node === link.target) continue;
+          const dx = node.x - midX;
+          const dy = node.y - midY;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist === 0) dist = 1;
+          const threshold =
+            labelWidth / 2 + Math.max(node.width, node.height) / 2 + 16;
+          if (dist < threshold) {
+            const forceStrength = (threshold - dist) * 1.2;
+            node.fx += (dx / dist) * forceStrength;
+            node.fy += (dy / dist) * forceStrength;
+          }
         }
       }
-    }
 
-    // Keep edge midpoint labels separated
-    for (let i = 0; i < links.length; i++) {
-      for (let j = i + 1; j < links.length; j++) {
-        const l1 = links[i];
-        const l2 = links[j];
-        const m1x = (l1.source.x + l1.target.x) / 2;
-        const m1y = (l1.source.y + l1.target.y) / 2;
-        const m2x = (l2.source.x + l2.target.x) / 2;
-        const m2y = (l2.source.y + l2.target.y) / 2;
-        const dx = m1x - m2x;
-        const dy = m1y - m2y;
-        let dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist === 0) dist = 0.1;
-        const minDist =
-          ((l1.label?.length || 0) * 7 + 36 + (l2.label?.length || 0) * 7 + 36) /
-            2 +
-          20;
-        if (dist < minDist) {
-          const force = (minDist - dist) * 0.8;
-          l1.source.fx += (dx / dist) * force * 0.5;
-          l1.source.fy += (dy / dist) * force * 0.5;
-          l1.target.fx += (dx / dist) * force * 0.5;
-          l1.target.fy += (dy / dist) * force * 0.5;
-          l2.source.fx -= (dx / dist) * force * 0.5;
-          l2.source.fy -= (dy / dist) * force * 0.5;
-          l2.target.fx -= (dx / dist) * force * 0.5;
-          l2.target.fy -= (dy / dist) * force * 0.5;
+      // Keep edge midpoint labels separated
+      for (let i = 0; i < links.length; i++) {
+        for (let j = i + 1; j < links.length; j++) {
+          const l1 = links[i];
+          const l2 = links[j];
+          const m1x = (l1.source.x + l1.target.x) / 2;
+          const m1y = (l1.source.y + l1.target.y) / 2;
+          const m2x = (l2.source.x + l2.target.x) / 2;
+          const m2y = (l2.source.y + l2.target.y) / 2;
+          const dx = m1x - m2x;
+          const dy = m1y - m2y;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist === 0) dist = 0.1;
+          const minDist =
+            ((l1.label?.length || 0) * 7 + 36 + (l2.label?.length || 0) * 7 + 36) /
+              2 +
+            20;
+          if (dist < minDist) {
+            const force = (minDist - dist) * 0.8;
+            l1.source.fx += (dx / dist) * force * 0.5;
+            l1.source.fy += (dy / dist) * force * 0.5;
+            l1.target.fx += (dx / dist) * force * 0.5;
+            l1.target.fy += (dy / dist) * force * 0.5;
+            l2.source.fx -= (dx / dist) * force * 0.5;
+            l2.source.fy -= (dy / dist) * force * 0.5;
+            l2.target.fx -= (dx / dist) * force * 0.5;
+            l2.target.fy -= (dy / dist) * force * 0.5;
+          }
         }
       }
     }
@@ -330,7 +335,7 @@ export function computeForceLayout(params: {
     }
 
     // Collision resolution
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < COLLISION_PASSES; k++) {
       for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
           const nodeA = nodes[i];

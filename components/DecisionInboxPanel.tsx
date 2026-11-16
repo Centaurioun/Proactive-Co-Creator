@@ -3,16 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import type {
+  BatchCommitResult,
   BatchEditProposalResult,
   DecisionItem,
   DecisionStatus,
-  ProposedOperation,
 } from '../shared/types';
 
 interface DecisionInboxPanelProps {
   decisions: DecisionItem[];
+  activeProjectId?: string;
+  activeRevision?: number;
   onApplyDecisions: (
     decisionIds: string[],
     action: 'accept' | 'reject' | 'defer',
@@ -23,12 +25,16 @@ interface DecisionInboxPanelProps {
   isClarificationsLoading: boolean;
   clarificationError: string | null;
   onPreviewBatchInstruction: (instruction: string) => Promise<BatchEditProposalResult>;
-  onApplyBatchOperations: (operations: ProposedOperation[], instruction: string) => void;
+  onApplyBatchOperations: (preview: BatchEditProposalResult) => BatchCommitResult;
+  onBatchPreviewChange?: (preview: BatchEditProposalResult | null) => void;
+  onDraftValuesChange?: (drafts: Record<string, string>) => void;
   isBatchLoading: boolean;
 }
 
 const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
   decisions,
+  activeProjectId,
+  activeRevision,
   onApplyDecisions,
   onInspectDecisionTarget,
   onRefreshClarifications,
@@ -36,6 +42,8 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
   clarificationError,
   onPreviewBatchInstruction,
   onApplyBatchOperations,
+  onBatchPreviewChange,
+  onDraftValuesChange,
   isBatchLoading,
 }) => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -50,7 +58,28 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
   const [batchInstruction, setBatchInstruction] = useState('');
   const [batchPreview, setBatchPreview] = useState<BatchEditProposalResult | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
+  const [lastFailedReason, setLastFailedReason] = useState<
+    Extract<BatchCommitResult, { ok: false }>['reason'] | null
+  >(null);
   const [acknowledgeUnhandledClauses, setAcknowledgeUnhandledClauses] = useState(false);
+
+  useEffect(() => {
+    onBatchPreviewChange?.(batchPreview);
+  }, [batchPreview, onBatchPreviewChange]);
+
+  useEffect(() => {
+    onDraftValuesChange?.(draftValues);
+  }, [draftValues, onDraftValuesChange]);
+
+  const isPreviewStale = Boolean(
+    batchPreview &&
+      ((activeProjectId &&
+        batchPreview.baseProjectId &&
+        batchPreview.baseProjectId !== activeProjectId) ||
+        (activeRevision !== undefined &&
+          batchPreview.baseRevision !== undefined &&
+          batchPreview.baseRevision !== activeRevision))
+  );
 
   const filteredDecisions = useMemo(() => {
     return decisions.filter((item) => {
@@ -111,11 +140,11 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
     });
   };
 
-  const handleRunBatchPreview = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = batchInstruction.trim();
+  const runBatchPreviewForText = async (instructionText: string) => {
+    const trimmed = instructionText.trim();
     if (!trimmed) return;
     setBatchError(null);
+    setLastFailedReason(null);
     setAcknowledgeUnhandledClauses(false);
     try {
       const result = await onPreviewBatchInstruction(trimmed);
@@ -123,6 +152,11 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
     } catch (err) {
       setBatchError(err instanceof Error ? err.message : 'Failed to interpret batch instruction.');
     }
+  };
+
+  const handleRunBatchPreview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runBatchPreviewForText(batchInstruction);
   };
 
   const toggleOperationSelection = (opId: string) => {
@@ -146,7 +180,14 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
       );
       return;
     }
-    onApplyBatchOperations(batchPreview.operations, batchPreview.instruction);
+    const result = onApplyBatchOperations(batchPreview);
+    if (!result.ok) {
+      setBatchError(result.message ?? 'Batch could not be applied.');
+      setLastFailedReason(result.reason ?? null);
+      return;
+    }
+    setBatchError(null);
+    setLastFailedReason(null);
     setBatchPreview(null);
     setBatchInstruction('');
     setAcknowledgeUnhandledClauses(false);
@@ -239,12 +280,36 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
               </span>
               <button
                 type="button"
-                onClick={() => setBatchPreview(null)}
+                onClick={() => {
+                  setBatchPreview(null);
+                  setBatchError(null);
+                  setLastFailedReason(null);
+                }}
                 className="text-xs text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
               >
                 Dismiss
               </button>
             </div>
+
+            {(isPreviewStale ||
+              lastFailedReason === 'STALE_REVISION' ||
+              lastFailedReason === 'WRONG_PROJECT') && (
+              <div
+                role="alert"
+                className="p-2.5 rounded bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2"
+              >
+                <span>
+                  This preview was generated for an older project or revision. Re-preview against the current Story Bible before applying.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void runBatchPreviewForText(batchInstruction || batchPreview.instruction)}
+                  className="px-2.5 py-1 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded whitespace-nowrap"
+                >
+                  Re-preview for Current Project
+                </button>
+              </div>
+            )}
 
             {batchPreview.ambiguities.length > 0 && (
               <div className="p-2.5 rounded bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 space-y-1">

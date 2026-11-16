@@ -15,11 +15,52 @@ import type {
 
 export const GenerationModeSchema = z.enum(['story', 'image']);
 
+export const MAX_PROMPT_CHARS = 8000;
+
 export const NonEmptyPromptSchema = z
   .string()
   .trim()
   .min(1, 'Prompt cannot be empty.')
-  .max(8000, 'Prompt must be 8000 characters or fewer.');
+  .max(MAX_PROMPT_CHARS, `Prompt must be ${MAX_PROMPT_CHARS} characters or fewer.`);
+
+export function validateEffectivePromptLength(
+  prompt: string,
+  maxChars: number = MAX_PROMPT_CHARS
+): {
+  ok: boolean;
+  length: number;
+  maxChars: number;
+  overBy: number;
+  error?: string;
+} {
+  const trimmed = prompt.trim();
+  const length = trimmed.length;
+  if (length === 0) {
+    return {
+      ok: false,
+      length: 0,
+      maxChars,
+      overBy: 0,
+      error: 'Prompt cannot be empty.',
+    };
+  }
+  if (length > maxChars) {
+    const overBy = length - maxChars;
+    return {
+      ok: false,
+      length,
+      maxChars,
+      overBy,
+      error: `Compiled prompt is ${length.toLocaleString()} characters, exceeding the ${maxChars.toLocaleString()}-character API limit by ${overBy.toLocaleString()} character(s). Shorten your seed idea, author notes, or Story Bible entries before submitting. Your local draft remains safely saved.`,
+    };
+  }
+  return {
+    ok: true,
+    length,
+    maxChars,
+    overBy: 0,
+  };
+}
 
 export const AnalyzeRequestSchema = z.object({
   prompt: NonEmptyPromptSchema,
@@ -338,6 +379,7 @@ export function parseAndValidateBatchEditResponse(
   }));
 
   return {
+    proposalId: `batch_ai_${Date.now()}`,
     instruction,
     operations,
     ambiguities: validated.data.ambiguities,

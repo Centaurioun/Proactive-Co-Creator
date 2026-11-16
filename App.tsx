@@ -28,36 +28,40 @@ import {
 import { evaluateProjectConsistency } from './lib/consistencyChecker';
 import {
   createUndoRedoState,
-  performRedo,
-  performUndo,
   restoreProjectRevision,
   type UndoRedoState,
 } from './lib/historyEngine';
 import {
-  applyProposedOperations,
   interpretBatchInstructionLocally,
 } from './lib/nlBatchEngine';
 import {
   acceptPolishProposal,
   applyAsyncAnalysisCompletion,
   applyAsyncGenerationCompletion,
+  buildReviewDiffModel,
   clearTicket,
+  commitBatchPreviewToProject,
+  commitRedoTransaction,
   commitSnapshotTransaction,
+  commitUndoTransaction,
   createPolishProposal,
   createRequestTicket,
   isProjectActionLoading,
   refreshArtifactsCurrentness,
   registerTicket,
+  validatePolishProposalAcceptance,
   type InFlightTicketsMap,
 } from './lib/projectController';
 import { synthesizeRefinedPrompt } from './lib/promptBuilder';
 import {
+  deleteProjectCompletely,
   deleteProjectFromLocalStorage,
   exportProjectToJson,
   exportStoryBibleMarkdown,
   loadProjectsFromIndexedDb,
   loadProjectsFromLocalStorage,
   migrateProjectPayload,
+  reconcileHydratedProjects,
   saveProjectToIndexedDb,
   saveProjectToLocalStorage,
 } from './lib/storageEngine';
@@ -71,15 +75,19 @@ import {
   refinePromptWithAllUpdates,
   requestBatchEditInterpretation,
 } from './services/apiClient';
+import {
+  MAX_PROMPT_CHARS,
+  validateEffectivePromptLength,
+} from './shared/schemas';
 import type {
   AiPolishProposal,
+  BatchCommitResult,
   BatchEditProposalResult,
   CreativeProject,
   DecisionItem,
   EntityCategory,
   GenerationMode,
   ProjectSnapshot,
-  ProposedOperation,
   Relationship,
   StoryBibleFields,
 } from './shared/types';
@@ -141,6 +149,10 @@ function App() {
   const [statusNotification, setStatusNotification] = useState<string | null>(null);
   const [storageAlert, setStorageAlert] = useState<StorageConflictAlert | null>(null);
 
+  // Staged state mirrored from DecisionInboxPanel for the Review Modal diff view (U-01)
+  const [stagedBatchPreview, setStagedBatchPreview] = useState<BatchEditProposalResult | null>(null);
+  const [stagedDecisionDrafts, setStagedDecisionDrafts] = useState<Record<string, string>>({});
+
   // Scoped Request Tickets & Staged Proposals
   const [inFlightTickets, setInFlightTickets] = useState<InFlightTicketsMap>({});
   const [polishProposalsByProject, setPolishProposalsByProject] = useState<
@@ -154,32 +166,13 @@ function App() {
   >({});
 
   const abortControllersRef = useRef<Record<string, AbortController>>({});
+  const appliedBatchProposalIdsRef = useRef<Set<string>>(new Set());
+  const isHydrationCompleteRef = useRef<boolean>(false);
+  const hasLocalEditsSinceMountRef = useRef<boolean>(false);
 
-  // Hydrate full media artifacts from IndexedDB on initial mount
-  useEffect(() => {
-    void loadProjectsFromIndexedDb().then((idbProjects) => {
-      if (idbProjects.length === 0) return;
-      setSavedProjects((prev) =>
-        prev.map((lp) => {
-          const match = idbProjects.find((ip) => ip.id === lp.id);
-          if (match && (match.revision ?? 0) >= (lp.revision ?? 0)) {
-            return match;
-          }
-          return lp;
-        })
-      );
-      setProject((prev) => {
-        const match = idbProjects.find((ip) => ip.id === prev.id);
-        if (match && (match.revision ?? 0) >= (prev.revision ?? 0)) {
-          return {
-            ...prev,
-            artifacts: match.artifacts.length > 0 ? match.artifacts : prev.artifacts,
-          };
-        }
-        return prev;
-      });
-    });
-  }, []);
+  const reviewButtonRef = useRef<HTMLButtonElement | null>(null);
+  const reviewModalDialogRef = useRef<HTMLDivElement | null>(null);
+  const reviewModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
   // Derive synchronized active project with current undoState.present snapshot
   const activeProject = useMemo<CreativeProject>(() => {
@@ -196,59 +189,104 @@ function App() {
 
   const activeProjectRef = useRef<CreativeProject>(activeProject);
   const undoStateRef = useRef<UndoRedoState>(undoState);
+  const savedProjectsRef = useRef<CreativeProject[]>(savedProjects);
   useEffect(() => {
     activeProjectRef.current = activeProject;
     undoStateRef.current = undoState;
-  }, [activeProject, undoState]);
+    savedProjectsRef.current = savedProjects;
+  }, [activeProject, undoState, savedProjects]);
 
-  // Persist active project with CAS revision protection
+  // Hydrate full projects & media artifacts from IndexedDB on initial mount (F-02 / IA-04)
+  useEffect(() => {
+    let cancelled = false;
+    void loadProjectsFromIndexedDb()
+      .then((idbProjects) => {
+        if (cancelled) return;
+        isHydrationCompleteRef.current = true;
+        if (idbProjects.length === 0) return;
+
+        const reconciled = reconcileHydratedProjects({
+          localProjects: savedProjectsRef.current,
+          idbProjects,
+          activeProject: activeProjectRef.current,
+          activeUndoState: undoStateRef.current,
+          hasLocalEditsSinceMount: hasLocalEditsSinceMountRef.current,
+        });
+        setSavedProjects(reconciled.savedProjects);
+        if (reconciled.upgradedFromIndexedDb || reconciled.activeProject !== activeProjectRef.current) {
+          setProject(reconciled.activeProject);
+          setUndoState(reconciled.activeUndoState);
+        }
+      })
+      .catch(() => {
+        isHydrationCompleteRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Persist active project with CAS revision protection & dual-store acknowledgement (F-02 / IA-05)
   useEffect(() => {
     if (storageAlert?.type === 'conflict' && storageAlert.projectId === activeProject.id) {
       return;
     }
+    if (!isHydrationCompleteRef.current && !hasLocalEditsSinceMountRef.current) {
+      return;
+    }
     const timer = setTimeout(() => {
-      const res = saveProjectToLocalStorage(activeProject, {
-        expectedPersistedRevision: activeProject.persistedRevision,
+      const targetProject = activeProject;
+      const res = saveProjectToLocalStorage(targetProject, {
+        expectedPersistedRevision: targetProject.persistedRevision,
       });
-      if (!res.saved) {
-        if (res.conflictDetected) {
+      if (!res.saved && res.conflictDetected) {
+        setStorageAlert({
+          type: 'conflict',
+          projectId: targetProject.id,
+          message:
+            res.error ??
+            'Storage conflict: a newer project revision was saved in another tab.',
+        });
+        return;
+      }
+      if (!res.saved && res.quotaExceeded) {
+        setStorageAlert({
+          type: 'quota',
+          projectId: targetProject.id,
+          message:
+            res.error ??
+            'Browser localStorage quota reached. Full project state is being saved to IndexedDB; export a JSON backup to be safe.',
+        });
+      }
+
+      void saveProjectToIndexedDb(targetProject, {
+        expectedPersistedRevision: targetProject.persistedRevision,
+      }).then((idbRes) => {
+        if (!idbRes.saved && idbRes.conflictDetected) {
           setStorageAlert({
             type: 'conflict',
-            projectId: activeProject.id,
+            projectId: targetProject.id,
             message:
-              res.error ??
-              'Storage conflict: a newer project revision was saved in another tab.',
+              idbRes.error ??
+              'Storage conflict: a newer project revision was found in IndexedDB.',
           });
           return;
         }
-        if (res.quotaExceeded) {
-          setStorageAlert({
-            type: 'quota',
-            projectId: activeProject.id,
-            message:
-              res.error ??
-              'Browser localStorage quota reached. Large media is kept in IndexedDB; export a JSON backup to be safe.',
+        if (res.saved || idbRes.saved) {
+          setProject((prev) =>
+            prev.id === targetProject.id && prev.persistedRevision !== targetProject.revision
+              ? { ...prev, persistedRevision: targetProject.revision }
+              : prev
+          );
+          setSavedProjects((prev) => {
+            const synced = { ...targetProject, persistedRevision: targetProject.revision };
+            const idx = prev.findIndex((p) => p.id === synced.id);
+            if (idx === -1) return [synced, ...prev];
+            const copy = [...prev];
+            copy[idx] = synced;
+            return copy;
           });
         }
-      } else if (activeProject.persistedRevision !== activeProject.revision) {
-        setProject((prev) =>
-          prev.id === activeProject.id
-            ? { ...prev, persistedRevision: activeProject.revision }
-            : prev
-        );
-      }
-
-      void saveProjectToIndexedDb(activeProject, {
-        expectedPersistedRevision: activeProject.persistedRevision,
-      });
-
-      setSavedProjects((prev) => {
-        const synced = { ...activeProject, persistedRevision: activeProject.revision };
-        const idx = prev.findIndex((p) => p.id === synced.id);
-        if (idx === -1) return [synced, ...prev];
-        const copy = [...prev];
-        copy[idx] = synced;
-        return copy;
       });
     }, 250);
     return () => clearTimeout(timer);
@@ -287,7 +325,7 @@ function App() {
     }
   }, [isDarkMode]);
 
-  // Keyboard shortcuts for Undo / Redo
+  // Keyboard shortcuts for Undo / Redo (F-04 / IA-08)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -297,9 +335,21 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) {
-          setUndoState((prev) => performRedo(prev).state);
+          const res = commitRedoTransaction(activeProjectRef.current, undoStateRef.current);
+          if (res.redoneLabel) {
+            hasLocalEditsSinceMountRef.current = true;
+            setProject(res.project);
+            setUndoState(res.undoState);
+            setStatusNotification(`Redid: ${res.redoneLabel}`);
+          }
         } else {
-          setUndoState((prev) => performUndo(prev).state);
+          const res = commitUndoTransaction(activeProjectRef.current, undoStateRef.current);
+          if (res.undoneLabel) {
+            hasLocalEditsSinceMountRef.current = true;
+            setProject(res.project);
+            setUndoState(res.undoState);
+            setStatusNotification(`Undid: ${res.undoneLabel}`);
+          }
         }
       }
     };
@@ -315,6 +365,7 @@ function App() {
       changeCount: number = 1,
       options?: { coalesceKey?: string; coalesceWindowMs?: number }
     ) => {
+      hasLocalEditsSinceMountRef.current = true;
       const { project: nextProj, undoState: nextUndo } = commitSnapshotTransaction(
         activeProjectRef.current,
         undoStateRef.current,
@@ -627,26 +678,23 @@ function App() {
   };
 
   const handleApplyBatchOperations = (
-    operations: ProposedOperation[],
-    instruction: string
-  ) => {
-    const res = applyProposedOperations(snapshot, operations, {
-      expectedBaseRevision: activeProject.revision,
-      currentRevision: activeProject.revision,
+    preview: BatchEditProposalResult
+  ): BatchCommitResult => {
+    const res = commitBatchPreviewToProject({
+      project: activeProjectRef.current,
+      undoState: undoStateRef.current,
+      preview,
+      appliedProposalIds: appliedBatchProposalIdsRef.current,
     });
-    if (res.errors.length > 0) {
-      setStatusNotification(res.errors[0].message);
-      return;
+    if (!res.result.ok) {
+      setStatusNotification(res.result.message);
+      return res.result;
     }
-    if (res.appliedCount > 0) {
-      commitTransaction(
-        res.snapshot,
-        `Batch Edit (${res.appliedCount} ops)`,
-        `Applied natural-language batch edit: "${instruction}"`,
-        res.appliedCount
-      );
-      setStatusNotification(`Applied ${res.appliedCount} batch operation(s). Undo available.`);
-    }
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(res.project);
+    setUndoState(res.undoState);
+    setStatusNotification(`Applied ${res.result.appliedCount} batch operation(s). Undo available.`);
+    return res.result;
   };
 
   // --- AI Analysis, Clarifications & Generation with Scoped Tickets ---
@@ -656,6 +704,14 @@ function App() {
     const originSnap = originProject.snapshot;
     const trimmed = originSnap.originalIdea.trim();
     if (!trimmed) return;
+
+    const lengthCheck = validateEffectivePromptLength(trimmed, MAX_PROMPT_CHARS);
+    if (!lengthCheck.ok) {
+      const msg = lengthCheck.error ?? 'Prompt exceeds character limit.';
+      setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: msg }));
+      setStatusNotification(msg);
+      return;
+    }
 
     const slotKey = `${originProject.id}:analyze`;
     abortControllersRef.current[slotKey]?.abort();
@@ -719,7 +775,7 @@ function App() {
           ticket,
           activeProject: activeProjectRef.current,
           activeUndoState: undoStateRef.current,
-          savedProjects,
+          savedProjects: savedProjectsRef.current,
           newGraph,
           newClarifications,
           label: 'Reanalyze Prompt with AI',
@@ -737,12 +793,21 @@ function App() {
     } finally {
       setInFlightTickets((prev) => clearTicket(prev, ticket));
     }
-  }, [savedProjects]);
+  }, []);
 
   const handleRefreshClarifications = useCallback(
     async (preserveDrafts?: Record<string, string>) => {
       const originProject = activeProjectRef.current;
       const originSnap = originProject.snapshot;
+      const promptToUse = (originSnap.refinedPrompt || originSnap.originalIdea).trim();
+
+      const lengthCheck = validateEffectivePromptLength(promptToUse, MAX_PROMPT_CHARS);
+      if (!lengthCheck.ok) {
+        const msg = lengthCheck.error ?? 'Compiled prompt exceeds character limit.';
+        setClarificationErrors((prev) => ({ ...prev, [originProject.id]: msg }));
+        setStatusNotification(msg);
+        return;
+      }
 
       const slotKey = `${originProject.id}:clarify`;
       abortControllersRef.current[slotKey]?.abort();
@@ -763,7 +828,7 @@ function App() {
 
       try {
         const freshClarifications = await generateClarifications(
-          originSnap.refinedPrompt || originSnap.originalIdea,
+          promptToUse,
           [...originSnap.answeredQuestions, ...originSnap.skippedQuestions],
           originSnap.mode,
           controller.signal,
@@ -773,7 +838,7 @@ function App() {
           ticket,
           activeProject: activeProjectRef.current,
           activeUndoState: undoStateRef.current,
-          savedProjects,
+          savedProjects: savedProjectsRef.current,
           newGraph: null,
           newClarifications: freshClarifications,
           preserveDraftAnswers: preserveDrafts,
@@ -797,7 +862,7 @@ function App() {
         setInFlightTickets((prev) => clearTicket(prev, ticket));
       }
     },
-    [savedProjects]
+    []
   );
 
   const handleGenerateOutput = useCallback(async () => {
@@ -806,12 +871,27 @@ function App() {
     const promptToUse = (originSnap.refinedPrompt || originSnap.originalIdea).trim();
     if (!promptToUse) return;
 
+    const requestMode = originSnap.mode;
+    const lengthCheck = validateEffectivePromptLength(promptToUse, MAX_PROMPT_CHARS);
+    if (!lengthCheck.ok) {
+      const msg = lengthCheck.error ?? 'Compiled prompt exceeds character limit.';
+      setShowOutputDrawer(true);
+      setGalleryErrors((prev) => ({
+        ...prev,
+        [originProject.id]: {
+          ...(prev[originProject.id] ?? { story: null, image: null }),
+          [requestMode]: msg,
+        },
+      }));
+      setStatusNotification(msg);
+      return;
+    }
+
     const slotKey = `${originProject.id}:generate`;
     abortControllersRef.current[slotKey]?.abort();
     const controller = new AbortController();
     abortControllersRef.current[slotKey] = controller;
 
-    const requestMode = originSnap.mode;
     const ticket = createRequestTicket(originProject, 'generate');
     setInFlightTickets((prev) => registerTicket(prev, ticket));
     setShowOutputDrawer(true);
@@ -829,7 +909,7 @@ function App() {
         const applied = applyAsyncGenerationCompletion({
           ticket,
           activeProject: activeProjectRef.current,
-          savedProjects,
+          savedProjects: savedProjectsRef.current,
           mode: 'story',
           promptUsed: promptToUse,
           storyText: generatedStory,
@@ -841,7 +921,7 @@ function App() {
         const applied = applyAsyncGenerationCompletion({
           ticket,
           activeProject: activeProjectRef.current,
-          savedProjects,
+          savedProjects: savedProjectsRef.current,
           mode: 'image',
           promptUsed: promptToUse,
           images: result.images,
@@ -867,21 +947,39 @@ function App() {
     } finally {
       setInFlightTickets((prev) => clearTicket(prev, ticket));
     }
-  }, [savedProjects]);
+  }, []);
 
   const handlePolishPromptWithAi = async () => {
     const originProject = activeProjectRef.current;
     if (isProjectActionLoading(inFlightTickets, originProject.id, 'polish')) return;
 
+    const promptToPolish = originProject.snapshot.refinedPrompt.trim();
+    const lengthCheck = validateEffectivePromptLength(promptToPolish, MAX_PROMPT_CHARS);
+    if (!lengthCheck.ok) {
+      setStatusNotification(lengthCheck.error ?? 'Compiled prompt exceeds 8,000-character limit.');
+      return;
+    }
+
     const ticket = createRequestTicket(originProject, 'polish');
     setInFlightTickets((prev) => registerTicket(prev, ticket));
     try {
       const polished = await refinePromptWithAllUpdates(
-        originProject.snapshot.refinedPrompt,
+        promptToPolish,
         [],
         []
       );
       const proposal = createPolishProposal(originProject, polished);
+      if (proposal.isNoOp) {
+        setPolishProposalsByProject((prev) => {
+          const next = { ...prev };
+          delete next[originProject.id];
+          return next;
+        });
+        setStatusNotification(
+          'Polished prompt is identical to your current refined prompt — no changes needed.'
+        );
+        return;
+      }
       setPolishProposalsByProject((prev) => ({
         ...prev,
         [originProject.id]: proposal,
@@ -898,9 +996,24 @@ function App() {
     }
   };
 
+  const polishValidation = useMemo(
+    () =>
+      activePolishProposal
+        ? validatePolishProposalAcceptance(activeProject, activePolishProposal)
+        : null,
+    [activeProject, activePolishProposal]
+  );
+
   const handleAcceptPolishProposal = () => {
     if (!activePolishProposal) return;
     const res = acceptPolishProposal(activeProject, undoState, activePolishProposal);
+    if (!res.ok) {
+      setStatusNotification(
+        res.reason ?? 'Stale AI Polish proposal cannot be applied because the story plan changed.'
+      );
+      return;
+    }
+    hasLocalEditsSinceMountRef.current = true;
     setProject(res.project);
     setUndoState(res.undoState);
     setPolishProposalsByProject((prev) => {
@@ -944,24 +1057,29 @@ function App() {
   };
 
   const handleUndo = () => {
-    const { state, undoneLabel } = performUndo(undoState);
-    setUndoState(state);
-    if (undoneLabel) {
-      setStatusNotification(`Undid: ${undoneLabel}`);
+    const res = commitUndoTransaction(activeProjectRef.current, undoStateRef.current);
+    if (res.undoneLabel) {
+      hasLocalEditsSinceMountRef.current = true;
+      setProject(res.project);
+      setUndoState(res.undoState);
+      setStatusNotification(`Undid: ${res.undoneLabel}`);
     }
   };
 
   const handleRedo = () => {
-    const { state, redoneLabel } = performRedo(undoState);
-    setUndoState(state);
-    if (redoneLabel) {
-      setStatusNotification(`Redid: ${redoneLabel}`);
+    const res = commitRedoTransaction(activeProjectRef.current, undoStateRef.current);
+    if (res.redoneLabel) {
+      hasLocalEditsSinceMountRef.current = true;
+      setProject(res.project);
+      setUndoState(res.undoState);
+      setStatusNotification(`Redid: ${res.redoneLabel}`);
     }
   };
 
   const handleRestoreRevision = (revisionId: string) => {
     const res = restoreProjectRevision(activeProject, undoState, revisionId);
     if (!res) return;
+    hasLocalEditsSinceMountRef.current = true;
     setProject(res.project);
     setUndoState(res.undoState);
     setStatusNotification('Restored project revision safely (previous state saved in history).');
@@ -969,6 +1087,7 @@ function App() {
 
   const handleResetSampleProject = () => {
     const sample = createSampleProject();
+    hasLocalEditsSinceMountRef.current = true;
     setProject(sample);
     setUndoState(createUndoRedoState(sample.snapshot));
     setSelectedEntityId(null);
@@ -1026,6 +1145,7 @@ function App() {
         },
       ],
     };
+    hasLocalEditsSinceMountRef.current = true;
     setProject(newProj);
     setUndoState(createUndoRedoState(newSnap));
     setSelectedEntityId(null);
@@ -1036,7 +1156,13 @@ function App() {
   };
 
   const handleDeleteProject = (projectId: string) => {
+    // Abort any in-flight operations for the deleted project (F-06 / IA-11)
+    for (const actionKey of ['analyze', 'clarify', 'batch', 'generate', 'polish']) {
+      abortControllersRef.current[`${projectId}:${actionKey}`]?.abort();
+      delete abortControllersRef.current[`${projectId}:${actionKey}`];
+    }
     const remaining = deleteProjectFromLocalStorage(projectId);
+    void deleteProjectCompletely(projectId);
     setSavedProjects(remaining);
     if (project.id === projectId && remaining.length > 0) {
       setProject(remaining[0]);
@@ -1070,6 +1196,7 @@ function App() {
     try {
       const parsed = JSON.parse(rawJson) as unknown;
       const migrated = migrateProjectPayload(parsed);
+      hasLocalEditsSinceMountRef.current = true;
       setProject(migrated);
       setUndoState(createUndoRedoState(migrated.snapshot));
       setSelectedEntityId(null);
@@ -1107,6 +1234,66 @@ function App() {
     [snapshot.decisions]
   );
   const pendingDecisionCount = pendingDecisions.length;
+
+  // Compute structured Before/After diff model for the Review Modal (U-01 / IA-17)
+  const reviewDiffModel = useMemo(
+    () =>
+      buildReviewDiffModel({
+        project: activeProject,
+        draftDecisionValues: stagedDecisionDrafts,
+        stagedBatch: stagedBatchPreview,
+        polishProposal: activePolishProposal,
+      }),
+    [activeProject, stagedDecisionDrafts, stagedBatchPreview, activePolishProposal]
+  );
+
+  const closeReviewModal = useCallback(() => {
+    setIsReviewModalOpen(false);
+    requestAnimationFrame(() => {
+      reviewButtonRef.current?.focus();
+    });
+  }, []);
+
+  // Review Modal Escape & Focus Trap accessibility (U-03 / IA-18)
+  useEffect(() => {
+    if (!isReviewModalOpen) return;
+    requestAnimationFrame(() => {
+      reviewModalCloseButtonRef.current?.focus();
+    });
+
+    const handleModalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeReviewModal();
+        return;
+      }
+      if (e.key === 'Tab' && reviewModalDialogRef.current) {
+        const focusables = Array.from(
+          reviewModalDialogRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        if (e.shiftKey) {
+          if (active === first || !reviewModalDialogRef.current.contains(active)) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (active === last || !reviewModalDialogRef.current.contains(active)) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleModalKeyDown);
+    return () => window.removeEventListener('keydown', handleModalKeyDown);
+  }, [isReviewModalOpen, closeReviewModal]);
 
   return (
     <div
@@ -1197,6 +1384,8 @@ function App() {
         >
           <DecisionInboxPanel
             decisions={snapshot.decisions}
+            activeProjectId={activeProject.id}
+            activeRevision={activeProject.revision}
             onApplyDecisions={handleApplyDecisions}
             onInspectDecisionTarget={handleInspectDecisionTarget}
             onRefreshClarifications={handleRefreshClarifications}
@@ -1204,6 +1393,8 @@ function App() {
             clarificationError={clarificationError}
             onPreviewBatchInstruction={handlePreviewBatchInstruction}
             onApplyBatchOperations={handleApplyBatchOperations}
+            onBatchPreviewChange={setStagedBatchPreview}
+            onDraftValuesChange={setStagedDecisionDrafts}
             isBatchLoading={isBatchLoading}
           />
         </div>
@@ -1224,6 +1415,8 @@ function App() {
             isFirstRun={!latestStoryArtifact && !latestImageArtifact}
             mode={mode}
             setMode={handleModeChange}
+            compiledPromptLength={snapshot.refinedPrompt.trim().length}
+            maxPromptChars={MAX_PROMPT_CHARS}
           />
 
           <div
@@ -1279,6 +1472,8 @@ function App() {
                 onPolishPromptWithAi={handlePolishPromptWithAi}
                 isPolishingPrompt={isPolishingPrompt}
                 polishProposal={activePolishProposal}
+                isPolishStale={Boolean(polishValidation && !polishValidation.ok)}
+                polishStaleReason={polishValidation?.reason ?? null}
                 onAcceptPolishProposal={handleAcceptPolishProposal}
                 onRejectPolishProposal={handleRejectPolishProposal}
                 artifacts={activeProject.artifacts}
@@ -1377,27 +1572,29 @@ function App() {
         onRedo={handleRedo}
         onAcceptAllPending={handleAcceptAllPendingDecisions}
         onReviewChanges={() => setIsReviewModalOpen(true)}
+        reviewButtonRef={reviewButtonRef}
         mode={mode}
         onModeChange={handleModeChange}
         onGenerate={handleGenerateOutput}
         isGenerating={isGenerating}
         showOutputDrawer={showOutputDrawer}
         onToggleOutputDrawer={() => setShowOutputDrawer((prev) => !prev)}
-        revisionCount={activeProject.revisions.length}
+        revisionCount={activeProject.revision}
         isOutdated={isCurrentOutputOutdated}
       />
 
-      {/* Dedicated Review Plan & Prompt Changes Modal (AC19) */}
+      {/* Dedicated Review Plan & Prompt Changes Modal (AC19, U-01, U-03, IA-17, IA-18) */}
       {isReviewModalOpen && (
         <div
           role="dialog"
           aria-modal="true"
           aria-label="Review Plan and Prompt Changes"
           className="fixed inset-0 z-[1900] bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs"
-          onClick={() => setIsReviewModalOpen(false)}
+          onClick={closeReviewModal}
         >
           <div
-            className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+            ref={reviewModalDialogRef}
+            className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-5 py-3.5 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
@@ -1407,69 +1604,98 @@ function App() {
                 </h2>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Project Revision #{activeProject.revision} · {pendingDecisionCount} pending inbox item(s) ·{' '}
+                  {reviewDiffModel.items.length} staged before/after change(s) ·{' '}
                   {consistencyIssues.length} consistency warning(s)
                 </p>
               </div>
               <button
+                ref={reviewModalCloseButtonRef}
                 type="button"
-                onClick={() => setIsReviewModalOpen(false)}
-                className="text-sm font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white px-2 py-1"
+                onClick={closeReviewModal}
+                className="text-sm font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white px-2.5 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               >
                 Close
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
-              {/* Pending Decisions Summary */}
-              <div className="p-3.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2">
+              {/* Structured Before -> After Diff Table (U-01 / IA-17) */}
+              <div className="p-3.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <h3 className="font-bold text-gray-900 dark:text-gray-100">
-                    Pending Creative Decisions ({pendingDecisionCount})
+                    Before &rarr; After Impact of Pending Decisions &amp; Staged Batch Edits ({reviewDiffModel.items.length})
                   </h3>
                   {pendingDecisionCount > 0 && (
                     <button
                       type="button"
-                      onClick={handleAcceptAllPendingDecisions}
+                      onClick={() => handleApplyDecisions(pendingDecisions.map((d) => d.id), 'accept', stagedDecisionDrafts)}
                       className="px-2.5 py-1 rounded font-semibold bg-blue-600 hover:bg-blue-700 text-white"
                     >
                       Accept All Pending ({pendingDecisionCount})
                     </button>
                   )}
                 </div>
-                {pendingDecisionCount === 0 ? (
-                  <p className="text-gray-500">All creative decisions are currently resolved.</p>
+
+                {reviewDiffModel.items.length === 0 ? (
+                  <p className="text-gray-500">
+                    No pending decisions or staged batch edits. All current plan items are committed.
+                  </p>
                 ) : (
-                  <ul className="space-y-1.5 max-h-36 overflow-y-auto">
-                    {pendingDecisions.map((d) => (
-                      <li
-                        key={d.id}
-                        className="flex items-center justify-between gap-2 p-2 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
-                      >
-                        <span className="truncate">
-                          <strong className="capitalize">{d.category}:</strong> {d.title} &rarr;{' '}
-                          <span className="text-blue-600 dark:text-blue-400 font-semibold">
-                            {d.proposedValue}
-                          </span>
-                        </span>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => handleApplyDecisions([d.id], 'accept')}
-                            className="px-2 py-0.5 rounded bg-blue-600 text-white font-semibold"
-                          >
-                            Accept
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleApplyDecisions([d.id], 'reject')}
-                            className="px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-800 text-red-600 dark:text-red-400 font-medium"
-                          >
-                            Reject
-                          </button>
+                  <div data-testid="review-diff-list" className="space-y-1.5 max-h-48 overflow-y-auto">
+                    {reviewDiffModel.items.map((diff) => {
+                      const matchingDecision = pendingDecisions.find(
+                        (d) => d.id === diff.id || `diff_${d.id}` === diff.id
+                      );
+                      return (
+                        <div
+                          key={diff.id}
+                          className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
+                        >
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <div className="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                              <span className="uppercase font-semibold tracking-wider">{diff.category}</span>
+                              <span aria-hidden="true">&middot;</span>
+                              <span className="font-medium text-gray-800 dark:text-gray-200 truncate">
+                                {diff.targetLabel}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
+                              <span className="px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900 line-through">
+                                Before: {diff.beforeValue}
+                              </span>
+                              <span aria-hidden="true" className="text-gray-400">
+                                &rarr;
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900 font-semibold">
+                                After: {diff.afterValue}
+                              </span>
+                            </div>
+                          </div>
+
+                          {matchingDecision && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleApplyDecisions([matchingDecision.id], 'accept', stagedDecisionDrafts)
+                                }
+                                className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-semibold"
+                              >
+                                Accept
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleApplyDecisions([matchingDecision.id], 'reject')}
+                                className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-800 text-red-600 dark:text-red-400 font-medium"
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          )}
                         </div>
-                      </li>
-                    ))}
-                  </ul>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
 
@@ -1504,14 +1730,28 @@ function App() {
                 </div>
               </div>
 
-              {/* Synthesized Prompt Preview */}
-              <div className="space-y-1.5">
-                <h3 className="font-bold text-gray-900 dark:text-gray-100">
-                  Authoritative Synthesized Prompt ({mode === 'story' ? 'Story Mode' : 'Image Mode'})
-                </h3>
-                <pre className="p-3 rounded-lg bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
-                  {snapshot.refinedPrompt}
-                </pre>
+              {/* Synthesized Prompt Before vs After Diff Preview */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <h3 className="font-bold text-gray-900 dark:text-gray-100">
+                    Current Committed Prompt ({mode === 'story' ? 'Story Mode' : 'Image Mode'})
+                  </h3>
+                  <pre className="p-3 rounded-lg bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
+                    {reviewDiffModel.beforePrompt}
+                  </pre>
+                </div>
+
+                <div className="space-y-1.5">
+                  <h3 className="font-bold text-gray-900 dark:text-gray-100">
+                    Projected Prompt After Accepting Staged Changes
+                  </h3>
+                  <pre
+                    data-testid="review-projected-prompt"
+                    className="p-3 rounded-lg bg-emerald-50/40 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto"
+                  >
+                    {reviewDiffModel.afterPrompt}
+                  </pre>
+                </div>
               </div>
             </div>
 
@@ -1519,7 +1759,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setIsReviewModalOpen(false);
+                  closeReviewModal();
                   setRightPanelTab('story-bible');
                 }}
                 className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -1528,7 +1768,7 @@ function App() {
               </button>
               <button
                 type="button"
-                onClick={() => setIsReviewModalOpen(false)}
+                onClick={closeReviewModal}
                 className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white"
               >
                 Done

@@ -50,6 +50,7 @@ export function interpretBatchInstructionLocally(
 
   if (!trimmed) {
     return {
+      proposalId: makeStableId('batch_prop'),
       instruction: trimmed,
       operations,
       ambiguities,
@@ -159,6 +160,7 @@ export function interpretBatchInstructionLocally(
     operations.length > 0 && unhandledClauses.length === 0 && ambiguities.length === 0;
 
   return {
+    proposalId: makeStableId('batch_prop'),
     instruction: trimmed,
     operations,
     ambiguities,
@@ -631,12 +633,26 @@ export function validateProposedOperations(
   snapshot: ProjectSnapshot,
   operations: ProposedOperation[],
   options?: {
+    expectedProjectId?: string;
+    currentProjectId?: string;
     expectedBaseRevision?: number;
     currentRevision?: number;
   }
 ): BatchValidationIssue[] {
   const issues: BatchValidationIssue[] = [];
   const selectedOps = operations.filter((op) => op.selected);
+
+  if (
+    options?.expectedProjectId !== undefined &&
+    options?.currentProjectId !== undefined &&
+    options.expectedProjectId !== options.currentProjectId
+  ) {
+    issues.push({
+      operationId: 'batch_project',
+      code: 'WRONG_PROJECT',
+      message: `Batch proposal was drafted for project "${options.expectedProjectId}", but active project is "${options.currentProjectId}". Switch back or re-preview for this project.`,
+    });
+  }
 
   if (
     options?.expectedBaseRevision !== undefined &&
@@ -873,6 +889,8 @@ export function applyProposedOperations(
   snapshot: ProjectSnapshot,
   operations: ProposedOperation[],
   options?: {
+    expectedProjectId?: string;
+    currentProjectId?: string;
     expectedBaseRevision?: number;
     currentRevision?: number;
   }

@@ -10,6 +10,7 @@ export default tseslint.config(
       '.next/**',
       '.backup-original/**',
       '.backup-2026-11-16/**',
+      '.backup-2026-11-16-audit/**',
       '.playwright-cli/**',
       'public/**',
     ],

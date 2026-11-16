@@ -25,4 +25,6 @@ dist-ssr
 .next/
 .playwright-cli/
 .backup-original/
+.backup-2026-11-16/
+.backup-2026-11-16-audit/
 

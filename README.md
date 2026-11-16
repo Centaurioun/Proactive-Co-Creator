@@ -14,30 +14,32 @@ An intelligent, interactive visual story-planning and prompt-refinement workspac
    - **Directed Multigraph Relationships:** Supports multiple distinct directed predicates between the same entities (`A → B` and `B → A`), curved parallel edge rendering, and a dedicated **Directed Relationship Inspector** (`⇄ Reverse Direction`, `Confirm`, `Reject`, `Delete Edge`, predicate editing).
    - **Strict Approval Gate & Seed Override Authority:** AI-inferred entities, attributes, Story Bible fields, and relationships enter as `pending` in the Decision Inbox and never enter the generation prompt until confirmed. Renaming or excluding a seed entity emits explicit `Seed Overrides & Canonical Identity` instructions.
 3. **CAS Autosave, Coalesced Version History, Multi-Artifact History & Export/Import**
-   - Automatic persistence in `localStorage` and `IndexedDB` (`schemaVersion: 3`) with monotonic `revision` Compare-And-Swap (`CAS`) conflict recovery, non-destructive quota handling, automatic pre-migration backup (`proactive_co_creator_backup_v2`), and legacy v1 (`mode: 'video'`) migration to Story mode.
-   - Coalesced undo/redo history (`60` steps), staged AI Narrative Polish review, multi-artifact generation history per mode, and full project JSON / Story Bible Markdown (`.md`) / Refined Prompt export.
+   - Automatic persistence in `localStorage` and `IndexedDB` (`schemaVersion: 3`) with monotonic `revision` Compare-And-Swap (`CAS`) conflict recovery, atomic full-project IndexedDB hydration reconciliation, dual-store deletion tombstones, automatic pre-migration backup (`proactive_co_creator_backup_v2`), and legacy v1 (`mode: 'video'`) migration to Story mode.
+   - Coalesced undo/redo history (`40` undo stack steps, up to `80` stored project revisions) with monotonic revision increments on Undo/Redo, revision-guarded staged AI Narrative Polish review, Before/After change diff review modal, multi-artifact generation history per mode, and full project JSON / Story Bible Markdown (`.md`) / Refined Prompt export.
 
 ## Architecture & Security
 
-- **Frontend:** React 19, TypeScript (strict mode), Vite 6, Tailwind CSS v4, D3 zoom/pan
-- **Backend:** Express 5 (`server.ts`) mounting Vite in development and serving `dist/` in production
-- **AI Integration:** Server-side `@google/genai` SDK (`server/aiService.ts`) behind `/api/*` endpoints (`/api/analyze`, `/api/clarify`, `/api/refine`, `/api/batch-edit`, `/api/generate/story`, `/api/generate/images`) with Zod schema validation (`shared/schemas.ts`) and bounded retry/backoff (`server/retry.ts`)
+- **Frontend:** React 19, TypeScript (strict mode), Vite 6, Tailwind CSS v4, custom SVG force-directed graph layout (`lib/graphLayout.ts`) with interactive pointer/wheel zoom and pan
+- **Backend:** Express 5 (`server.ts`) mounting Vite in development and serving `dist/` in production, with configurable per-client rate limiting (`server/routes.ts`)
+- **Runtime Requirement:** Node.js `>=22.6.0` (required for native TypeScript execution in `npm start` via `node server.ts`)
+- **AI Integration:** Server-side `@google/genai` SDK (`server/aiService.ts`) behind `/api/*` endpoints (`/api/analyze`, `/api/clarify`, `/api/refine`, `/api/batch-edit`, `/api/generate/story`, `/api/generate/images`) with Zod schema validation (`shared/schemas.ts`, max `8,000` compiled prompt characters) and bounded retry/backoff (`server/retry.ts`)
 - **Models Configured (`server/models.ts`):**
   - Text, Belief Graph, Clarifications, Batch Edit Interpretation, Prompt Refinement & Story: `gemini-4-hydrogen`
   - Image Batch Generation (4 × 1:1 images): `gemini-3.1-flash-lite-image`
 
-All Gemini API requests execute exclusively on the server using `process.env.GEMINI_API_KEY`. No API keys or AI SDKs are shipped to the browser.
+All Gemini API requests execute exclusively on the server using `process.env.GEMINI_API_KEY` (automatically loaded from `.env.local` or `.env` in local development when not already injected by the host environment). No API keys or AI SDKs are shipped to the browser.
 
 ## Local Setup & Scripts
 
 ```bash
 npm install
-cp .env.example .env.local # Set GEMINI_API_KEY=your_key (or configure in AI Studio Settings > Secrets)
+cp .env.example .env.local # Set GEMINI_API_KEY=your_key (automatically loaded by server, or configure in AI Studio Settings > Secrets)
 npm run dev                # Start Express + Vite workspace on http://localhost:3000
 ```
 
-- `npm test` — Run all 47 unit, schema, canonical state, multigraph, batch edit, CAS persistence, async isolation, and API route tests (`tsx --test tests/*.test.ts`)
+- `npm test` — Run all unit, schema, canonical state, multigraph, batch edit, CAS persistence, async isolation, and independent audit remediation tests (`tsx --test tests/*.test.ts`)
 - `npm run typecheck` — Run strict TypeScript validation (`tsc --noEmit`)
 - `npm run lint` — Run ESLint across client, server, shared, and test files
 - `npm run build` — Compile production assets into `dist/`
-- `npm start` — Run the production server (`node server.ts`)
+- `npm start` — Run the production server (`node server.ts`, requires Node `>=22.6.0`)
+

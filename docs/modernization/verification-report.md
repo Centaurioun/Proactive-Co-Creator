@@ -104,3 +104,71 @@ After completing the primary implementation and automated test suite, we conduct
    - *Fix*: Enhanced `findCandidateEntities` in `lib/beliefGraphUtils.ts` to include whole-word token matches as ambiguity candidates and added an explicit `sourceId === targetId` self-loop guard in `upsertRelationship`.
 6. **Cycle 6 (End-to-End Regression & Build Verification)**:
    - Re-ran `npm test` (47/47 passing), `npm run typecheck` (0 errors), `npm run lint` (0 errors), `compile_applet`, and Playwright browser verification (`0` console/page errors).
+
+---
+
+## 6. Independent Audit Remediation Verification Matrix (`2026-11-16-independent-audit-remediation-plan.md`)
+
+### 6.1 Confirmed Findings (`F-01` – `F-07`)
+
+| ID | Baseline Evidence (`fa96d6a6d`) | Current Verification | Fix / N/A Rationale | Tests (Command / Result) | Remaining Risk |
+|---|---|---|---|---|---|
+| **F-01** | `App.tsx` called `applyProposedOperations(activeProject.snapshot, operations)` without passing `expectedBaseRevision`, `currentRevision`, `expectedProjectId`, or `currentProjectId`. | **CONFIRMED & FIXED** | Added `commitBatchPreviewToProject` in `lib/projectController.ts` and `expectedProjectId`/`currentProjectId`/`expectedBaseRevision`/`currentRevision` validation in `lib/nlBatchEngine.ts`. Blocks cross-project (`WRONG_PROJECT`), stale-revision (`STALE_REVISION`), and duplicate (`ALREADY_APPLIED`) batch commits and surfaces a `"Re-preview for Current Project"` banner in `DecisionInboxPanel.tsx`. | `npm test` (`IA-01`, `IA-02`, `IA-03` — **PASS**) | None. |
+| **F-02** | `App.tsx` IndexedDB hydration merged `artifacts` only (`revision >= local.revision`) and discarded newer `snapshot`/`revisions`/`undoState` when `localStorage` failed on quota (`r5`) while `IndexedDB` succeeded (`r6`). | **CONFIRMED & FIXED** | Added `reconcileHydratedProjects` in `lib/storageEngine.ts` and wired dual-store autosave acknowledgement in `App.tsx`. When `IndexedDB` holds a higher `revision` than `localStorage`, the full `CreativeProject` (`snapshot`, `revisions`, `artifacts`, `revision`, `persistedRevision`) and `undoState` are hydrated and synced back to `localStorage`. | `npm test` (`IA-04`, `IA-05` — **PASS**) | None. |
+| **F-03** | `acceptPolishProposal` in `lib/projectController.ts` accepted any `AiPolishProposal` matching `projectId` without verifying `baseRevision === project.revision` or `sourcePromptDigest === computePromptDigest(project.snapshot.refinedPrompt)`. | **CONFIRMED & FIXED** | Added `validatePolishProposalAcceptance` in `lib/projectController.ts` checking `projectId`, `baseRevision`, and `sourcePromptDigest`. Stale proposals are blocked non-destructively and `OutputGallery.tsx` displays an explicit stale warning with `"Re-polish Current Prompt"`. | `npm test` (`IA-06`, `IA-07` — **PASS**) | None. |
+| **F-04** | `undoTransaction` / `redoTransaction` in `lib/historyEngine.ts` set `project.revision = targetEntry.revision` (decrementing `revision` on Undo), which tripped `saveProjectToLocalStorage` CAS (`project.revision < existing.revision`). | **CONFIRMED & FIXED** | Added `commitUndoTransaction` and `commitRedoTransaction` in `lib/projectController.ts` and updated `undoTransaction` / `redoTransaction` so `project.revision` increments monotonically on every Undo and Redo while restoring the target snapshot and appending an audit revision entry. | `npm test` (`IA-08`, `IA-09` — **PASS**) + Playwright E2E (`1 rev -> 2 rev -> 3 rev -> 4 rev`) | None. |
+| **F-05** | `server/geminiClient.ts` read `process.env.GEMINI_API_KEY` directly without loading `.env.local` or `.env` when launched via `npm run dev` (`tsx server.ts`). | **CONFIRMED & FIXED** | Implemented `loadServerEnvFromFiles` and `ensureServerEnvLoaded` in `server/geminiClient.ts` to automatically parse `.env.local` and `.env` for server-allowed keys (`GEMINI_API_KEY`, `API_KEY`, `PORT`) without overwriting existing host environment variables or exposing `VITE_*` variables. | `npm test` (`IA-10` — **PASS**) | None. |
+| **F-06** | `handleDeleteProject` in `App.tsx` only called `deleteProjectFromLocalStorage(projectId)` and did not delete from `IndexedDB` or record a tombstone, allowing deleted projects to resurrect on reload. | **CONFIRMED & FIXED** | Added `deleteProjectFromIndexedDb`, `deleteProjectCompletely`, and tombstone tracking (`proactive_co_creator_deleted_ids_v3`) in `lib/storageEngine.ts`, plus guard against late autosave of deleted project IDs. | `npm test` (`IA-11` — **PASS**) | None. |
+| **F-07** | `PromptInput.tsx` displayed only `originalIdea.length` while backend `RefineRequestSchema` / `GenerateMediaRequestSchema` enforced an `8,000`-character limit on `refinedPrompt`. | **CONFIRMED & FIXED** | Exported `MAX_PROMPT_CHARS = 8000` and `validateEffectivePromptLength` in `shared/schemas.ts`, surfaced `X seed · Y/8,000 compiled chars` in `PromptInput.tsx`, and added pre-flight validation before `/api/generate/*` and `/api/refine`. | `npm test` (`IA-12` — **PASS**) + Playwright E2E (`89 seed · 527/8,000 compiled chars`) | None. |
+
+### 6.2 Plausible / Environment-Dependent Risks (`R-01` – `R-04`)
+
+| ID | Baseline Evidence (`fa96d6a6d`) | Current Verification | Fix / N/A Rationale | Tests (Command / Result) | Remaining Risk |
+|---|---|---|---|---|---|
+| **R-01** | `server/routes.ts` had no rate limiting on `/api/*` endpoints. | **CONFIRMED & FIXED** | Added configurable per-client sliding-window rate limiting in `createApiRouter` (`maxRequestsPerWindow: 60`, `rateLimitWindowMs: 60_000`) returning HTTP `429` with `Retry-After` header and `code: 'RATE_LIMITED'`. | `npm test` (`IA-13` — **PASS**) | In-memory limiter is per-process; multi-replica deployments should pair with an edge/reverse-proxy limiter. |
+| **R-02** | `App.tsx` passed render-closure `savedProjects` into async completion handlers (`applyAsyncAnalysisCompletion` / `applyAsyncGenerationCompletion`). | **CONFIRMED & FIXED** | Added `savedProjectsRef` in `App.tsx` synchronized with state updates so concurrent background completions across projects always merge against the latest project list. | `npm test` (`IA-14` — **PASS**) | None. |
+| **R-03** | `computeForceLayout` in `lib/graphLayout.ts` ran fixed `260` ticks × `O(N^2)` repulsion + `6` collision passes. | **CONFIRMED & OPTIMIZED** | Added adaptive simulation tick & collision pass schedules (`SIMULATION_TICKS` and `COLLISION_PASSES`) in `lib/graphLayout.ts`. Verified 50, 200, and 500-node layouts complete in `< 270ms` total. | `npm test` (`IA-15` — **PASS**) | Extremely dense graphs (`>2,000` nodes) would benefit from a Web Worker or Barnes-Hut quadtree if needed in future. |
+| **R-04** | `package.json` omitted `"engines"` field for Node `>=22.6.0` native TypeScript execution (`npm start`). | **CONFIRMED & FIXED** | Added `"engines": { "node": ">=22.6.0" }` to `package.json` and documented Node `>=22.6.0` in `README.md`. | `npm test` (`IA-16` — **PASS**) | None. |
+
+### 6.3 UX & Documentation Polish (`U-01` – `U-05`)
+
+| ID | Baseline Evidence (`fa96d6a6d`) | Current Verification | Fix / N/A Rationale | Tests (Command / Result) | Remaining Risk |
+|---|---|---|---|---|---|
+| **U-01** | Review Modal in `App.tsx` showed pending decision titles and current `refinedPrompt`, without structured `Before -> After` diffs or projected prompt preview. | **CONFIRMED & FIXED** | Implemented `buildReviewDiffModel` in `lib/projectController.ts` and upgraded the Review Modal in `App.tsx` to display item-by-item `Before -> After` diffs alongside side-by-side `Current Committed Prompt` vs `Projected Prompt After Accepting Staged Changes`. | `npm test` (`IA-17` — **PASS**) + Playwright E2E (`diffItemCount: 18`, `hasProjectedPrompt: true`) | None. |
+| **U-02** | `DecisionInboxPanel.tsx` cleared `batchPreview` and `batchInstruction` even when batch commit failed validation. | **CONFIRMED & FIXED** | Updated `DecisionInboxPanel.tsx` so `batchPreview`, `batchInstruction`, and checkbox selections are preserved whenever `onApplyBatchOperations` returns `ok: false`. | `npm test` (`IA-03` — **PASS**) | None. |
+| **U-03** | Review Modal in `App.tsx` lacked `Escape` key dismissal, `Tab` focus trapping, and focus restoration to the `"Review Plan & Prompt"` button. | **CONFIRMED & FIXED** | Added `Escape` listener, `Tab`/`Shift+Tab` focus trap within `reviewModalDialogRef`, initial focus on Close button, and focus restoration to `reviewButtonRef`. | Playwright E2E (`IA-18` — **PASS**: `dialogOpenAfterEsc: false`, `focusedButtonText: "Review Plan & Prompt"`) | None. |
+| **U-04** | `README.md` claimed `60` undo steps while `DEFAULT_MAX_HISTORY` in `lib/historyEngine.ts` is `40`. | **CONFIRMED & FIXED** | Updated `README.md` to accurately document `40` undo stack steps. | `npm test` (`IA-19` — **PASS**) | None. |
+| **U-05** | `README.md` referenced `"D3 zoom/pan"` whereas `BeliefGraph.tsx` and `lib/graphLayout.ts` use a custom deterministic SVG force-directed layout and native pointer pan/zoom. | **CONFIRMED & FIXED** | Updated `README.md` to accurately describe the custom deterministic SVG force-directed graph and native pointer pan/zoom. | `npm test` (`IA-19` — **PASS**) | None. |
+
+---
+
+## 7. Complete 26 Independent Audit Acceptance Scenarios (`IA-01` – `IA-26`)
+
+| ID | Scenario | Verification Method & Result | Status |
+|---|---|---|---|
+| **IA-01** | Cross-project batch preview guard (`Project A` preview rejected on `Project B` + duplicate apply guard) | `tests/independentAuditRemediation.test.ts` (`IA-01`) | **PASS** |
+| **IA-02** | Stale-revision batch preview guard (`r1` preview rejected after project advances to `r2`) | `tests/independentAuditRemediation.test.ts` (`IA-02`) | **PASS** |
+| **IA-03** | Failed batch apply preserves preview operations/selections and performs atomic rollback | `tests/independentAuditRemediation.test.ts` (`IA-03`) | **PASS** |
+| **IA-04** | Dual-store hydration prefers newer `IndexedDB` snapshot (`r6`) over stale `localStorage` (`r5`) | `tests/independentAuditRemediation.test.ts` (`IA-04 & IA-05`) | **PASS** |
+| **IA-05** | Hydrated `IndexedDB` project restores full `snapshot`, `revisions`, `artifacts`, and `undoState` | `tests/independentAuditRemediation.test.ts` (`IA-04 & IA-05`) | **PASS** |
+| **IA-06** | Stale AI Polish proposal blocked after Story Bible edit | `tests/independentAuditRemediation.test.ts` (`IA-06 & IA-07`) | **PASS** |
+| **IA-07** | Stale AI Polish proposal blocked after manual prompt/notes edit (`sourcePromptDigest` mismatch) | `tests/independentAuditRemediation.test.ts` (`IA-06 & IA-07`) | **PASS** |
+| **IA-08** | Undo/Redo monotonic revision persistence (`r1 -> r2 -> r3 -> r4`) | `tests/independentAuditRemediation.test.ts` (`IA-08 & IA-09`) + Playwright E2E | **PASS** |
+| **IA-09** | Multi-tab CAS conflict detection after Undo (`r3` in Tab 1 blocks stale `r2` write from Tab 2) | `tests/independentAuditRemediation.test.ts` (`IA-08 & IA-09`) | **PASS** |
+| **IA-10** | `.env.local` server key loading in clean environment without leaking `VITE_*` | `tests/independentAuditRemediation.test.ts` (`IA-10`) | **PASS** |
+| **IA-11** | Project deletion removes project from both `localStorage` and `IndexedDB` with tombstone guard | `tests/independentAuditRemediation.test.ts` (`IA-11`) | **PASS** |
+| **IA-12** | Compiled prompt `8,000`-character boundary validation & UI counter (`527/8,000 compiled chars`) | `tests/independentAuditRemediation.test.ts` (`IA-12`) + Playwright E2E | **PASS** |
+| **IA-13** | Express `/api/*` rate-limiting middleware (`429 RATE_LIMITED` + `Retry-After`) | `tests/independentAuditRemediation.test.ts` (`IA-13`) | **PASS** |
+| **IA-14** | Concurrent async completion ordering (`A -> B` and `B -> A`) preserves both projects | `tests/independentAuditRemediation.test.ts` (`IA-14`) | **PASS** |
+| **IA-15** | Force layout benchmark (`50`, `200`, `500` nodes) completes with finite coordinates in `< 270ms` | `tests/independentAuditRemediation.test.ts` (`IA-15`) | **PASS** |
+| **IA-16** | `package.json` `engines.node >=22.6.0` & plain Node 22 `server.ts` startup | `tests/independentAuditRemediation.test.ts` (`IA-16 & IA-19`) + `securityAndNodeCompat.test.ts` | **PASS** |
+| **IA-17** | Review Modal displays structured `Before -> After` diff items and projected prompt | `tests/independentAuditRemediation.test.ts` (`IA-17`) + Playwright E2E (`diffItemCount: 18`) | **PASS** |
+| **IA-18** | Review Modal keyboard accessibility (`Tab` focus trap, `Escape` closes and restores focus) | Playwright E2E (`dialogOpenAfterEsc: false`, `focusedButtonText: "Review Plan & Prompt"`) | **PASS** |
+| **IA-19** | `README.md` accuracy (`40` undo steps, custom SVG force-directed graph, `.env.local`, Node `>=22.6.0`) | `tests/independentAuditRemediation.test.ts` (`IA-16 & IA-19`) | **PASS** |
+| **IA-20** | Regression: Story & Image mode switching preserves canonical Story Bible and entities | `tests/proactiveCoCreator2.test.ts` + `tests/independentAuditRemediation.test.ts` | **PASS** |
+| **IA-21** | Regression: Directed multigraph (`A -> B` and `B -> A` coexist, reverse direction by ID) | `tests/independentAuditRemediation.test.ts` (`IA-20 through IA-25`) | **PASS** |
+| **IA-22** | Regression: Seed entity rename & exclusion override authority in `synthesizeRefinedPrompt` | `tests/independentAuditRemediation.test.ts` (`IA-20 through IA-25`) | **PASS** |
+| **IA-23** | Regression: Decision Inbox accept/reject/defer updates canonical state and prompt | `tests/independentAuditRemediation.test.ts` (`IA-20 through IA-25`) | **PASS** |
+| **IA-24** | Regression: Coalesced typing undo/redo & non-destructive revision restore | `tests/masterPlanStability.test.ts` (`AC11`, `AC23`) | **PASS** |
+| **IA-25** | Regression: Schema v1 (`mode: 'video'`) migration to v3 & JSON export/import round-trip | `tests/independentAuditRemediation.test.ts` (`IA-20 through IA-25`) | **PASS** |
+| **IA-26** | Full verification gate (`npm run typecheck`, `npm run lint`, `npm test` 62/62, `npm run build`, Playwright E2E) | All automated and browser checks **PASS**; live external paid Gemini API calls **BLOCKED** unless `GEMINI_API_KEY` is provided in environment | **PASS (Automated & Browser) / BLOCKED (Live Paid Gemini Key)** |

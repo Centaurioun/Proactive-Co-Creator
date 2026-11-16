@@ -16,6 +16,8 @@ interface PromptInputProps {
   isFirstRun: boolean;
   mode: GenerationMode;
   setMode: (mode: GenerationMode) => void;
+  compiledPromptLength?: number;
+  maxPromptChars?: number;
 }
 
 const PromptInput: React.FC<PromptInputProps> = ({
@@ -27,9 +29,13 @@ const PromptInput: React.FC<PromptInputProps> = ({
   isGenerating,
   mode,
   setMode,
+  compiledPromptLength,
+  maxPromptChars = 8000,
 }) => {
   const [validationError, setValidationError] = useState<string | null>(null);
   const hasPromptText = prompt.trim().length > 0;
+  const effectiveLength = compiledPromptLength ?? prompt.trim().length;
+  const isOverLimit = effectiveLength > maxPromptChars;
 
   const handleAnalyzeClick = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -64,8 +70,15 @@ const PromptInput: React.FC<PromptInputProps> = ({
           <span aria-hidden="true" className="text-gray-300 dark:text-gray-700">
             ·
           </span>
-          <span className="text-[11px] text-gray-500 dark:text-gray-400 font-mono tabular-nums whitespace-nowrap">
-            {prompt.length} chars
+          <span
+            className={`text-[11px] font-mono tabular-nums whitespace-nowrap ${
+              isOverLimit
+                ? 'text-red-600 dark:text-red-400 font-semibold'
+                : 'text-gray-500 dark:text-gray-400'
+            }`}
+            title="Seed characters and compiled prompt character limit (max 8,000 chars)"
+          >
+            {prompt.length.toLocaleString()} seed · {effectiveLength.toLocaleString()}/{maxPromptChars.toLocaleString()} compiled chars
           </span>
         </div>
 

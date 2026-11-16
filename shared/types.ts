@@ -219,7 +219,9 @@ export interface BatchInstructionClause {
 }
 
 export type BatchValidationIssueCode =
+  | 'WRONG_PROJECT'
   | 'STALE_BASE'
+  | 'ALREADY_APPLIED'
   | 'MISSING_TARGET'
   | 'CONFLICT'
   | 'INVALID_VALUE'
@@ -233,6 +235,7 @@ export interface BatchValidationIssue {
 }
 
 export interface BatchEditProposalResult {
+  proposalId?: string;
   instruction: string;
   operations: ProposedOperation[];
   ambiguities: BatchEditAmbiguity[];
@@ -242,6 +245,36 @@ export interface BatchEditProposalResult {
   coverageComplete?: boolean;
   baseProjectId?: string;
   baseRevision?: number;
+}
+
+export type BatchCommitResult =
+  | {
+      ok: true;
+      appliedCount: number;
+      revision: number;
+      proposalId?: string;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'WRONG_PROJECT'
+        | 'STALE_REVISION'
+        | 'ALREADY_APPLIED'
+        | 'VALIDATION_FAILED'
+        | 'NO_SELECTED_OPERATIONS';
+      message: string;
+      errors: BatchValidationIssue[];
+    };
+
+export interface ReviewDiffItem {
+  id: string;
+  source: 'decision' | 'batch-preview' | 'ai-polish';
+  category: string;
+  targetLabel: string;
+  beforeValue: string;
+  afterValue: string;
+  provenance: string;
+  conflictWarning?: string;
 }
 
 export interface ConsistencyIssue {
@@ -337,10 +370,12 @@ export interface AiPolishProposal {
   requestId?: string;
   projectId: string;
   baseRevision: number;
+  sourcePromptDigest?: string;
   originalPrompt: string;
   polishedPrompt: string;
   proposedPrompt?: string;
   isNoOp?: boolean;
+  staleReason?: string;
   createdAt: number;
 }
 
