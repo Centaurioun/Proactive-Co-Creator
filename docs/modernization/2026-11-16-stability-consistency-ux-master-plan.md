@@ -7,7 +7,7 @@
 > **Baseline examined:** main commit 05dd3f74402a3c18de7a3b7c6590a68e01f909e7 (2026-11-16).
 > **Deployment context:** Google AI Studio Build project synchronized with repository main.
 > **Authority:** This document supersedes older "completed" claims only where they conflict with newly identified requirements and current code. Do not delete historical reports.
-> **Owner-approved requirements:** 12 acceptance scenarios in Section 12, plus preservation of Story, Image, Clarifications, Belief Graph, Decision Inbox, Contextual Inspector, Story Bible, export/import, and user-controlled batch editing.
+> **Owner-approved requirements:** 12 acceptance scenarios in Section 9, plus preservation of Story, Image, Clarifications, Belief Graph, Decision Inbox, Contextual Inspector, Story Bible, export/import, and user-controlled batch editing.
 
 ## 0. Read this first: exact instructions and boundaries
 
@@ -16,7 +16,7 @@ Implement this document against the **actual latest main commit**, not an imagin
 - Preserve the current **React 19 / TypeScript / Vite / Tailwind v4 / Express / server-side Gemini** stack unless an independently demonstrated blocker demands a change.
 - Keep **Story** primary and **Image** secondary; **never reintroduce video generation**.
 - Maintain all existing working Belief Graph interactions, Clarifications, Story Bible, Decision Inbox, natural-language batch editing, preview/download, and local projects.
-- Preserve immutable **originalIdea** as historical user input, while producing a coherent **current generation prompt** from confirmed facts. Do not erase source text or pretend source edits never happened.
+- Preserve **originalIdea as an editable user seed** and preserve prior user-authored versions in undo/history. Produce a coherent current generation prompt from confirmed facts without silently rewriting the source or treating an old seed sentence as higher authority than a newer explicit user edit.
 - AI suggestions and AI-inferred relationships are **not automatically user-approved**. Explicit source evidence differs from an AI inference.
 - Every meaningful state mutation must be associated with the correct **project identity** and expected revision. Never commit stale asynchronous responses to another or newer project.
 - Partial recognition of a natural-language instruction must never be described as full success.
@@ -68,6 +68,8 @@ This is a **static inspection plan**, not proof that the bugs have reproduced in
 | F18 | P1 | Older specs reference lib/projectStore.ts, BroadcastChannel and more comprehensive transaction guarantees; baseline code does not clearly implement all of these | Documentation-versus-code drift. Audit implementation before trusting historical DONE/32-PASS statements. |
 | F19 | P0/P1 | Asynchronous callbacks can settle after a newer analysis, Undo/Redo, restore, import, generation, or project switch | Add causal/revision guards to *all* async operations, not just Graph analysis. |
 | F20 | P1 | Refined prompt and generation artifacts do not consistently use immutable input revision + content digest | Stale/outdated indication can become inaccurate after non-prompt edits or a long request. Track artifact provenance and fingerprint. |
+| F21 | P1 | App.tsx asynchronous request handlers toggle shared isLoading booleans in finally without checking whether this completion is the currently active request | An old request may clear a newer request's progress indicator; test request-aware loading state. |
+| F22 | P1 | buildDecisionInboxFromSnapshot reconstructs decisions from live clarifications/attributes and may omit terminal decisions for already-confirmed attributes | Investigate whether accepted/rejected/deferred decisions retain durable provenance and visibility across regeneration, reload and reanalysis. |
 
 **Additional hypotheses requiring reproduction, NOT asserted as verified bugs:** temporary decision statuses rebuilt inconsistently; old AI questions resurrected; relationship labels duplicated in prompt; stale tab race between a localStorage save and IndexedDB save; mixed-case entity collisions; oversized imported JSON; non-English clause parsing; no-op edits creating history; dark/mobile focus after inspector changes; archive-to-import migration information loss.
 
@@ -87,7 +89,7 @@ This is a **static inspection plan**, not proof that the bugs have reproduced in
 
 **INV-06 / Single truth:** Story Bible, Clarifications and Belief Graph are projections of one canonical project. A clarification accepted once must not require a duplicate edit elsewhere. Derived text is not independent authoritative state.
 
-**INV-07 / Non-destructive source and output:** originalIdea, previous project snapshots and outputs are preserved or explicitly versioned; new confirmed instructions are authoritative for generation. A new output never silently deletes the only copy of an old output.
+**INV-07 / Non-destructive source and output:** current originalIdea is editable, and its prior versions, previous project snapshots and outputs are preserved or explicitly versioned; new confirmed instructions are authoritative for generation. A new output never silently deletes the only copy of an old output.
 
 **INV-08 / Persistence:** successful save means durable transaction acknowledged; interrupted/failed saves are observable. Two writers never silently overwrite a newer revision. Import/export round-trips preserve IDs, directed edges, selected provenance, decisions and artifact references.
 
@@ -183,7 +185,7 @@ If local parser handles only a subset, send unresolved clauses plus full context
 
 ### 4.5 Prompt compiler and narrative polish
 
-Treat originalIdea as immutable historical user input. Construct the current generation prompt from coherent confirmed elements, with explicit overrides, exclusions, renamed entities, directed relationships and Story Bible facts. Avoid contradictory duplicates ("Cat" and "Luna" as separate characters after a rename). Show an unresolved conflict if a safe deterministic transformation cannot resolve it. Consider separating "source text" from "effective scene summary" and "confirmed overrides". Preserve source in export/history.
+Treat originalIdea as editable source material with recoverable historical revisions. Construct the current generation prompt from coherent confirmed elements, with explicit overrides, exclusions, renamed entities, directed relationships and Story Bible facts. Avoid contradictory duplicates ("Cat" and "Luna" as separate characters after a rename). Show an unresolved conflict if a safe deterministic transformation cannot resolve it. Consider separating "source text" from "effective scene summary" and "confirmed overrides". Preserve source in export/history.
 
 **AI Narrative Polish** must be a *separate, real* server API flow, not an empty-change call that returns its input. Present original/AI-proposed text side-by-side, verify that changes respect confirmed facts, and require acceptance. If unchanged, say "No change suggested" without creating a revision or claiming a model improved it.
 
@@ -239,6 +241,7 @@ Use an IndexedDB read-compare-write inside one readwrite transaction to reject s
 - [ ] RED: old clarification resolves after new edit/Undo/reanalysis, must not revert accepted changes.
 - [ ] RED: story/image from A settles after switching to B, must not become B's current artifact.
 - [ ] RED: old AI Polish/batch interpretation resolves after newer request, stale UI results blocked.
+- [ ] RED: canceled/old request finally block cannot set loading=false while a newer same-action request remains active.
 - [ ] Introduce projectId/baseRevision/requestId tickets; compare on application at reducer boundary. Abort on switch where sensible; do not rely solely on AbortController.
 - [ ] On same-project intervening edit choose safe merge/rebase or show stale result; never overwrite with old snapshot.
 - [ ] Verify racing 2+ operations, project deletion/restore/import during requests, cancellation/errors.
@@ -247,6 +250,7 @@ Use an IndexedDB read-compare-write inside one readwrite transaction to reject s
 ### P0-C — AI provenance and directed relationship correctness
 **Files:** lib/canonicalModel.ts; lib/promptBuilder.ts; shared/types.ts; lib/consistencyChecker.ts; tests/new relationship/provenance tests.
 - [ ] RED: AI-inferred new edge remains pending and absent from compiled prompt until accepted.
+- [ ] RED: accepted/rejected/deferred decisions are not accidentally erased or reopened by Decision Inbox rebuilding after an unrelated edit.
 - [ ] RED: explicit source-backed edge remains confirmed; rejected AI edge not resurrected.
 - [ ] RED: A→B "fears" and B→A "protects" coexist through analysis, edit, rename, Undo, save and import.
 - [ ] RED: same direction with two distinct predicates not overwritten without selecting actual edge ID.
@@ -259,6 +263,7 @@ Use an IndexedDB read-compare-write inside one readwrite transaction to reject s
 - [ ] RED: Tab A and B load same revision; A commits first; B's stale write is explicitly rejected.
 - [ ] RED: failed IDB write does not report success and does not silently remove artifacts.
 - [ ] RED: closing/reloading restores latest acknowledged revision, pending drafts and history.
+- [ ] RED: migration from schemaVersion 2 to a new revision-aware persisted version is explicit, reversible by backup, and rejects unsupported future schemas without mutation.
 - [ ] RED: corrupt import, incompatible schema, quota exhaustion, IDB unavailable, storage blocked and multiple projects handled without silent loss.
 - [ ] Implement one authoritative persistence layer with CAS and surfaced conflict resolution; migration with backup.
 - [ ] Adopt asset storage and bounded retention policy that preserves user visibility and gives export/recovery options.
@@ -460,6 +465,8 @@ If commands are unavailable in AI Studio, label BLOCKED and provide exact requir
 | Huge graph (25/100/250 nodes) | Graph/list usable, controllable performance, stable layout, no visible clipping. |
 | Mobile switch to Inspector then back | Selection remains stable, focus visible and editable. |
 | Model-suggested negative relationship | Clearly pending; explicit user rejection persists after reanalysis. |
+| Old request finally resolves after a newer request starts | Newer request's loading/progress indicator remains correct. |
+| Autosave in two tabs with identical wall-clock timestamps | Logical revision/CAS rather than Date.now ordering detects conflict. |
 
 ## 11. Verification reporting and completion gates
 
@@ -500,11 +507,31 @@ This is a structured **design review of recommendations**, not a report that pro
 Second independent critique focused on hidden assumptions and implementation handoff quality.
 
 1. **Intent & Preservation:** Confirmed that user-approved 12 checks are requirements, **not evidence**; preserved existing Story/Image, Belief Graph and platform.
-2. **UX Practicality:** Deferred layout polish until correctness; minimized new controls; required real before/after review instead of another screen.
+2. **UX Practicality:** Deferred layout polish until correctness; minimized new controls; required real before/after review instead of another screen. Preserved originalIdea editing while making its prior revisions recoverable.
 3. **State Correctness:** Tightened "revision >= base" caveat: it never permits blind overwrite; clarified IDB atomic CAS and project-safe request handling.
 4. **AI Reliability:** Added AI-extracted relationship source verification, explicit unsupported clause markers, model/no-op polish honesty, and Turkish input handling without pretending complete local parsing.
 5. **Testing Completeness:** Added unavailable backend, latest-artifact digest, old-schema import, missing targets, duplicate names, edit-in-flight, and two-tab real-browser cases.
 6. **Independent Builder Review:** Removed assumptions that non-existent projectStore.ts or BroadcastChannel are already implemented, labeled code sketches illustrative, and required fresh command evidence rather than inherited PASS status.
+
+## 13A. Acceptance-to-task traceability (added during post-write review)
+
+Each acceptance item must have at least one **executed** test, a responsible work package and evidence in the final verification report. These are planned owners, not completed tests.
+
+| Work package | Primary acceptance coverage | Required evidence |
+| --- | --- | --- |
+| P0-B — async identity | AC01, AC13, AC14, AC22 | deferred-promise integration tests, project-switch browser test, stale-result log without private data |
+| P0-C — AI provenance / directed graph | AC03, AC07, AC17, AC21 | pure model tests, rename + import roundtrip, graph relationship E2E |
+| P0-D — persistence / recovery | AC02, AC11, AC15, AC23 | two actual browser tabs, reload tests, storage error injection, import validation |
+| P0-E — batch editing | AC04, AC05, AC08, AC20 | malformed/ambiguous operations, clause coverage, atomic rollback and Undo tests |
+| P0-F — prompt / history | AC06, AC09, AC16 | seed rename/exclusion compiler tests, author notes Undo grouping |
+| P1-G — polish/artifact trace | AC10, AC12, AC22 | AI polish nonempty/no-op test, model API only when authorized, digest/revision test |
+| P1-H — inspector and interaction | AC18, AC19, AC24 | Playwright mouse/keyboard/mobile screen tests with selected relation and actual diff |
+| P1-I — editor usability | AC09, AC11 | typing burst, blur, reload and undo keyboard tests |
+| P1-J — docs/API QA | AC25, AC26 | security tests, removed-video checks, fresh report with source SHA |
+
+If one acceptance criterion spans packages, designate a single accountable owner and verify its dependencies in the other packages. In particular, AC12 is **BLOCKED** unless paid live testing is authorized and credentials are configured securely; mocked route tests must not count as live verification.
+
+**Post-write review corrections:** This plan deliberately does **not** freeze originalIdea against user edits; instead, original seed edits are undoable and prior versions recoverable. Concurrent loading indicators, terminal decision provenance, and explicit schema migration were promoted into tests. The file's numbered cross-reference points to Section 9, where the user-approved scenarios actually appear.
 
 ## 14. Required handoff, checklist and reporting format
 
