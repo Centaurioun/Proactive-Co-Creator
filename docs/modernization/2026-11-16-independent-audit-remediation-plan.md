@@ -3,11 +3,11 @@
 > **Google AI Studio implementation handoff — Phase 2 stability follow-up**
 > **Document created:** 2026-11-16
 > **Repository:** https://github.com/Centaurioun/Proactive-Co-Creator
-> **Source audit:** An independent, read-only technical report supplied by the project owner on 2026-11-16 (in Turkish). The audit inspected commit \`fa96d6a6d4fbbca3b77379fdce497ff0c6e14784\`.
-> **Reference SHA for this document's static review:** \`fa96d6a6d4fbbca3b77379fdce497ff0c6e14784\`.
+> **Source audit:** An independent, read-only technical report supplied by the project owner on 2026-11-16 (in Turkish). The audit inspected commit `fa96d6a6d4fbbca3b77379fdce497ff0c6e14784`.
+> **Reference SHA for this document's static review:** `fa96d6a6d4fbbca3b77379fdce497ff0c6e14784`.
 > **Status:** **REQUIREMENTS AND VERIFICATION PLAN — NOT IMPLEMENTED BY WRITING THIS DOCUMENT.**
-> **Precedence:** Read this file alongside \`docs/modernization/2026-11-16-stability-consistency-ux-master-plan.md\`, not as a replacement for it. This new file captures **a second independent audit** and newly surfaced post-implementation risks. If source code at latest main differs, verify the current behavior first; do not reapply obsolete fixes.
-> **Owner's intended executor:** Google AI Studio after the user synchronizes the repository's \`main\` branch.
+> **Precedence:** Read this file alongside `docs/modernization/2026-11-16-stability-consistency-ux-master-plan.md`, not as a replacement for it. This new file captures **a second independent audit** and newly surfaced post-implementation risks. If source code at latest main differs, verify the current behavior first; do not reapply obsolete fixes.
+> **Owner's intended executor:** Google AI Studio after the user synchronizes the repository's `main` branch.
 > **Allowed implementation:** application code, tests and documentation **during the later AI Studio execution**; during this documentation commit, **only this Markdown file is changed**.
 > **Language of implementation instructions:** English for reproducibility; user-facing report may be Turkish.
 
@@ -22,12 +22,12 @@ The independent reviewer found a well-formed React/Express/Gemini creative-works
 **Do not** reintroduce Video, redesign the whole UI, add a state-management framework by default, add a cloud database or public authentication flow without confirmed deployment need, abandon the current technical stack without a concrete blocker, or mark tests as passed without running them.
 
 **Source provenance and confidence:**
-- \`CONFIRMED—STATIC\` means the independent auditor identified a reproducible-looking code path and line references; it does **not** mean it ran the app.
-- \`PLAUSIBLE—UNVERIFIED\` is a hypothesis requiring a test, measurement or deployment fact.
-- This handoff additionally inspected the referenced \`App.tsx\`, \`DecisionInboxPanel.tsx\`, \`nlBatchEngine.ts\`, \`projectController.ts\`, \`storageEngine.ts\`, \`server.ts\`, \`schemas.ts\`, README and tests through the GitHub connector. This is not a fresh runtime test.
-- The report's own caveat: \`npm test\`, \`npm run lint\`, \`npm run typecheck\`, \`npm run build\`, Playwright and live Gemini checks were **not run by the independent auditor**.
+- `CONFIRMED—STATIC` means the independent auditor identified a reproducible-looking code path and line references; it does **not** mean it ran the app.
+- `PLAUSIBLE—UNVERIFIED` is a hypothesis requiring a test, measurement or deployment fact.
+- This handoff additionally inspected the referenced `App.tsx`, `DecisionInboxPanel.tsx`, `nlBatchEngine.ts`, `projectController.ts`, `storageEngine.ts`, `server.ts`, `schemas.ts`, README and tests through the GitHub connector. This is not a fresh runtime test.
+- The report's own caveat: `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`, Playwright and live Gemini checks were **not run by the independent auditor**.
 - The repository's earlier verification report claims 47 passing tests; do not convert that historical claim into fresh test evidence.
-- Revalidate the exact **latest main SHA** on starting. If the problem has been fixed since \`fa96d6\`, record **ALREADY FIXED + verification** rather than introducing duplicate patches.
+- Revalidate the exact **latest main SHA** on starting. If the problem has been fixed since `fa96d6`, record **ALREADY FIXED + verification** rather than introducing duplicate patches.
 
 ### 0.1 Non-negotiable product integrity invariants
 
@@ -50,16 +50,16 @@ The findings below preserve the independent review's IDs and **initial** priorit
 ### F-01 · P1 · Stale Batch Edit proposal bypasses project/revision check
 
 **Original independent evidence:**
-- \`lib/nlBatchEngine.ts\` creates \`baseProjectId\` / \`baseRevision\` and \`validateProposedOperations\` supports a \`STALE_BASE\` check (reported ~L161–170 and ~L630–651).
-- \`App.tsx\` \`handleApplyBatchOperations\` sends \`expectedBaseRevision: activeProject.revision\` and \`currentRevision: activeProject.revision\` — **the same current value**, so the mismatch guard cannot fire.
-- \`components/DecisionInboxPanel.tsx\` passes \`operations\` and \`instruction\`, dropping original proposal project and revision. Its local preview can outlive a project switch and currently closes immediately after callback rather than receiving verified success/failure.
+- `lib/nlBatchEngine.ts` creates `baseProjectId` / `baseRevision` and `validateProposedOperations` supports a `STALE_BASE` check (reported ~L161–170 and ~L630–651).
+- `App.tsx` `handleApplyBatchOperations` sends `expectedBaseRevision: activeProject.revision` and `currentRevision: activeProject.revision` — **the same current value**, so the mismatch guard cannot fire.
+- `components/DecisionInboxPanel.tsx` passes `operations` and `instruction`, dropping original proposal project and revision. Its local preview can outlive a project switch and currently closes immediately after callback rather than receiving verified success/failure.
 
 **Impact:** A preview created in project A/revision 10 could apply to B or A/revision 11, changing valid current data.
 
 **Required design:**
-- Carry an immutable preview envelope including \`projectId\`, \`baseRevision\`, \`proposalId\`, \`instruction\`, selected operations and any unresolved clauses through the UI handler.
+- Carry an immutable preview envelope including `projectId`, `baseRevision`, `proposalId`, `instruction`, selected operations and any unresolved clauses through the UI handler.
 - Compare that envelope to the current authoritative project **at commit time**. Prevent cross-project or stale-revision apply. Show a stale-preview reason and offer to regenerate, discard or manually inspect before replay.
-- Return a typed success/failure result from \`onApplyBatchOperations\`; clear the preview **only after a successful atomic commit**. On failure keep user's instruction, selections and preview visible.
+- Return a typed success/failure result from `onApplyBatchOperations`; clear the preview **only after a successful atomic commit**. On failure keep user's instruction, selections and preview visible.
 - A revision mismatch must not be "fixed" by setting both expected/current to latest; accept an explicit user-requested rebase only after recalculating and reviewing a new diff.
 - Do not introduce an unnecessary separate global state manager to accomplish this.
 
@@ -69,17 +69,17 @@ The findings below preserve the independent review's IDs and **initial** priorit
 - Valid same-project/same-revision edit succeeds exactly once; duplicate Apply cannot repeat it.
 - Invalid batch operation leaves all selected modifications unapplied.
 
-**Files to inspect:** \`App.tsx\`, \`components/DecisionInboxPanel.tsx\`, \`lib/nlBatchEngine.ts\`, \`lib/projectController.ts\`, \`shared/types.ts\`, integration tests.
+**Files to inspect:** `App.tsx`, `components/DecisionInboxPanel.tsx`, `lib/nlBatchEngine.ts`, `lib/projectController.ts`, `shared/types.ts`, integration tests.
 
 **Acceptance:** stale/cross-project proposal cannot commit; clear failure UI; no regression for valid previews.
 
 ### F-02 · P1 · IndexedDB latest project snapshot not fully hydrated
 
 **Evidence:**
-- \`App.tsx\` starts from \`loadProjectsFromLocalStorage()\`.
-- Later IndexedDB hydration may put a newer full project into \`savedProjects\`, but \`setProject\` merges only **artifacts** from IndexedDB, leaving old \`snapshot\`, \`revision\` and \`persistedRevision\` active.
-- In \`App.tsx\` the autosave path treats localStorage and IndexedDB as separate writes; the IndexedDB save is dispatched without its result being used to resolve save success.
-- \`tests/masterPlanStability.test.ts\` AC15 checks in-memory media on quota failure, not full snapshot recovery after reload.
+- `App.tsx` starts from `loadProjectsFromLocalStorage()`.
+- Later IndexedDB hydration may put a newer full project into `savedProjects`, but `setProject` merges only **artifacts** from IndexedDB, leaving old `snapshot`, `revision` and `persistedRevision` active.
+- In `App.tsx` the autosave path treats localStorage and IndexedDB as separate writes; the IndexedDB save is dispatched without its result being used to resolve save success.
+- `tests/masterPlanStability.test.ts` AC15 checks in-memory media on quota failure, not full snapshot recovery after reload.
 
 **Risk scenario:** localStorage r5; IndexedDB r6; reload → active editor shows r5 while other parts may contain r6. Another save could worsen divergence.
 
@@ -100,16 +100,16 @@ The findings below preserve the independent review's IDs and **initial** priorit
 - No duplicate project creation from legacy migration.
 - The "Saved" indicator represents **actual durable acknowledgement**, not optimism.
 
-**Files:** \`App.tsx\`, \`lib/storageEngine.ts\`, \`shared/types.ts\`, migration tests and two-tab Playwright tests.
+**Files:** `App.tsx`, `lib/storageEngine.ts`, `shared/types.ts`, migration tests and two-tab Playwright tests.
 
 **Acceptance:** deterministic, complete, recoverable hydration; trustworthy save/conflict state.
 
 ### F-03 · P1 · AI Polish proposals accepted after source context changes
 
 **Evidence:**
-- \`App.tsx\` stages polished prompt returned by async request.
-- \`lib/projectController.ts\` \`acceptAiPolishProposal\` checks \`project.id === proposal.projectId\` but not \`baseRevision\`, or original prompt fingerprint.
-- \`App.tsx\` accept handler calls this helper without an explicit stale guard.
+- `App.tsx` stages polished prompt returned by async request.
+- `lib/projectController.ts` `acceptAiPolishProposal` checks `project.id === proposal.projectId` but not `baseRevision`, or original prompt fingerprint.
+- `App.tsx` accept handler calls this helper without an explicit stale guard.
 
 **Risk scenario:** user requests polish at revision 8, changes Story Bible to r9, then accepts old polished text drafted from r8. The polished prompt may omit a newly confirmed constraint.
 
@@ -118,7 +118,7 @@ The findings below preserve the independent review's IDs and **initial** priorit
 - On **accept**, verify project identity, revision, source digest and current confirmed fact constraints. If stale, reject and offer re-polish or comparison; preserve old suggestion as an explicitly stale draft if useful.
 - If the polished text truly matches current facts, allow intentional user review; never silently merge the old text.
 - Treat acceptance as one undoable semantic transaction. Avoid a long-lived "accepted polish" disconnected from the canonical prompt compiler; define whether it's a style overlay, a user-approved prompt variant, or a derived artifact. Subsequent structural edits must not silently strip confirmed facts.
-- Return \`StaleProposal\` / \`Accepted\` / \`NoChange\` explicitly.
+- Return `StaleProposal` / `Accepted` / `NoChange` explicitly.
 
 **Fail-first tests:**
 - Valid polish proposal accepted once, Undo restores prior prompt.
@@ -128,11 +128,11 @@ The findings below preserve the independent review's IDs and **initial** priorit
 - AI produces identical text → clear no-op, no new revision.
 - AI API error → no misleading "Polished" claim.
 
-**Files:** \`App.tsx\`, \`lib/projectController.ts\`, \`lib/promptBuilder.ts\`, \`OutputGallery.tsx\`, route/model tests.
+**Files:** `App.tsx`, `lib/projectController.ts`, `lib/promptBuilder.ts`, `OutputGallery.tsx`, route/model tests.
 
 ### F-04 · P2 · Undo/Redo changes content without monotonic durable project revision
 
-**Evidence:** \`App.tsx\` \`handleUndo\` / \`handleRedo\` change \`undoState\`; \`activeProject\` derives its snapshot from it without incrementing durable \`project.revision\`. Storage CAS relies on logical revision.
+**Evidence:** `App.tsx` `handleUndo` / `handleRedo` change `undoState`; `activeProject` derives its snapshot from it without incrementing durable `project.revision`. Storage CAS relies on logical revision.
 
 **Impact:** Two different saved contents may carry the same revision, weakening multi-tab conflict detection, artifact freshness and history traceability.
 
@@ -145,22 +145,22 @@ The findings below preserve the independent review's IDs and **initial** priorit
 
 **Tests:** edit → save → Undo → save → reload; two tabs with Undo conflict; redo after Undo; redo invalidation; no-op doesn't bump revision; artifact currentness correct.
 
-**Files:** \`App.tsx\`, \`lib/historyEngine.ts\`, \`lib/projectController.ts\`, persistence.
+**Files:** `App.tsx`, `lib/historyEngine.ts`, `lib/projectController.ts`, persistence.
 
-### F-05 · P2 · README \`.env.local\` instructions may not reach Express process
+### F-05 · P2 · README `.env.local` instructions may not reach Express process
 
-**Evidence:** README documents \`cp .env.example .env.local\` and \`npm run dev\`; dev script executes \`tsx server.ts\`; server reads \`process.env.GEMINI_API_KEY\` without clearly loading \`.env.local\` itself. Vite's own env handling doesn't imply automatic loading into the host Node process.
+**Evidence:** README documents `cp .env.example .env.local` and `npm run dev`; dev script executes `tsx server.ts`; server reads `process.env.GEMINI_API_KEY` without clearly loading `.env.local` itself. Vite's own env handling doesn't imply automatic loading into the host Node process.
 
 **Required design:**
-- Reproduce first in a clean local environment with no inherited GEMINI_API_KEY, only \`.env.local\`.
-- If unconfigured, explicitly load server environment using a supported Node/tsx mechanism or a safe configuration utility; retain hosting/AI Studio secret priority and never expose secrets via \`VITE_*\` or client bundling.
+- Reproduce first in a clean local environment with no inherited GEMINI_API_KEY, only `.env.local`.
+- If unconfigured, explicitly load server environment using a supported Node/tsx mechanism or a safe configuration utility; retain hosting/AI Studio secret priority and never expose secrets via `VITE_*` or client bundling.
 - Correct README to match the verified startup behavior.
 
-**Test:** clean environment, \`.env.local\` provided → health/config state indicates configured without printing key; unset → safe not-configured result; production env overrides appropriate local fallback. No paid API call necessary.
+**Test:** clean environment, `.env.local` provided → health/config state indicates configured without printing key; unset → safe not-configured result; production env overrides appropriate local fallback. No paid API call necessary.
 
 ### F-06 · P2 · Deletion removes localStorage record but leaves IndexedDB copy
 
-**Evidence:** \`App.tsx\` \`handleDeleteProject\` invokes \`deleteProjectFromLocalStorage\`; the helper mutates only localStorage. Full IDB project and media remain.
+**Evidence:** `App.tsx` `handleDeleteProject` invokes `deleteProjectFromLocalStorage`; the helper mutates only localStorage. Full IDB project and media remain.
 
 **Required design:**
 - Delete project from **all authoritative storage locations**; don't silently resurrect the deleted project on hydration or migration.
@@ -173,7 +173,7 @@ The findings below preserve the independent review's IDs and **initial** priorit
 
 ### F-07 · P2 · Client/compiler can exceed server's 8,000-character prompt schema
 
-**Evidence:** \`shared/schemas.ts\` \`NonEmptyPromptSchema.max(8000)\`; prompt entry does not enforce the limit, and \`lib/promptBuilder.ts\` can lengthen the effective prompt with Story Bible, attributes and links.
+**Evidence:** `shared/schemas.ts` `NonEmptyPromptSchema.max(8000)`; prompt entry does not enforce the limit, and `lib/promptBuilder.ts` can lengthen the effective prompt with Story Bible, attributes and links.
 
 **Required design:**
 - First trace which endpoints actually use the 8,000-character schema and whether generated story/image prompts use it; avoid falsely claiming every route is affected.
@@ -191,10 +191,10 @@ The findings below preserve the independent review's IDs and **initial** priorit
 
 | ID | Initial priority | Independent auditor's claim | How to verify | Policy |
 | --- | --- | --- | --- | --- |
-| R-01 | Conditional P1 | Publicly deployed \`/api/generate/images\` and other costly Gemini routes may lack auth/quotas; anyone could consume server budget. | Determine actual exposure and provider gateway protections; inspect rate limits, auth, network policy, usage controls. | Only require app auth/rate-limit architecture if publicly accessible. Protect Gemini spend; don't force user accounts on a local-only tool. |
-| R-02 | P2 | Some async callbacks capture stale \`savedProjects\` before \`setSavedProjects(applied.savedProjects)\`; updates may overwrite recent projects. | Deferred 2-project completion tests, both ordering permutations, reload check. | Fix only if reproducible or direct static path proves unsafe. Prefer functional/reducer updates over captured arrays. |
+| R-01 | Conditional P1 | Publicly deployed `/api/generate/images` and other costly Gemini routes may lack auth/quotas; anyone could consume server budget. | Determine actual exposure and provider gateway protections; inspect rate limits, auth, network policy, usage controls. | Only require app auth/rate-limit architecture if publicly accessible. Protect Gemini spend; don't force user accounts on a local-only tool. |
+| R-02 | P2 | Some async callbacks capture stale `savedProjects` before `setSavedProjects(applied.savedProjects)`; updates may overwrite recent projects. | Deferred 2-project completion tests, both ordering permutations, reload check. | Fix only if reproducible or direct static path proves unsafe. Prefer functional/reducer updates over captured arrays. |
 | R-03 | P2 | Large graphs might become slow. | Measure 50/200/500 nodes: layout, interaction latency, memory and focus behavior on representative desktop/mobile. | No premature graph rewrite without measurements. |
-| R-04 | P2 | Native TypeScript startup may vary with Node version. | Test documented Node matrix, \`npm start\`, \`npm run dev\`, CI. | Specify supported Node runtime; avoid guessing or broad infrastructure changes. |
+| R-04 | P2 | Native TypeScript startup may vary with Node version. | Test documented Node matrix, `npm start`, `npm run dev`, CI. | Specify supported Node runtime; avoid guessing or broad infrastructure changes. |
 
 **Other conditional investigations, introduced by the source report's findings:** environmental loading when production secrets are configured; atomic persistence and the localStorage quota path; security headers and content injection; generated media storage size; ambiguous AI batch language; logout/deletion semantics only if accounts exist. These are *audit questions*, not permission to expand scope indefinitely.
 
@@ -203,21 +203,21 @@ The findings below preserve the independent review's IDs and **initial** priorit
 ## 3. Targeted UX/accessibility improvements
 
 ### U-01 · Real Before/After change comparison
-The \`App.tsx\` review modal currently summarizes pending decisions, history and an authoritative prompt; despite the "Prompt Diff" label it does not present a true previous/proposed comparison for every selected change.
+The `App.tsx` review modal currently summarizes pending decisions, history and an authoritative prompt; despite the "Prompt Diff" label it does not present a true previous/proposed comparison for every selected change.
 
 **Implement:** current value → proposed value per affected property/entity/edge; source/provenance, conflicts, affected project and revision. If there are no staged changes, say so rather than inventing a diff. Preserve screen-reader headings and keyboard flow.
 
 **Test:** select 3 different proposed changes, edit one, reject one → preview correctly shows exactly what will be applied and how the effective prompt will differ. Avoid a misleading diff between unrelated historical snapshots.
 
 ### U-02 · Do not close failed batch preview
-\`DecisionInboxPanel.tsx\` clears its preview immediately after invoking the apply callback. Correct with F-01: the callback should return a typed result; close only after verified application. Error retains selected operations and the user's text.
+`DecisionInboxPanel.tsx` clears its preview immediately after invoking the apply callback. Correct with F-01: the callback should return a typed result; close only after verified application. Error retains selected operations and the user's text.
 
 **Test:** stale preview, conflict, missing target, storage conflict; all retain editable preview with precise message. Success clears preview once.
 
 ### U-03 · Accessible Review modal
-\`App.tsx\` custom \`role="dialog"\` is missing visible Escape and focus-management behavior in inspected code.
+`App.tsx` custom `role="dialog"` is missing visible Escape and focus-management behavior in inspected code.
 
-**Implement:** Escape close, initial focus, Tab/Shift+Tab containment while modal open, focus return to opener, screen-reader naming, backdrop behavior, no background interaction. Consider native \`<dialog>\` or an existing accessible implementation; do not add a large UI library for one modal without justification.
+**Implement:** Escape close, initial focus, Tab/Shift+Tab containment while modal open, focus return to opener, screen-reader naming, backdrop behavior, no background interaction. Consider native `<dialog>` or an existing accessible implementation; do not add a large UI library for one modal without justification.
 
 **Test:** keyboard-only open/navigate/close, screen-reader semantics, mobile focus and scroll.
 
@@ -230,7 +230,7 @@ The independent audit explicitly rejected several plausible false alarms:
 - The existing three-panel experience is worth preserving rather than rebuilding.
 
 ### U-05 · Documentation accuracy
-Independent audit reports \`README.md\` claims 60 Undo steps while \`lib/historyEngine.ts\` uses \`MAX_UNDO_STACK = 40\`; README also describes D3 zoom/pan while the current code uses React pointer events without D3 dependency.
+Independent audit reports `README.md` claims 60 Undo steps while `lib/historyEngine.ts` uses `MAX_UNDO_STACK = 40`; README also describes D3 zoom/pan while the current code uses React pointer events without D3 dependency.
 
 **Implement:** recheck current source and update README to observed behavior. Do not add D3 simply to make documentation true. Update old PASS claims with date and SHA rather than rewriting history.
 
@@ -238,7 +238,7 @@ Independent audit reports \`README.md\` claims 60 Undo steps while \`lib/history
 
 ## 4. Architecture contract — practical, minimal and project-aware
 
-Keep the existing \`lib/projectController.ts\`, \`lib/historyEngine.ts\`, \`lib/storageEngine.ts\`, \`lib/nlBatchEngine.ts\` and \`CreativeProject\` model unless evidence demands a narrower refactor. Avoid a sweeping Redux/event sourcing migration.
+Keep the existing `lib/projectController.ts`, `lib/historyEngine.ts`, `lib/storageEngine.ts`, `lib/nlBatchEngine.ts` and `CreativeProject` model unless evidence demands a narrower refactor. Avoid a sweeping Redux/event sourcing migration.
 
 ### 4.1 Immutable proposal context
 
@@ -264,7 +264,7 @@ type CommitResult =
       'VALIDATION_FAILED' | 'PERSISTENCE_CONFLICT'; details: string[] };
 ~~~
 
-Do **not** trust the currently selected UI project to supply \`expectedRevision\`; carry the original preview's revision. Validate at the commit/reducer boundary. The UI controls display a result, they do not determine causal safety.
+Do **not** trust the currently selected UI project to supply `expectedRevision`; carry the original preview's revision. Validate at the commit/reducer boundary. The UI controls display a result, they do not determine causal safety.
 
 ### 4.2 Consistent persistence / CAS
 
@@ -281,7 +281,7 @@ async function commitProject(expectedRev: number, candidate: CreativeProject) {
 }
 ~~~
 
-An advisory \`BroadcastChannel\` can notify other tabs, but message receipt is **not** the concurrency guarantee. If migration requires staged fallback, explain and test its invariants.
+An advisory `BroadcastChannel` can notify other tabs, but message receipt is **not** the concurrency guarantee. If migration requires staged fallback, explain and test its invariants.
 
 ### 4.3 AI Polish proposal acceptance
 
@@ -318,10 +318,10 @@ Every task must have: exact affected files, test name, observed RED failure, min
 
 ### Stage 0 — Baseline and branch safety (read first)
 
-- [ ] Record HEAD SHA and compare with source-audit \`fa96d6\`; read the earlier master plan, recent test additions, README and code.
-- [ ] Inspect dependency scripts and \`git status\` before touching files.
+- [ ] Record HEAD SHA and compare with source-audit `fa96d6`; read the earlier master plan, recent test additions, README and code.
+- [ ] Inspect dependency scripts and `git status` before touching files.
 - [ ] Establish a recoverable Git checkpoint or archive; source of truth remains the user's connected main branch.
-- [ ] Run \`npm ci\`, \`npm run typecheck\`, \`npm run lint\`, \`npm test\`, \`npm run build\`; record **actual** output and failures.
+- [ ] Run `npm ci`, `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`; record **actual** output and failures.
 - [ ] Establish baseline browser Story, Image, Review modal, Batch Edit, AI Polish proposal, IDB load/save/delete and keyboard interactions.
 - [ ] Confirm no proprietary API secrets or paid billing actions are required by basic tests.
 - [ ] For each F-item, verify whether the implementation at current main still allows the issue; if not, record ALREADY FIXED and test evidence. Do not blindly apply suggested code.
@@ -360,7 +360,7 @@ Every task must have: exact affected files, test name, observed RED failure, min
 
 **Owners:** F-05, F-07.
 
-- [ ] RED clean-process test: \`.env.local\` only and no inherited API key.
+- [ ] RED clean-process test: `.env.local` only and no inherited API key.
 - [ ] Select minimal secure server env loading and update README.
 - [ ] RED tests for exactly 8,000 and 8,001 chars on affected API endpoints (or revised documented limits), including compilation growth.
 - [ ] Validate effective prompt before submission; no silent truncation or false "ready".
@@ -504,6 +504,16 @@ After implementation, conduct another six-cycle review of **actual code, test ev
 
 ---
 
+
+### Second-pass clarification: evidence and migration governance
+
+- The independent audit's severity labels (P1/P2) are starting points; an implementer must update them only on actual new evidence and explain why.
+- If a proposed fix for F-02 migrates complete projects from localStorage to IndexedDB, **do not delete the old localStorage dataset in the same operation**. Keep an accessible backup/export and only retire the legacy source after a verified round-trip of multiple projects, history, artifacts and schema versions.
+- A browser app cannot guarantee save completion on abrupt process termination. Document the last acknowledged durable revision and never mark an unacknowledged in-memory edit as permanently saved.
+- Do not treat a UI assertion that a callback returned as proof of persistence. Callback success, reducer commit, and durable write have different guarantees; report them separately.
+- The original audit's code references are pinned to fa96d6; any later HEAD requires refreshed line numbers and evidence, not stale citations.
+- Clean-room independence belongs to the **source audit**. This is now a deliberately informed remediation plan; do not describe the implementation phase as an independent blind audit.
+
 ## 9. Final anti-bias and evidence safeguards
 
 - The independent report was not a runtime certification; implementers must reproduce important failures and examine existing safeguards before editing.
@@ -554,7 +564,7 @@ Use these final statuses: PASS, FAIL, BLOCKED, NOT RUN, N/A. Separate testing st
 
 ## 11. Links and source traceability
 
-**Pinned source SHA:** \`fa96d6a6d4fbbca3b77379fdce497ff0c6e14784\`.
+**Pinned source SHA:** `fa96d6a6d4fbbca3b77379fdce497ff0c6e14784`.
 
 Relevant pinned source entry points:
 
