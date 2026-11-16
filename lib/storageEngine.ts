@@ -603,48 +603,9 @@ export function recordDeletedProjectId(projectId: string): boolean {
     window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
     return true;
   } catch {
-    // LocalStorage is at quota: compact non-authoritative localStorage cache so the small deletion tombstone can be durably persisted
-    try {
-      window.localStorage.removeItem(LOCAL_STORAGE_BACKUP_V2_KEY);
-      window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
-      return true;
-    } catch {
-      // Continue compaction
-    }
-
-    try {
-      const rawProjects = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
-      if (rawProjects) {
-        const parsed = JSON.parse(rawProjects) as Record<string, CreativeProject>;
-        delete parsed[projectId];
-        const compacted: Record<string, CreativeProject> = {};
-        for (const [id, proj] of Object.entries(parsed)) {
-          if (proj && typeof proj === 'object') {
-            compacted[id] = {
-              ...proj,
-              artifacts: [],
-              revisions: Array.isArray(proj.revisions) ? proj.revisions.slice(0, 1) : [],
-              undoHistory: undefined,
-            };
-          }
-        }
-        try {
-          window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(compacted));
-          window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
-          return true;
-        } catch {
-          // If even compacted cache exceeds localStorage quota and IndexedDB is available, evict the non-authoritative cache key to guarantee tombstone durability
-          const hasIdb = 'indexedDB' in window && Boolean(window.indexedDB);
-          if (hasIdb) {
-            window.localStorage.removeItem(LOCAL_STORAGE_PROJECTS_KEY);
-            window.localStorage.setItem(LOCAL_STORAGE_DELETED_IDS_KEY, serialized);
-            return true;
-          }
-        }
-      }
-    } catch {
-      // In-memory and sessionStorage tombstones remain active
-    }
+    // Non-destructive under quota pressure: never delete backups or strip/evict
+    // surviving projects here when IndexedDB availability and parity are unverified.
+    // In-memory and sessionStorage tombstones remain active.
     return false;
   }
 }
@@ -946,24 +907,31 @@ export function loadProjectsFromLocalStorage(options?: {
   }
 }
 
-export function deleteProjectFromLocalStorage(projectId: string): CreativeProject[] {
+function removeProjectEntryFromLocalStorage(projectId: string): {
+  remaining: CreativeProject[];
+  localDeleted: boolean;
+} {
   deletedProjectIdsMemorySet.add(projectId);
-  if (typeof window === 'undefined' || !window.localStorage) return [];
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return { remaining: [], localDeleted: false };
+  }
   try {
     const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
     if (!raw) {
-      recordDeletedProjectId(projectId);
-      return [];
+      return { remaining: [], localDeleted: true };
     }
     const map = JSON.parse(raw) as Record<string, CreativeProject>;
+    const existed = Object.prototype.hasOwnProperty.call(map, projectId);
     delete map[projectId];
+
+    let localDeleted = !existed;
     // Write the smaller projects map first so freeing space allows tombstone persistence even near quota
     try {
       window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(map));
+      localDeleted = true;
     } catch {
-      // Quota compaction handled in recordDeletedProjectId below
+      localDeleted = !existed;
     }
-    recordDeletedProjectId(projectId);
 
     const deletedIds = getDeletedProjectIds();
     const remaining = Object.values(map)
@@ -979,7 +947,7 @@ export function deleteProjectFromLocalStorage(projectId: string): CreativeProjec
       } catch {
         // Ignore quota error on fallback sample write
       }
-      return [sample];
+      return { remaining: [sample], localDeleted };
     }
     const sorted = remaining.sort((a, b) => b.updatedAt - a.updatedAt);
     const currentActiveId = window.localStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY);
@@ -990,11 +958,16 @@ export function deleteProjectFromLocalStorage(projectId: string): CreativeProjec
         // Ignore quota error on active ID update
       }
     }
-    return sorted;
+    return { remaining: sorted, localDeleted };
   } catch {
-    recordDeletedProjectId(projectId);
-    return [];
+    return { remaining: [], localDeleted: false };
   }
+}
+
+export function deleteProjectFromLocalStorage(projectId: string): CreativeProject[] {
+  const { remaining } = removeProjectEntryFromLocalStorage(projectId);
+  recordDeletedProjectId(projectId);
+  return remaining;
 }
 
 export async function deleteProjectFromIndexedDb(
@@ -1092,25 +1065,108 @@ export async function deleteProjectFromIndexedDb(
 /**
  * Deletes a project from both localStorage and IndexedDB and records a deletion tombstone
  * so neither hydration nor in-flight autosave timers can resurrect it (F-06).
+ *
+ * Under localStorage quota pressure, backups (`LOCAL_STORAGE_BACKUP_V2_KEY`) and unverified
+ * surviving projects are NEVER deleted or stripped. Cache compaction only runs if an
+ * immediate IndexedDB read verifies every surviving local project exists in IndexedDB at
+ * an equal or newer revision with matching artifacts and revisions.
  */
 export async function deleteProjectCompletely(projectId: string): Promise<{
   remaining: CreativeProject[];
+  localDeleted: boolean;
   idbDeleted: boolean;
-  tombstonePersisted?: boolean;
+  tombstonePersisted: boolean;
+  incompleteDeletion: boolean;
+  preservedBackups: boolean;
   error?: string;
 }> {
-  const remaining = deleteProjectFromLocalStorage(projectId);
-  const tombstonePersisted = recordDeletedProjectId(projectId);
+  let { remaining, localDeleted } = removeProjectEntryFromLocalStorage(projectId);
+  let tombstonePersisted = recordDeletedProjectId(projectId);
   const idbRes = await deleteProjectFromIndexedDb(projectId);
-  // Never force-overwrite a surviving project's IndexedDB record with a potentially
-  // older localStorage copy. The active-project autosave will persist any newly
-  // created replacement sample through normal revision-aware persistence.
-  // Deleting project A must not modify project B's durable data.
+
+  if (!tombstonePersisted && typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const rawProjects = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
+      if (rawProjects) {
+        const parsed = JSON.parse(rawProjects) as Record<string, CreativeProject>;
+        delete parsed[projectId];
+        const survivingEntries = Object.entries(parsed).filter(
+          ([id, proj]) => id !== projectId && Boolean(proj) && typeof proj === 'object'
+        );
+
+        const idbCheck = await loadProjectsFromIndexedDbDetailed();
+        const idbById = new Map(idbCheck.projects.map((p) => [p.id, p]));
+        const allSurvivingVerifiedInIdb =
+          idbCheck.status === 'ok' &&
+          survivingEntries.every(([id, localProj]) => {
+            const idbProj = idbById.get(id);
+            if (!idbProj) return false;
+            return (
+              (idbProj.revision ?? 1) >= (localProj.revision ?? 1) &&
+              idbProj.artifacts.length >= (localProj.artifacts?.length ?? 0) &&
+              idbProj.revisions.length >= (localProj.revisions?.length ?? 0)
+            );
+          });
+
+        if (allSurvivingVerifiedInIdb) {
+          // Safe compaction: strip only redundant cached artifacts first, never deleting backups.
+          const compacted: Record<string, CreativeProject> = {};
+          for (const [id, proj] of survivingEntries) {
+            compacted[id] = {
+              ...proj,
+              artifacts: [],
+            };
+          }
+          try {
+            window.localStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify(compacted));
+            localDeleted = true;
+            tombstonePersisted = recordDeletedProjectId(projectId);
+          } catch {
+            // Still over tight quota; every surviving project is verified present in IndexedDB
+          }
+
+          if (!tombstonePersisted) {
+            try {
+              window.localStorage.removeItem(LOCAL_STORAGE_PROJECTS_KEY);
+              localDeleted = true;
+              tombstonePersisted = recordDeletedProjectId(projectId);
+            } catch {
+              // Keep in-memory + sessionStorage tombstone and leave backup untouched
+            }
+          }
+
+          if (idbCheck.projects.length > 0) {
+            const deletedIds = getDeletedProjectIds();
+            deletedIds.add(projectId);
+            const verifiedRemaining = idbCheck.projects
+              .filter((p) => !deletedIds.has(p.id))
+              .sort((a, b) => b.updatedAt - a.updatedAt);
+            if (verifiedRemaining.length > 0) {
+              remaining = verifiedRemaining;
+            }
+          }
+        }
+      }
+    } catch {
+      // Preserve existing localStorage records and backup on parse/storage error
+    }
+  }
+
+  const incompleteDeletion = !localDeleted || !idbRes.ok || !tombstonePersisted;
+  const fallbackQuotaError = !tombstonePersisted
+    ? 'LocalStorage quota prevented persisting the deletion tombstone; unrelated backups and unverified local projects were preserved.'
+    : !localDeleted
+      ? 'LocalStorage quota prevented removing the deleted project entry while preserving other projects and backups.'
+      : undefined;
+
   return {
     remaining,
+    localDeleted,
     idbDeleted: idbRes.ok,
     tombstonePersisted,
-    error: idbRes.error,
+    incompleteDeletion,
+    preservedBackups: true,
+    error: idbRes.error ?? fallbackQuotaError,
   };
 }
 

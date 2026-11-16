@@ -4,6 +4,7 @@
  */
 
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -22,13 +23,19 @@ export function createApp() {
 
 async function startServer() {
   const app = createApp();
+  const httpServer = http.createServer(app);
   const port = Number(process.env.PORT || 3000);
   const isProd = process.env.NODE_ENV === 'production';
+  const disableHmr = process.env.DISABLE_HMR === 'true';
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: disableHmr ? false : { server: httpServer },
+        ...(disableHmr ? { ws: false as const } : {}),
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -45,7 +52,7 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Proactive Co-Creator server listening on http://0.0.0.0:${port}`);
   });
 }

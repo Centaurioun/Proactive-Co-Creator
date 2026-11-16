@@ -47,11 +47,16 @@ import {
   commitUndoTransaction,
   createPolishProposal,
   createRequestTicket,
+  createSerializedProjectSaveQueue,
   isProjectActionLoading,
+  prepareProjectSwitch,
+  reconcileAsyncSaveAcknowledgement,
   refreshArtifactsCurrentness,
   registerTicket,
+  upsertProjectInSavedList,
   validatePolishProposalAcceptance,
   type InFlightTicketsMap,
+  type SerializedSaveOptions,
 } from './lib/projectController';
 import { synthesizeRefinedPrompt } from './lib/promptBuilder';
 import {
@@ -59,6 +64,7 @@ import {
   exportProjectToJson,
   exportStoryBibleMarkdown,
   getDeletedProjectIds,
+  LOCAL_STORAGE_ACTIVE_ID_KEY,
   loadProjectsFromIndexedDbDetailed,
   loadProjectsFromLocalStorage,
   migrateProjectPayload,
@@ -177,6 +183,7 @@ function App() {
   const appliedBatchProposalIdsRef = useRef<Set<string>>(new Set());
   const isHydrationCompleteRef = useRef<boolean>(false);
   const hasLocalEditsSinceMountRef = useRef<boolean>(false);
+  const saveQueueRef = useRef(createSerializedProjectSaveQueue(persistProjectDurably));
 
   const reviewButtonRef = useRef<HTMLButtonElement | null>(null);
   const reviewModalDialogRef = useRef<HTMLDivElement | null>(null);
@@ -202,6 +209,98 @@ function App() {
     undoStateRef.current = undoState;
     savedProjectsRef.current = savedProjects;
   }, [activeProject, undoState, savedProjects]);
+
+  const flushProjectDurably = useCallback(
+    (
+      targetProject: CreativeProject,
+      options?: SerializedSaveOptions & { clearConflictOnSuccess?: boolean; successNotification?: string }
+    ) => {
+      if (!options?.allowDeleted && getDeletedProjectIds().has(targetProject.id)) {
+        setSavedProjects((prev) => {
+          const next = prev.filter((p) => p.id !== targetProject.id);
+          savedProjectsRef.current = next;
+          return next;
+        });
+        return Promise.resolve({
+          ok: false,
+          saved: false,
+          error: `Project "${targetProject.id}" was deleted before save executed.`,
+        });
+      }
+
+      return saveQueueRef.current.enqueue(targetProject, options).then((res) => {
+        if (!options?.allowDeleted && getDeletedProjectIds().has(targetProject.id)) {
+          setSavedProjects((prev) => {
+            const next = prev.filter((p) => p.id !== targetProject.id);
+            savedProjectsRef.current = next;
+            return next;
+          });
+          return res;
+        }
+        if (!res.saved && res.conflictDetected) {
+          setStorageAlert({
+            type: 'conflict',
+            projectId: targetProject.id,
+            message:
+              res.error ??
+              'Storage conflict: a newer or divergent project revision exists in durable storage.',
+          });
+          return res;
+        }
+        if (!res.saved) {
+          setStorageAlert({
+            type: res.quotaExceeded ? 'quota' : 'error',
+            projectId: targetProject.id,
+            message:
+              res.error ??
+              'Durable save failed. Export a JSON backup to prevent data loss.',
+          });
+          return res;
+        }
+
+        const ackRevision = res.persistedRevision ?? (targetProject.revision ?? 1);
+        setProject((prev) => {
+          if (prev.id !== targetProject.id) return prev;
+          const nextPersisted = Math.max(prev.persistedRevision ?? 0, ackRevision);
+          return prev.persistedRevision !== nextPersisted
+            ? { ...prev, persistedRevision: nextPersisted }
+            : prev;
+        });
+        setSavedProjects((prev) => {
+          const reconciled = reconcileAsyncSaveAcknowledgement({
+            acknowledgedProject: targetProject,
+            acknowledgedRevision: ackRevision,
+            currentActiveProject: activeProjectRef.current,
+            savedProjects: prev,
+          });
+          savedProjectsRef.current = reconciled.savedProjects;
+          return reconciled.savedProjects;
+        });
+
+        if (options?.clearConflictOnSuccess) {
+          setStorageAlert(null);
+        }
+        if (options?.successNotification) {
+          setStatusNotification(options.successNotification);
+        }
+
+        if (res.quotaExceeded || res.cacheSynced === false) {
+          if (res.cacheWarning || res.error) {
+            setStorageAlert({
+              type: res.quotaExceeded ? 'quota' : 'error',
+              projectId: targetProject.id,
+              message:
+                res.cacheWarning ??
+                res.error ??
+                'Saved to authoritative IndexedDB, but localStorage cache could not be updated.',
+            });
+          }
+        }
+        return res;
+      });
+    },
+    []
+  );
 
   // Hydrate full projects & media artifacts from IndexedDB on initial mount (F-02 / IA-04 / FIX 1)
   useEffect(() => {
@@ -299,7 +398,7 @@ function App() {
     };
   }, []);
 
-  // Persist active project via authoritative IndexedDB CAS with non-authoritative localStorage cache (FIX 3)
+  // Persist active project via serialized durable IndexedDB CAS + non-authoritative localStorage cache
   useEffect(() => {
     if (storageAlert?.type === 'conflict' && storageAlert.projectId === activeProject.id) {
       return;
@@ -318,64 +417,8 @@ function App() {
         return;
       }
 
-      void persistProjectDurably(targetProject, {
+      void flushProjectDurably(targetProject, {
         expectedPersistedRevision: targetProject.persistedRevision,
-      }).then((res) => {
-        if (getDeletedProjectIds().has(targetProject.id)) {
-          return;
-        }
-        if (!res.saved && res.conflictDetected) {
-          setStorageAlert({
-            type: 'conflict',
-            projectId: targetProject.id,
-            message:
-              res.error ??
-              'Storage conflict: a newer or divergent project revision exists in durable storage.',
-          });
-          return;
-        }
-        if (!res.saved) {
-          setStorageAlert({
-            type: res.quotaExceeded ? 'quota' : 'error',
-            projectId: targetProject.id,
-            message:
-              res.error ??
-              'Durable save failed. Export a JSON backup to prevent data loss.',
-          });
-          return;
-        }
-
-        // Authoritative store succeeded (`res.saved === true`)
-        const ackRevision = res.persistedRevision ?? targetProject.revision;
-        setProject((prev) =>
-          prev.id === targetProject.id && prev.persistedRevision !== ackRevision
-            ? { ...prev, persistedRevision: ackRevision }
-            : prev
-        );
-        setSavedProjects((prev) => {
-          if (getDeletedProjectIds().has(targetProject.id)) {
-            return prev.filter((p) => p.id !== targetProject.id);
-          }
-          const synced = { ...targetProject, persistedRevision: ackRevision };
-          const idx = prev.findIndex((p) => p.id === synced.id);
-          if (idx === -1) return [synced, ...prev];
-          const copy = [...prev];
-          copy[idx] = synced;
-          return copy;
-        });
-
-        if (res.quotaExceeded || res.cacheSynced === false) {
-          if (res.cacheWarning || res.error) {
-            setStorageAlert({
-              type: res.quotaExceeded ? 'quota' : 'error',
-              projectId: targetProject.id,
-              message:
-                res.cacheWarning ??
-                res.error ??
-                'Saved to authoritative IndexedDB, but localStorage cache could not be updated.',
-            });
-          }
-        }
       });
     }, 250);
 
@@ -386,7 +429,44 @@ function App() {
         autosaveTimerRef.current = null;
       }
     };
-  }, [activeProject, storageAlert]);
+  }, [activeProject, storageAlert, flushProjectDurably]);
+
+  // Flush dirty active edits immediately if tab hides or page unloads before 250ms debounce settles
+  useEffect(() => {
+    const flushOnBackground = () => {
+      const current = activeProjectRef.current;
+      if (getDeletedProjectIds().has(current.id)) return;
+      if (storageAlert?.type === 'conflict' && storageAlert.projectId === current.id) return;
+      const isDirty =
+        current.persistedRevision === undefined ||
+        (current.revision ?? 1) > current.persistedRevision;
+      if (!isDirty) return;
+
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+      saveProjectToLocalStorage(current, {
+        expectedPersistedRevision: current.persistedRevision,
+      });
+      void flushProjectDurably(current, {
+        expectedPersistedRevision: current.persistedRevision,
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushOnBackground();
+      }
+    };
+
+    window.addEventListener('pagehide', flushOnBackground);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', flushOnBackground);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [flushProjectDurably, storageAlert]);
 
   // Multi-tab storage conflict listener
   useEffect(() => {
@@ -1180,6 +1260,8 @@ function App() {
           return;
         }
 
+        saveQueueRef.current.resetProject(latest.activeProject.id);
+        savedProjectsRef.current = latest.projects;
         setSavedProjects(latest.projects);
         setProject(latest.activeProject);
         setUndoState(latest.activeUndoState);
@@ -1202,33 +1284,12 @@ function App() {
 
   const handleForceOverwriteStorage = () => {
     const targetProject = activeProjectRef.current;
-    void persistProjectDurably(targetProject, {
+    saveQueueRef.current.resetProject(targetProject.id);
+    void flushProjectDurably(targetProject, {
       forceOverwrite: true,
       allowDeleted: true,
-    }).then((res) => {
-      if (res.saved) {
-        const ackRev = res.persistedRevision ?? targetProject.revision;
-        setProject((prev) =>
-          prev.id === targetProject.id ? { ...prev, persistedRevision: ackRev } : prev
-        );
-        setSavedProjects((prev) => {
-          const synced = { ...targetProject, persistedRevision: ackRev };
-          const idx = prev.findIndex((p) => p.id === synced.id);
-          if (idx === -1) return [synced, ...prev];
-          const copy = [...prev];
-          copy[idx] = synced;
-          return copy;
-        });
-        setStorageAlert(null);
-        setStatusNotification('Overwrote storage with your current tab version.');
-      } else {
-        setStorageAlert({
-          type: res.quotaExceeded ? 'quota' : 'error',
-          projectId: targetProject.id,
-          message:
-            res.error ?? 'Failed to overwrite durable storage with the current project.',
-        });
-      }
+      clearConflictOnSuccess: true,
+      successNotification: 'Overwrote storage with your current tab version.',
     });
   };
 
@@ -1262,28 +1323,95 @@ function App() {
   };
 
   const handleResetSampleProject = () => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const outgoing = activeProjectRef.current;
     const sample = createSampleProject();
+    const switchRes = prepareProjectSwitch({
+      currentProject: outgoing,
+      savedProjects: savedProjectsRef.current,
+      targetProjectId: sample.id,
+    });
+    if (switchRes.projectToFlush) {
+      void flushProjectDurably(switchRes.projectToFlush, {
+        expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
+      });
+    }
+
+    const sampleUndo = createUndoRedoState(sample.snapshot, sample.revisions, sample.undoHistory);
+    const nextSaved = upsertProjectInSavedList(switchRes.savedProjects, sample);
+    savedProjectsRef.current = nextSaved;
+    activeProjectRef.current = sample;
+    undoStateRef.current = sampleUndo;
+    saveQueueRef.current.resetProject(sample.id);
     hasLocalEditsSinceMountRef.current = true;
+    setSavedProjects(nextSaved);
     setProject(sample);
-    setUndoState(createUndoRedoState(sample.snapshot, sample.revisions, sample.undoHistory));
+    setUndoState(sampleUndo);
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
     setStorageAlert(null);
-    void persistProjectDurably(sample, { forceOverwrite: true, allowDeleted: true });
-    setStatusNotification('Loaded sample story plan: "Cat’s Woodland Dinner Party".');
+    void flushProjectDurably(sample, {
+      forceOverwrite: true,
+      allowDeleted: true,
+      successNotification: 'Loaded sample story plan: "Cat’s Woodland Dinner Party".',
+    });
   };
 
   const handleSwitchProject = (projectId: string) => {
-    const target = savedProjects.find((p) => p.id === projectId);
-    if (!target) return;
-    setProject(target);
-    setUndoState(createUndoRedoState(target.snapshot, target.revisions, target.undoHistory));
+    const current = activeProjectRef.current;
+    if (projectId === current.id) return;
+
+    const switchRes = prepareProjectSwitch({
+      currentProject: current,
+      savedProjects: savedProjectsRef.current,
+      targetProjectId: projectId,
+    });
+    if (!switchRes.targetProject) return;
+
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+
+    const nextTarget = switchRes.targetProject;
+    const nextUndo = createUndoRedoState(
+      nextTarget.snapshot,
+      nextTarget.revisions,
+      nextTarget.undoHistory
+    );
+    savedProjectsRef.current = switchRes.savedProjects;
+    activeProjectRef.current = nextTarget;
+    undoStateRef.current = nextUndo;
+
+    setSavedProjects(switchRes.savedProjects);
+    setProject(nextTarget);
+    setUndoState(nextUndo);
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
     setStorageAlert(null);
+
+    try {
+      window.localStorage?.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, nextTarget.id);
+    } catch {
+      // Ignore quota error when updating active project pointer
+    }
+
+    if (switchRes.projectToFlush) {
+      void flushProjectDurably(switchRes.projectToFlush, {
+        expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
+      });
+    }
   };
 
   const handleCreateNewProject = (name: string, initialPrompt: string) => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+
     const now = Date.now();
     const newSnap: ProjectSnapshot = {
       originalIdea: initialPrompt,
@@ -1320,30 +1448,37 @@ function App() {
         },
       ],
     };
+
+    const switchRes = prepareProjectSwitch({
+      currentProject: activeProjectRef.current,
+      savedProjects: savedProjectsRef.current,
+      targetProjectId: newProj.id,
+    });
+    if (switchRes.projectToFlush) {
+      void flushProjectDurably(switchRes.projectToFlush, {
+        expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
+      });
+    }
+
+    const newUndo = createUndoRedoState(newSnap, newProj.revisions, newProj.undoHistory);
+    const nextSaved = upsertProjectInSavedList(switchRes.savedProjects, newProj);
+    savedProjectsRef.current = nextSaved;
+    activeProjectRef.current = newProj;
+    undoStateRef.current = newUndo;
+    saveQueueRef.current.resetProject(newProj.id);
+
     hasLocalEditsSinceMountRef.current = true;
+    setSavedProjects(nextSaved);
     setProject(newProj);
-    setUndoState(createUndoRedoState(newSnap, newProj.revisions, newProj.undoHistory));
+    setUndoState(newUndo);
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
     setStorageAlert(null);
-    void persistProjectDurably(newProj, { forceOverwrite: true, allowDeleted: true }).then(
-      (res) => {
-        if (res.saved) {
-          const ackRev = res.persistedRevision ?? 1;
-          setProject((prev) =>
-            prev.id === newProj.id ? { ...prev, persistedRevision: ackRev } : prev
-          );
-          setSavedProjects((prev) => {
-            const synced = { ...newProj, persistedRevision: ackRev };
-            const idx = prev.findIndex((p) => p.id === synced.id);
-            if (idx === -1) return [synced, ...prev];
-            const copy = [...prev];
-            copy[idx] = synced;
-            return copy;
-          });
-        }
-      }
-    );
+
+    void flushProjectDurably(newProj, {
+      forceOverwrite: true,
+      allowDeleted: true,
+    });
   };
 
   const handleDeleteProject = (projectId: string) => {
@@ -1351,6 +1486,8 @@ function App() {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
+    saveQueueRef.current.resetProject(projectId);
+
     // Abort any in-flight operations for the deleted project (F-06 / IA-11)
     for (const actionKey of ['analyze', 'clarify', 'batch', 'generate', 'polish']) {
       abortControllersRef.current[`${projectId}:${actionKey}`]?.abort();
@@ -1367,24 +1504,31 @@ function App() {
     });
 
     void deleteProjectCompletely(projectId).then((delRes) => {
+      savedProjectsRef.current = delRes.remaining;
       setSavedProjects(delRes.remaining);
       if (activeProjectRef.current.id === projectId && delRes.remaining.length > 0) {
         const replacement = delRes.remaining[0];
-        setProject(replacement);
-        setUndoState(
-          createUndoRedoState(
-            replacement.snapshot,
-            replacement.revisions,
-            replacement.undoHistory
-          )
+        const replacementUndo = createUndoRedoState(
+          replacement.snapshot,
+          replacement.revisions,
+          replacement.undoHistory
         );
+        activeProjectRef.current = replacement;
+        undoStateRef.current = replacementUndo;
+        setProject(replacement);
+        setUndoState(replacementUndo);
         setSelectedEntityId(null);
         setSelectedRelationshipId(null);
       }
-      if (!delRes.idbDeleted && delRes.error) {
-        const errMsg = `Project removed from workspace, but IndexedDB cleanup reported an issue: ${delRes.error}`;
+      if (delRes.incompleteDeletion || !delRes.idbDeleted || !delRes.tombstonePersisted) {
+        const detail =
+          delRes.error ??
+          (!delRes.tombstonePersisted
+            ? 'LocalStorage quota prevented saving the deletion marker.'
+            : 'IndexedDB deletion did not complete cleanly.');
+        const errMsg = `Incomplete deletion warning: project removed from active workspace while preserving other backups, but cleanup reported: ${detail}`;
         setStorageAlert({
-          type: 'error',
+          type: !delRes.tombstonePersisted ? 'quota' : 'error',
           projectId,
           message: errMsg,
         });
@@ -1419,26 +1563,45 @@ function App() {
     try {
       const parsed = JSON.parse(rawJson) as unknown;
       const migrated = migrateProjectPayload(parsed);
-      hasLocalEditsSinceMountRef.current = true;
-      setProject(migrated);
-      setUndoState(
-        createUndoRedoState(migrated.snapshot, migrated.revisions, migrated.undoHistory)
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+
+      const switchRes = prepareProjectSwitch({
+        currentProject: activeProjectRef.current,
+        savedProjects: savedProjectsRef.current,
+        targetProjectId: migrated.id,
+      });
+      if (switchRes.projectToFlush && switchRes.projectToFlush.id !== migrated.id) {
+        void flushProjectDurably(switchRes.projectToFlush, {
+          expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
+        });
+      }
+
+      const migratedUndo = createUndoRedoState(
+        migrated.snapshot,
+        migrated.revisions,
+        migrated.undoHistory
       );
+      const nextSaved = upsertProjectInSavedList(switchRes.savedProjects, migrated);
+      savedProjectsRef.current = nextSaved;
+      activeProjectRef.current = migrated;
+      undoStateRef.current = migratedUndo;
+      saveQueueRef.current.resetProject(migrated.id);
+
+      hasLocalEditsSinceMountRef.current = true;
+      setSavedProjects(nextSaved);
+      setProject(migrated);
+      setUndoState(migratedUndo);
       setSelectedEntityId(null);
       setSelectedRelationshipId(null);
-      void persistProjectDurably(migrated, {
+      setStorageAlert(null);
+
+      void flushProjectDurably(migrated, {
         forceOverwrite: true,
         allowDeleted: true,
-      }).then((res) => {
-        if (res.saved) {
-          setStatusNotification(`Imported and saved project "${migrated.name}".`);
-        } else if (res.error) {
-          setStorageAlert({
-            type: res.quotaExceeded ? 'quota' : 'error',
-            projectId: migrated.id,
-            message: res.error,
-          });
-        }
+        successNotification: `Imported and saved project "${migrated.name}".`,
       });
       setStatusNotification(`Imported project "${migrated.name}".`);
       return { ok: true };
@@ -1593,7 +1756,7 @@ function App() {
 
       {statusNotification && (
         <div
-          className="fixed top-16 left-1/2 -translate-x-1/2 z-[2000] px-4 w-full max-w-md"
+          className="fixed top-14 sm:top-auto sm:bottom-20 left-2 right-2 sm:left-auto sm:right-4 z-[1850] sm:w-full sm:max-w-md pointer-events-auto"
           role="status"
           aria-live="polite"
         >

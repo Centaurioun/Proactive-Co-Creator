@@ -50,10 +50,10 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
   return (
     <footer
       aria-label="Change review, undo/redo, and generation controls"
-      className="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 flex-shrink-0 z-30"
+      className="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 px-3 sm:px-4 py-2 sm:py-2.5 flex flex-wrap items-center justify-between gap-2 sm:gap-3 flex-shrink-0 z-30"
     >
       {/* Left: Undo / Redo & Pending Change Review */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 min-w-0">
         <div
           role="group"
           aria-label="Undo and Redo"
@@ -65,7 +65,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
             disabled={!canUndo}
             title={undoLabel ? `Undo: ${undoLabel}` : 'Undo last confirmed change'}
             aria-label="Undo"
-            className="px-3 py-1.5 min-h-[36px] text-xs font-medium bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors border-r border-gray-200 dark:border-gray-700 whitespace-nowrap"
+            className="px-2.5 sm:px-3 py-1.5 min-h-[36px] text-xs font-medium bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors border-r border-gray-200 dark:border-gray-700 whitespace-nowrap"
           >
             Undo
           </button>
@@ -75,7 +75,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
             disabled={!canRedo}
             title={redoLabel ? `Redo: ${redoLabel}` : 'Redo undone change'}
             aria-label="Redo"
-            className="px-3 py-1.5 min-h-[36px] text-xs font-medium bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+            className="px-2.5 sm:px-3 py-1.5 min-h-[36px] text-xs font-medium bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
           >
             Redo
           </button>
@@ -89,7 +89,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
           <button
             type="button"
             onClick={onAcceptAllPending}
-            className="px-3 py-1.5 min-h-[36px] text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 transition-colors whitespace-nowrap"
+            className="px-2.5 sm:px-3 py-1.5 min-h-[36px] text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 transition-colors whitespace-nowrap"
           >
             Accept All Pending ({pendingDecisionCount})
           </button>
@@ -99,18 +99,18 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
           ref={reviewButtonRef}
           type="button"
           onClick={onReviewChanges}
-          className="px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors whitespace-nowrap inline-flex items-center"
+          className="px-2.5 sm:px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors whitespace-nowrap inline-flex items-center"
         >
           Review Plan &amp; Prompt
         </button>
       </div>
 
       {/* Right: Mode Selector ('story' | 'image') & Primary Generation Action */}
-      <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 min-w-0">
         <button
           type="button"
           onClick={onToggleOutputDrawer}
-          className="px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors whitespace-nowrap"
+          className="px-2.5 sm:px-3 py-1.5 min-h-[36px] text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors whitespace-nowrap"
         >
           {showOutputDrawer ? 'Hide Output Panel' : 'Show Prompt & Output'}
           {isOutdated ? ' (Updated)' : ''}

@@ -19,7 +19,7 @@ import {
 } from './historyEngine.ts';
 import { applyProposedOperations } from './nlBatchEngine.ts';
 import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts';
-import { getDeletedProjectIds } from './storageEngine.ts';
+import { getDeletedProjectIds, type StorageSaveResult } from './storageEngine.ts';
 import type {
   AiPolishProposal,
   AiRequestAction,
@@ -1191,4 +1191,216 @@ export function buildReviewDiffModel(params: {
     hasChanges: items.length > 0 || beforePrompt !== afterPrompt,
   };
 }
+
+/**
+ * Merges a project version into `savedProjects` without ever regressing a newer
+ * in-memory revision or resurrecting a deleted project.
+ */
+export function upsertProjectInSavedList(
+  savedProjects: CreativeProject[],
+  candidate: CreativeProject
+): CreativeProject[] {
+  const deletedIds = getDeletedProjectIds();
+  const filtered = savedProjects.filter((p) => !deletedIds.has(p.id));
+  if (deletedIds.has(candidate.id)) {
+    return filtered;
+  }
+
+  const idx = filtered.findIndex((p) => p.id === candidate.id);
+  if (idx === -1) {
+    return [candidate, ...filtered];
+  }
+
+  const existing = filtered[idx];
+  const candidateRev = candidate.revision ?? 1;
+  const existingRev = existing.revision ?? 1;
+  const maxPersisted = Math.max(
+    candidate.persistedRevision ?? 0,
+    existing.persistedRevision ?? 0
+  );
+  const resolvedPersisted = maxPersisted > 0 ? maxPersisted : undefined;
+
+  let merged: CreativeProject;
+  if (candidateRev > existingRev) {
+    merged = { ...candidate, persistedRevision: resolvedPersisted };
+  } else if (candidateRev < existingRev) {
+    merged = { ...existing, persistedRevision: resolvedPersisted };
+  } else if (candidate.updatedAt >= existing.updatedAt) {
+    merged = { ...candidate, persistedRevision: resolvedPersisted };
+  } else {
+    merged = { ...existing, persistedRevision: resolvedPersisted };
+  }
+
+  const next = [...filtered];
+  next[idx] = merged;
+  return next;
+}
+
+/**
+ * Prepares a safe project switch (e.g., A -> B) when the current project may have
+ * unpersisted in-memory edits or a pending debounced autosave timer:
+ * - Synchronously commits the latest in-memory `currentProject` into `savedProjects`
+ *   so switching back B -> A never reads a stale revision.
+ * - Flags `projectToFlush` whenever `currentProject` has unpersisted edits so the
+ *   caller flushes the durable save immediately rather than discarding it on timer cleanup.
+ */
+export function prepareProjectSwitch(params: {
+  currentProject: CreativeProject;
+  savedProjects: CreativeProject[];
+  targetProjectId: string;
+}): {
+  savedProjects: CreativeProject[];
+  targetProject: CreativeProject | null;
+  projectToFlush: CreativeProject | null;
+} {
+  const { currentProject, savedProjects, targetProjectId } = params;
+  const deletedIds = getDeletedProjectIds();
+  const nextSaved = upsertProjectInSavedList(savedProjects, currentProject);
+  const targetProject = nextSaved.find((p) => p.id === targetProjectId) ?? null;
+
+  const isDirty =
+    currentProject.persistedRevision === undefined ||
+    (currentProject.revision ?? 1) > currentProject.persistedRevision;
+  const projectToFlush =
+    !deletedIds.has(currentProject.id) &&
+    currentProject.id !== targetProjectId &&
+    isDirty
+      ? currentProject
+      : null;
+
+  return {
+    savedProjects: nextSaved,
+    targetProject,
+    projectToFlush,
+  };
+}
+
+/**
+ * Reconciles an asynchronous durable-save acknowledgement without ever overwriting
+ * newer in-memory revisions of either `currentActiveProject` or `savedProjects`.
+ */
+export function reconcileAsyncSaveAcknowledgement(params: {
+  acknowledgedProject: CreativeProject;
+  acknowledgedRevision: number;
+  currentActiveProject: CreativeProject;
+  savedProjects: CreativeProject[];
+}): {
+  activeProject: CreativeProject;
+  savedProjects: CreativeProject[];
+} {
+  const {
+    acknowledgedProject,
+    acknowledgedRevision,
+    currentActiveProject,
+    savedProjects,
+  } = params;
+
+  const syncedProject: CreativeProject = {
+    ...acknowledgedProject,
+    persistedRevision: Math.max(
+      acknowledgedProject.persistedRevision ?? 0,
+      acknowledgedRevision
+    ),
+  };
+
+  const nextSaved = upsertProjectInSavedList(savedProjects, syncedProject);
+
+  let nextActive = currentActiveProject;
+  if (currentActiveProject.id === acknowledgedProject.id) {
+    const nextPersisted = Math.max(
+      currentActiveProject.persistedRevision ?? 0,
+      acknowledgedRevision
+    );
+    if (currentActiveProject.persistedRevision !== nextPersisted) {
+      nextActive = {
+        ...currentActiveProject,
+        persistedRevision: nextPersisted,
+      };
+    }
+  }
+
+  return {
+    activeProject: nextActive,
+    savedProjects: nextSaved,
+  };
+}
+
+export interface SerializedSaveOptions {
+  expectedPersistedRevision?: number;
+  forceOverwrite?: boolean;
+  allowDeleted?: boolean;
+}
+
+/**
+ * Serializes durable save operations per project ID so rapid switch flushes and
+ * subsequent edits on the same project execute in strict FIFO order and pass
+ * updated expectedPersistedRevision values cleanly.
+ */
+export function createSerializedProjectSaveQueue(
+  persistFn: (
+    project: CreativeProject,
+    options?: SerializedSaveOptions
+  ) => Promise<StorageSaveResult>
+) {
+  const chains = new Map<string, Promise<StorageSaveResult>>();
+  const lastCommittedRevisions = new Map<string, number>();
+
+  const enqueue = (
+    project: CreativeProject,
+    options?: SerializedSaveOptions
+  ): Promise<StorageSaveResult> => {
+    const previous = chains.get(project.id) ?? Promise.resolve({ ok: true, saved: true });
+
+    const run = previous
+      .catch(() => ({ ok: false, saved: false } as StorageSaveResult))
+      .then(async () => {
+        if (!options?.allowDeleted && getDeletedProjectIds().has(project.id)) {
+          return {
+            ok: false,
+            saved: false,
+            error: `Project "${project.id}" was deleted before queued save executed.`,
+          };
+        }
+
+        const lastKnown = lastCommittedRevisions.get(project.id);
+        const rawExpected = options?.expectedPersistedRevision ?? project.persistedRevision;
+        const effectiveExpected =
+          lastKnown !== undefined
+            ? Math.max(rawExpected ?? 0, lastKnown)
+            : rawExpected;
+
+        const res = await persistFn(project, {
+          ...options,
+          expectedPersistedRevision: effectiveExpected,
+        });
+
+        if (res.saved) {
+          const committedRev = res.persistedRevision ?? (project.revision ?? 1);
+          lastCommittedRevisions.set(
+            project.id,
+            Math.max(lastCommittedRevisions.get(project.id) ?? 0, committedRev)
+          );
+        }
+        return res;
+      });
+
+    chains.set(project.id, run);
+    void run.finally(() => {
+      if (chains.get(project.id) === run) {
+        chains.delete(project.id);
+      }
+    });
+    return run;
+  };
+
+  const resetProject = (projectId: string) => {
+    lastCommittedRevisions.delete(projectId);
+  };
+
+  return {
+    enqueue,
+    resetProject,
+  };
+}
+
 
