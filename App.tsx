@@ -24,8 +24,12 @@ import {
   updateRelationshipById,
   updateStoryBibleField,
   upsertRelationship,
+  validateStoryBibleUpdate,
 } from './lib/canonicalModel';
-import { evaluateProjectConsistency } from './lib/consistencyChecker';
+import {
+  evaluateProjectConsistency,
+  resolveConsistencyIssueTarget,
+} from './lib/consistencyChecker';
 import {
   createUndoRedoState,
   restoreProjectRevision,
@@ -53,8 +57,11 @@ import {
   reconcileAsyncSaveAcknowledgement,
   refreshArtifactsCurrentness,
   registerTicket,
+  resolveHydrationWriteGate,
+  shouldAllowUnsolicitedPersistence,
   upsertProjectInSavedList,
   validatePolishProposalAcceptance,
+  type HydrationWriteGate,
   type InFlightTicketsMap,
   type SerializedSaveOptions,
 } from './lib/projectController';
@@ -92,6 +99,7 @@ import type {
   AiPolishProposal,
   BatchCommitResult,
   BatchEditProposalResult,
+  ConsistencyIssueTarget,
   CreativeProject,
   DecisionItem,
   EntityCategory,
@@ -165,6 +173,13 @@ function App() {
   // Staged state mirrored from DecisionInboxPanel for the Review Modal diff view (U-01)
   const [stagedBatchPreview, setStagedBatchPreview] = useState<BatchEditProposalResult | null>(null);
   const [stagedDecisionDrafts, setStagedDecisionDrafts] = useState<Record<string, string>>({});
+  const [storyBibleErrors, setStoryBibleErrors] = useState<
+    Partial<Record<keyof StoryBibleFields, string>>
+  >({});
+  const [focusedStoryBibleField, setFocusedStoryBibleField] = useState<{
+    field: keyof StoryBibleFields;
+    seq: number;
+  } | null>(null);
 
   // Scoped Request Tickets & Staged Proposals
   const [inFlightTickets, setInFlightTickets] = useState<InFlightTicketsMap>({});
@@ -178,10 +193,16 @@ function App() {
     Record<string, Record<GenerationMode, string | null>>
   >({});
 
+  const [hydrationGate, setHydrationGate] = useState<HydrationWriteGate>('pending');
+  const hydrationGateRef = useRef<HydrationWriteGate>('pending');
+  const updateHydrationGate = useCallback((nextGate: HydrationWriteGate) => {
+    hydrationGateRef.current = nextGate;
+    setHydrationGate(nextGate);
+  }, []);
+
   const abortControllersRef = useRef<Record<string, AbortController>>({});
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedBatchProposalIdsRef = useRef<Set<string>>(new Set());
-  const isHydrationCompleteRef = useRef<boolean>(false);
   const hasLocalEditsSinceMountRef = useRef<boolean>(false);
   const saveQueueRef = useRef(createSerializedProjectSaveQueue(persistProjectDurably));
 
@@ -302,20 +323,21 @@ function App() {
     []
   );
 
-  // Hydrate full projects & media artifacts from IndexedDB on initial mount (F-02 / IA-04 / FIX 1)
+  // Hydrate full projects & media artifacts from IndexedDB on initial mount (F-02 / IA-04 / FIX 1 / T4)
   useEffect(() => {
     let cancelled = false;
     void loadProjectsFromIndexedDbDetailed()
       .then((idbLoad) => {
         if (cancelled) return;
-        isHydrationCompleteRef.current = true;
+        const resolvedGate = resolveHydrationWriteGate(idbLoad.status);
+        updateHydrationGate(resolvedGate);
 
-        // FIX 1: Never treat an IndexedDB read error or unavailable DB as proof that storage is empty
+        // FIX 1 / T4: Never treat an IndexedDB read error as empty storage or unlock background IDB writes
         if (idbLoad.status === 'read_error') {
           setStorageAlert({
             type: 'error',
             projectId: activeProjectRef.current.id,
-            message: `IndexedDB read failure (${idbLoad.error ?? 'Unable to read durable database'}). Automatic sample seeding was blocked to protect existing IndexedDB records. Click Reload Latest from Storage or export a JSON backup.`,
+            message: `IndexedDB read failure (${idbLoad.error ?? 'Unable to read durable database'}). Automatic sample seeding and background saves are paused to protect existing IndexedDB records. Click Retry Storage Read or export a JSON backup.`,
           });
           return;
         }
@@ -383,37 +405,49 @@ function App() {
         }
       })
       .catch((err) => {
-        isHydrationCompleteRef.current = true;
+        if (cancelled) return;
+        updateHydrationGate('blocked-read-error');
         setStorageAlert({
           type: 'error',
           projectId: activeProjectRef.current.id,
           message: getReadableErrorMessage(
             err,
-            'Could not hydrate projects from IndexedDB; working from localStorage fallback.'
+            'Could not hydrate projects from IndexedDB; background durable writes are paused. Click Retry Storage Read or export a JSON backup.'
           ),
         });
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [updateHydrationGate]);
 
   // Persist active project via serialized durable IndexedDB CAS + non-authoritative localStorage cache
   useEffect(() => {
-    if (storageAlert?.type === 'conflict' && storageAlert.projectId === activeProject.id) {
-      return;
-    }
-    if (!isHydrationCompleteRef.current && !hasLocalEditsSinceMountRef.current) {
-      return;
-    }
-    if (getDeletedProjectIds().has(activeProject.id)) {
+    const canPersist = shouldAllowUnsolicitedPersistence({
+      hydrationGate,
+      hasLocalEditsSinceMount: hasLocalEditsSinceMountRef.current,
+      isDeleted: getDeletedProjectIds().has(activeProject.id),
+      storageAlertType: storageAlert?.type,
+      storageAlertProjectId: storageAlert?.projectId,
+      activeProjectId: activeProject.id,
+    });
+    if (!canPersist) {
       return;
     }
 
     const timer = setTimeout(() => {
       autosaveTimerRef.current = null;
       const targetProject = activeProject;
-      if (getDeletedProjectIds().has(targetProject.id)) {
+      if (
+        !shouldAllowUnsolicitedPersistence({
+          hydrationGate: hydrationGateRef.current,
+          hasLocalEditsSinceMount: hasLocalEditsSinceMountRef.current,
+          isDeleted: getDeletedProjectIds().has(targetProject.id),
+          storageAlertType: storageAlert?.type,
+          storageAlertProjectId: storageAlert?.projectId,
+          activeProjectId: targetProject.id,
+        })
+      ) {
         return;
       }
 
@@ -429,14 +463,24 @@ function App() {
         autosaveTimerRef.current = null;
       }
     };
-  }, [activeProject, storageAlert, flushProjectDurably]);
+  }, [activeProject, hydrationGate, storageAlert, flushProjectDurably]);
 
   // Flush dirty active edits immediately if tab hides or page unloads before 250ms debounce settles
   useEffect(() => {
     const flushOnBackground = () => {
       const current = activeProjectRef.current;
-      if (getDeletedProjectIds().has(current.id)) return;
-      if (storageAlert?.type === 'conflict' && storageAlert.projectId === current.id) return;
+      if (
+        !shouldAllowUnsolicitedPersistence({
+          hydrationGate: hydrationGateRef.current,
+          hasLocalEditsSinceMount: hasLocalEditsSinceMountRef.current,
+          isDeleted: getDeletedProjectIds().has(current.id),
+          storageAlertType: storageAlert?.type,
+          storageAlertProjectId: storageAlert?.projectId,
+          activeProjectId: current.id,
+        })
+      ) {
+        return;
+      }
       const isDirty =
         current.persistedRevision === undefined ||
         (current.revision ?? 1) > current.persistedRevision;
@@ -725,13 +769,33 @@ function App() {
   };
 
   const handleUpdateStoryBible = (field: keyof StoryBibleFields, value: string) => {
-    const next = updateStoryBibleField(snapshot, field, value, 'user-edit');
+    const validation = validateStoryBibleUpdate(field, value);
+    if (!validation.ok) {
+      setStoryBibleErrors((prev) => ({
+        ...prev,
+        [field]: validation.error ?? 'Invalid Story Bible value.',
+      }));
+      return;
+    }
+
+    setStoryBibleErrors((prev) => {
+      if (!prev[field]) return prev;
+      const nextErrs = { ...prev };
+      delete nextErrs[field];
+      return nextErrs;
+    });
+
+    const next = updateStoryBibleField(snapshot, field, validation.normalized, 'user-edit');
+    const isClear = validation.intent === 'clear';
     commitTransaction(
       next,
-      `Update Story Bible: ${field}`,
-      `Set Story Bible ${field} to "${value}".`,
+      isClear ? `Clear Story Bible: ${field}` : `Update Story Bible: ${field}`,
+      isClear ? `Cleared Story Bible ${field}.` : `Set Story Bible ${field} to "${validation.normalized.trim()}".`,
       1,
-      { coalesceKey: `story-bible:${field}`, coalesceWindowMs: 2500 }
+      {
+        coalesceKey: isClear ? `story-bible-clear:${field}` : `story-bible:${field}`,
+        coalesceWindowMs: isClear ? 400 : 2500,
+      }
     );
   };
 
@@ -765,8 +829,13 @@ function App() {
 
   const handleInspectDecisionTarget = (decision: DecisionItem) => {
     if (decision.targetStoryField) {
+      const targetField = decision.targetStoryField;
       setRightPanelTab('story-bible');
       setMobileTab('inspector');
+      setFocusedStoryBibleField((prev) => ({
+        field: targetField,
+        seq: (prev?.seq ?? 0) + 1,
+      }));
       return;
     }
     if (decision.targetRelationshipId) {
@@ -791,6 +860,36 @@ function App() {
         setRightPanelTab('inspector');
         setMobileTab('inspector');
       }
+    }
+  };
+
+  const handleNavigateConsistencyTarget = (target: ConsistencyIssueTarget) => {
+    const resolved = resolveConsistencyIssueTarget(snapshot, target);
+    if (!resolved.ok) {
+      setStatusNotification(resolved.reason);
+      return;
+    }
+    if (resolved.kind === 'story_bible') {
+      setRightPanelTab('story-bible');
+      setMobileTab('inspector');
+      setFocusedStoryBibleField((prev) => ({
+        field: resolved.storyField,
+        seq: (prev?.seq ?? 0) + 1,
+      }));
+      return;
+    }
+    if (resolved.kind === 'relationship') {
+      setSelectedEntityId(null);
+      setSelectedRelationshipId(resolved.relationship.id ?? null);
+      setRightPanelTab('inspector');
+      setMobileTab('inspector');
+      return;
+    }
+    if (resolved.kind === 'entity') {
+      setSelectedRelationshipId(null);
+      setSelectedEntityId(resolved.entity.id ?? resolved.entity.name);
+      setRightPanelTab('inspector');
+      setMobileTab('inspector');
     }
   };
 
@@ -1212,13 +1311,18 @@ function App() {
   // --- Persistence, Conflict Resolution, History & Export/Import Handlers ---
 
   const handleReloadLatestFromStorage = (resolution?: 'prefer-idb' | 'prefer-local') => {
-    const originId = activeProjectRef.current.id;
-    const originRevision = activeProjectRef.current.revision;
-    const originSnapshot = activeProjectRef.current.snapshot;
+    const currentActive = activeProjectRef.current;
+    const originId = currentActive.id;
+    const originRevision = currentActive.revision;
+    const originSnapshot = currentActive.snapshot;
 
-    void reloadLatestProjectsFromStorage(originId, resolution ? { resolution } : undefined).then(
+    void reloadLatestProjectsFromStorage(originId, {
+      resolution,
+      inMemoryActiveProject: currentActive,
+      hasLocalEditsSinceMount: hasLocalEditsSinceMountRef.current,
+    }).then(
       (latest) => {
-        // FIX 2: Prevent stale asynchronous reloads from overwriting newer in-memory edits
+        // FIX 2: Prevent stale asynchronous reloads from overwriting newer in-memory edits made during reload
         if (
           activeProjectRef.current.id !== originId ||
           activeProjectRef.current.revision !== originRevision ||
@@ -1232,6 +1336,9 @@ function App() {
           });
           return;
         }
+
+        const nextGate = resolveHydrationWriteGate(latest.idbStatus);
+        updateHydrationGate(nextGate);
 
         if (latest.idbStatus === 'read_error') {
           setStorageAlert({
@@ -1255,7 +1362,7 @@ function App() {
           setStorageAlert({
             type: 'conflict',
             projectId: latest.activeProject.id,
-            message: `Conflicting versions detected at revision #${latest.conflictProject.revision}: IndexedDB has "${idbBibleSummary}" while localStorage has "${localBibleSummary}". Both versions remain recoverable.`,
+            message: `Conflicting versions detected at revision #${latest.conflictProject.revision}: IndexedDB has "${idbBibleSummary}" while localStorage/memory has "${localBibleSummary}". Both versions remain recoverable.`,
           });
           return;
         }
@@ -1265,6 +1372,9 @@ function App() {
         setSavedProjects(latest.projects);
         setProject(latest.activeProject);
         setUndoState(latest.activeUndoState);
+        if (resolution === 'prefer-idb' || latest.upgradedFromIndexedDb) {
+          hasLocalEditsSinceMountRef.current = false;
+        }
 
         if (latest.persisted === false && latest.persistenceWarning) {
           setStorageAlert({
@@ -1284,6 +1394,7 @@ function App() {
 
   const handleForceOverwriteStorage = () => {
     const targetProject = activeProjectRef.current;
+    updateHydrationGate('ready');
     saveQueueRef.current.resetProject(targetProject.id);
     void flushProjectDurably(targetProject, {
       forceOverwrite: true,
@@ -1352,6 +1463,7 @@ function App() {
     setUndoState(sampleUndo);
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
+    setStoryBibleErrors({});
     setStorageAlert(null);
     void flushProjectDurably(sample, {
       forceOverwrite: true,
@@ -1391,7 +1503,10 @@ function App() {
     setUndoState(nextUndo);
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
-    setStorageAlert(null);
+    setStoryBibleErrors({});
+    if (hydrationGateRef.current !== 'blocked-read-error') {
+      setStorageAlert(null);
+    }
 
     try {
       window.localStorage?.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, nextTarget.id);
@@ -1399,7 +1514,7 @@ function App() {
       // Ignore quota error when updating active project pointer
     }
 
-    if (switchRes.projectToFlush) {
+    if (switchRes.projectToFlush && hydrationGateRef.current !== 'blocked-read-error') {
       void flushProjectDurably(switchRes.projectToFlush, {
         expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
       });
@@ -1473,7 +1588,10 @@ function App() {
     setUndoState(newUndo);
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
-    setStorageAlert(null);
+    setStoryBibleErrors({});
+    if (hydrationGateRef.current !== 'blocked-read-error') {
+      setStorageAlert(null);
+    }
 
     void flushProjectDurably(newProj, {
       forceOverwrite: true,
@@ -1596,6 +1714,7 @@ function App() {
       setUndoState(migratedUndo);
       setSelectedEntityId(null);
       setSelectedRelationshipId(null);
+      setStoryBibleErrors({});
       setStorageAlert(null);
 
       void flushProjectDurably(migrated, {
@@ -1736,6 +1855,15 @@ function App() {
                 </button>
               </>
             )}
+            {storageAlert.type === 'error' && hydrationGate === 'blocked-read-error' && (
+              <button
+                type="button"
+                onClick={() => handleReloadLatestFromStorage()}
+                className="px-2.5 py-1 rounded font-semibold bg-amber-700 hover:bg-amber-800 text-white"
+              >
+                Retry Storage Read
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExportJson}
@@ -1756,7 +1884,7 @@ function App() {
 
       {statusNotification && (
         <div
-          className="fixed top-14 sm:top-auto sm:bottom-20 left-2 right-2 sm:left-auto sm:right-4 z-[1850] sm:w-full sm:max-w-md pointer-events-auto"
+          className="px-3 pt-2 xl:p-0 xl:fixed xl:bottom-20 xl:right-4 xl:z-[1850] xl:w-full xl:max-w-md pointer-events-auto flex-shrink-0"
           role="status"
           aria-live="polite"
         >
@@ -1918,7 +2046,10 @@ function App() {
             onUpdateRelationshipById={handleUpdateRelationshipById}
             onRemoveRelationship={handleRemoveRelationship}
             onUpdateStoryBible={handleUpdateStoryBible}
+            storyBibleErrors={storyBibleErrors}
+            focusedStoryBibleField={focusedStoryBibleField}
             consistencyIssues={consistencyIssues}
+            onNavigateConsistencyTarget={handleNavigateConsistencyTarget}
             onRestoreRevision={handleRestoreRevision}
             onSwitchProject={handleSwitchProject}
             onCreateNewProject={handleCreateNewProject}
@@ -2036,6 +2167,15 @@ function App() {
                   )}
                 </div>
 
+                {reviewDiffModel.hasStaleBatch && (
+                  <div
+                    role="alert"
+                    className="p-2.5 rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 text-xs font-medium"
+                  >
+                    Stale staged batch preview detected: the project revision changed after this batch preview was created, so it is excluded from the projected prompt until you click Re-preview in the Decision Inbox.
+                  </div>
+                )}
+
                 {reviewDiffModel.items.length === 0 ? (
                   <p className="text-gray-500">
                     No pending decisions or staged batch edits. All current plan items are committed.
@@ -2049,6 +2189,7 @@ function App() {
                       return (
                         <div
                           key={diff.id}
+                          data-diff-source={diff.source}
                           className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
                         >
                           <div className="min-w-0 flex-1 space-y-0.5">
@@ -2070,6 +2211,11 @@ function App() {
                                 After: {diff.afterValue}
                               </span>
                             </div>
+                            {diff.conflictWarning && (
+                              <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300 pt-0.5">
+                                {diff.conflictWarning}
+                              </p>
+                            )}
                           </div>
 
                           {matchingDecision && (

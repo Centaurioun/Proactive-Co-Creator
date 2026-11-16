@@ -277,6 +277,15 @@ export interface ReviewDiffItem {
   conflictWarning?: string;
 }
 
+export interface ConsistencyIssueTarget {
+  id: string;
+  kind: 'entity' | 'relationship' | 'story_bible';
+  label: string;
+  entityId?: string;
+  relationshipId?: string;
+  storyField?: keyof StoryBibleFields;
+}
+
 export interface ConsistencyIssue {
   id: string;
   severity: 'error' | 'warning';
@@ -289,6 +298,8 @@ export interface ConsistencyIssue {
   title: string;
   description: string;
   affectedEntityIds: string[];
+  relationshipId?: string;
+  targets?: ConsistencyIssueTarget[];
   suggestedFix?: string;
 }
 

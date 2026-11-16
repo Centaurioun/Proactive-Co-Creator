@@ -20,7 +20,9 @@ import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts
 import type {
   CreativeProject,
   Entity,
+  GenerationArtifact,
   GenerationMode,
+  PersistedUndoHistoryEntry,
   ProjectSnapshot,
   Relationship,
   StoryBibleFields,
@@ -1062,14 +1064,152 @@ export async function deleteProjectFromIndexedDb(
   });
 }
 
+function areStringArraysExactEqual(a?: string[], b?: string[]): boolean {
+  const listA = Array.isArray(a) ? a : [];
+  const listB = Array.isArray(b) ? b : [];
+  if (listA.length !== listB.length) return false;
+  for (let i = 0; i < listA.length; i++) {
+    if (listA[i] !== listB[i]) return false;
+  }
+  return true;
+}
+
+function areArtifactsContentEqual(
+  localArt: GenerationArtifact,
+  idbArt: GenerationArtifact,
+  requireSameOutdated: boolean
+): boolean {
+  if (localArt.id !== idbArt.id) return false;
+  if (localArt.mode !== idbArt.mode) return false;
+  if (localArt.revisionId !== idbArt.revisionId) return false;
+  if ((localArt.sourceRevision ?? null) !== (idbArt.sourceRevision ?? null)) return false;
+  if (localArt.promptUsed !== idbArt.promptUsed) return false;
+  if ((localArt.promptDigest ?? null) !== (idbArt.promptDigest ?? null)) return false;
+  if ((localArt.storyText ?? null) !== (idbArt.storyText ?? null)) return false;
+  if ((localArt.warning ?? null) !== (idbArt.warning ?? null)) return false;
+  if (!areStringArraysExactEqual(localArt.images, idbArt.images)) return false;
+  if (requireSameOutdated && Boolean(localArt.isOutdated) !== Boolean(idbArt.isOutdated)) {
+    return false;
+  }
+  return true;
+}
+
+function areUndoEntriesEqual(
+  a: PersistedUndoHistoryEntry[] = [],
+  b: PersistedUndoHistoryEntry[] = []
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].label !== b[i].label) return false;
+    if (!isSnapshotSemanticallyEqual(a[i].snapshot, b[i].snapshot)) return false;
+  }
+  return true;
+}
+
+/**
+ * Verifies strict full-content parity before local cache compaction or eviction (T4 / ST-04..ST-08).
+ * Compares identity, name, snapshot / lineage, every artifact's payload & images, every revision
+ * snapshot, and persisted Undo/Redo stacks. Fails closed on any mismatch.
+ */
+export function verifyProjectCacheParity(
+  localProject: CreativeProject,
+  idbProject: CreativeProject
+): boolean {
+  if (!localProject || !idbProject) return false;
+  if (localProject.id !== idbProject.id) return false;
+  if ((localProject.name ?? '') !== (idbProject.name ?? '')) return false;
+
+  const localRev = localProject.revision ?? 1;
+  const idbRev = idbProject.revision ?? 1;
+  if (idbRev < localRev) return false;
+
+  if (idbRev === localRev) {
+    if (!isSnapshotSemanticallyEqual(localProject.snapshot, idbProject.snapshot)) {
+      return false;
+    }
+  } else if (!hasRevisionLineage(idbProject, localProject)) {
+    return false;
+  }
+
+  const localArtifacts = Array.isArray(localProject.artifacts) ? localProject.artifacts : [];
+  const idbArtifacts = Array.isArray(idbProject.artifacts) ? idbProject.artifacts : [];
+  if (idbRev === localRev && localArtifacts.length !== idbArtifacts.length) {
+    return false;
+  }
+  for (const localArt of localArtifacts) {
+    const idbArt = idbArtifacts.find((candidate) => candidate.id === localArt.id);
+    if (!idbArt || !areArtifactsContentEqual(localArt, idbArt, idbRev === localRev)) {
+      return false;
+    }
+  }
+
+  const localRevs = Array.isArray(localProject.revisions) ? localProject.revisions : [];
+  const idbRevs = Array.isArray(idbProject.revisions) ? idbProject.revisions : [];
+  if (idbRev === localRev && localRevs.length !== idbRevs.length) {
+    return false;
+  }
+  for (const localRevEntry of localRevs) {
+    const idbRevEntry = idbRevs.find((candidate) => candidate.id === localRevEntry.id);
+    if (!idbRevEntry) return false;
+    if ((localRevEntry.revisionNumber ?? null) !== (idbRevEntry.revisionNumber ?? null)) {
+      return false;
+    }
+    if (localRevEntry.label !== idbRevEntry.label) return false;
+    if (localRevEntry.summary !== idbRevEntry.summary) return false;
+    if (localRevEntry.changeCount !== idbRevEntry.changeCount) return false;
+    if ((localRevEntry.coalesceKey ?? null) !== (idbRevEntry.coalesceKey ?? null)) return false;
+    if (!isSnapshotSemanticallyEqual(localRevEntry.snapshot, idbRevEntry.snapshot)) {
+      return false;
+    }
+  }
+
+  const localPast = localProject.undoHistory?.past ?? [];
+  const localFuture = localProject.undoHistory?.future ?? [];
+  const idbPast = idbProject.undoHistory?.past ?? [];
+  const idbFuture = idbProject.undoHistory?.future ?? [];
+
+  if (idbRev === localRev) {
+    if (!areUndoEntriesEqual(localPast, idbPast)) return false;
+    if (!areUndoEntriesEqual(localFuture, idbFuture)) return false;
+  } else {
+    for (const pastEntry of localPast) {
+      const recoveredInPastOrRevs =
+        idbPast.some(
+          (candidate) =>
+            candidate.label === pastEntry.label &&
+            isSnapshotSemanticallyEqual(candidate.snapshot, pastEntry.snapshot)
+        ) ||
+        idbRevs.some((revEntry) =>
+          isSnapshotSemanticallyEqual(revEntry.snapshot, pastEntry.snapshot)
+        );
+      if (!recoveredInPastOrRevs) return false;
+    }
+    for (const futureEntry of localFuture) {
+      const recoveredInFutureOrRevs =
+        idbFuture.some(
+          (candidate) =>
+            candidate.label === futureEntry.label &&
+            isSnapshotSemanticallyEqual(candidate.snapshot, futureEntry.snapshot)
+        ) ||
+        idbRevs.some((revEntry) =>
+          isSnapshotSemanticallyEqual(revEntry.snapshot, futureEntry.snapshot)
+        ) ||
+        isSnapshotSemanticallyEqual(idbProject.snapshot, futureEntry.snapshot);
+      if (!recoveredInFutureOrRevs) return false;
+    }
+  }
+
+  return true;
+}
+
 /**
  * Deletes a project from both localStorage and IndexedDB and records a deletion tombstone
  * so neither hydration nor in-flight autosave timers can resurrect it (F-06).
  *
  * Under localStorage quota pressure, backups (`LOCAL_STORAGE_BACKUP_V2_KEY`) and unverified
  * surviving projects are NEVER deleted or stripped. Cache compaction only runs if an
- * immediate IndexedDB read verifies every surviving local project exists in IndexedDB at
- * an equal or newer revision with matching artifacts and revisions.
+ * immediate IndexedDB read verifies strict full-content parity for every surviving local project
+ * with zero corrupt IDB records.
  */
 export async function deleteProjectCompletely(projectId: string): Promise<{
   remaining: CreativeProject[];
@@ -1096,16 +1236,22 @@ export async function deleteProjectCompletely(projectId: string): Promise<{
 
         const idbCheck = await loadProjectsFromIndexedDbDetailed();
         const idbById = new Map(idbCheck.projects.map((p) => [p.id, p]));
+        const idbReadableAndClean =
+          idbCheck.corruptRecordCount === 0 &&
+          (idbCheck.status === 'ok' ||
+            (idbCheck.status === 'empty' && survivingEntries.length === 0));
+
         const allSurvivingVerifiedInIdb =
-          idbCheck.status === 'ok' &&
-          survivingEntries.every(([id, localProj]) => {
+          idbReadableAndClean &&
+          survivingEntries.every(([id, rawLocalProj]) => {
             const idbProj = idbById.get(id);
             if (!idbProj) return false;
-            return (
-              (idbProj.revision ?? 1) >= (localProj.revision ?? 1) &&
-              idbProj.artifacts.length >= (localProj.artifacts?.length ?? 0) &&
-              idbProj.revisions.length >= (localProj.revisions?.length ?? 0)
-            );
+            try {
+              const normalizedLocal = migrateProjectPayload(rawLocalProj);
+              return verifyProjectCacheParity(normalizedLocal, idbProj);
+            } catch {
+              return false;
+            }
           });
 
         if (allSurvivingVerifiedInIdb) {
@@ -1122,7 +1268,7 @@ export async function deleteProjectCompletely(projectId: string): Promise<{
             localDeleted = true;
             tombstonePersisted = recordDeletedProjectId(projectId);
           } catch {
-            // Still over tight quota; every surviving project is verified present in IndexedDB
+            // Still over tight quota; every surviving project is content-verified present in IndexedDB
           }
 
           if (!tombstonePersisted) {
@@ -2000,6 +2146,8 @@ export async function reloadLatestProjectsFromStorage(
   preferredActiveProjectId?: string | null,
   options?: {
     resolution?: 'prefer-idb' | 'prefer-local';
+    inMemoryActiveProject?: CreativeProject;
+    hasLocalEditsSinceMount?: boolean;
   }
 ): Promise<{
   projects: CreativeProject[];
@@ -2018,12 +2166,24 @@ export async function reloadLatestProjectsFromStorage(
   const localData = loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true });
   const idbLoad = await loadProjectsFromIndexedDbDetailed();
   const idbProjects = idbLoad.projects;
-  const targetId = preferredActiveProjectId ?? localData.activeProjectId;
+  const inMemoryActive = options?.inMemoryActiveProject;
+  const hasUnsyncedMemoryEdits = Boolean(options?.hasLocalEditsSinceMount && inMemoryActive);
+  const targetId = preferredActiveProjectId ?? inMemoryActive?.id ?? localData.activeProjectId;
+
+  const effectiveLocalProjects = [...localData.projects];
+  if (hasUnsyncedMemoryEdits && inMemoryActive) {
+    const existingIdx = effectiveLocalProjects.findIndex((p) => p.id === inMemoryActive.id);
+    if (existingIdx >= 0) {
+      effectiveLocalProjects[existingIdx] = inMemoryActive;
+    } else {
+      effectiveLocalProjects.unshift(inMemoryActive);
+    }
+  }
 
   // FIX 1: On IndexedDB read failure, never seed or overwrite IndexedDB
   if (idbLoad.status === 'read_error') {
     const fallbackProjects =
-      localData.projects.length > 0 ? localData.projects : [createSampleProject()];
+      effectiveLocalProjects.length > 0 ? effectiveLocalProjects : [createSampleProject()];
     const activeFallback =
       fallbackProjects.find((p) => p.id === targetId) ?? fallbackProjects[0];
     return {
@@ -2046,9 +2206,10 @@ export async function reloadLatestProjectsFromStorage(
   }
 
   let initialCandidate =
-    localData.projects.find((p) => p.id === targetId) ??
+    (hasUnsyncedMemoryEdits ? inMemoryActive : undefined) ??
+    effectiveLocalProjects.find((p) => p.id === targetId) ??
     idbProjects.find((p) => p.id === targetId) ??
-    localData.projects[0] ??
+    effectiveLocalProjects[0] ??
     idbProjects[0];
 
   if (!initialCandidate) {
@@ -2060,7 +2221,7 @@ export async function reloadLatestProjectsFromStorage(
   }
 
   const reconciled = reconcileHydratedProjects({
-    localProjects: localData.projects.length > 0 ? localData.projects : [initialCandidate],
+    localProjects: effectiveLocalProjects.length > 0 ? effectiveLocalProjects : [initialCandidate],
     idbProjects,
     activeProject: initialCandidate,
     activeUndoState: createUndoRedoState(
@@ -2068,11 +2229,11 @@ export async function reloadLatestProjectsFromStorage(
       initialCandidate.revisions,
       initialCandidate.undoHistory
     ),
-    hasLocalEditsSinceMount: false,
+    hasLocalEditsSinceMount: hasUnsyncedMemoryEdits,
     ignoreDivergenceConflict: Boolean(options?.resolution),
   });
 
-  const localMatch = localData.projects.find((p) => p.id === reconciled.activeProject.id);
+  const localMatch = effectiveLocalProjects.find((p) => p.id === reconciled.activeProject.id);
   const idbMatch = idbProjects.find((p) => p.id === reconciled.activeProject.id);
 
   // FIX 2: If a semantic divergence or lineage conflict exists and no explicit resolution was requested,

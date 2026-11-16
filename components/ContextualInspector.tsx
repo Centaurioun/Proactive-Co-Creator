@@ -3,11 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import AttributeEditor from './AttributeEditor';
 import { isSceneEntityName } from '../lib/beliefGraphUtils';
+import { resolveConsistencyIssueTarget } from '../lib/consistencyChecker';
 import type {
   ConsistencyIssue,
+  ConsistencyIssueTarget,
   CreativeProject,
   Entity,
   EntityCategory,
@@ -40,7 +42,10 @@ interface ContextualInspectorProps {
   ) => void;
   onRemoveRelationship: (relIdOrSource: string, target?: string) => void;
   onUpdateStoryBible: (field: keyof StoryBibleFields, value: string) => void;
+  storyBibleErrors?: Partial<Record<keyof StoryBibleFields, string>>;
+  focusedStoryBibleField?: { field: keyof StoryBibleFields; seq: number } | null;
   consistencyIssues: ConsistencyIssue[];
+  onNavigateConsistencyTarget?: (target: ConsistencyIssueTarget) => void;
   onRestoreRevision: (revisionId: string) => void;
   onSwitchProject: (projectId: string) => void;
   onCreateNewProject: (name: string, initialPrompt: string) => void;
@@ -213,7 +218,10 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   onUpdateRelationshipById,
   onRemoveRelationship,
   onUpdateStoryBible,
+  storyBibleErrors,
+  focusedStoryBibleField,
   consistencyIssues,
+  onNavigateConsistencyTarget,
   onRestoreRevision,
   onSwitchProject,
   onCreateNewProject,
@@ -239,6 +247,29 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   const [bibleViewMode, setBibleViewMode] = useState<'grid' | 'list'>('grid');
   const [bibleDomainFilter, setBibleDomainFilter] = useState<'all' | StoryBibleDomain>('all');
   const [bibleStatusFilter, setBibleStatusFilter] = useState<'all' | 'confirmed' | 'pending' | 'unset'>('all');
+  const [lastHandledFocusSeq, setLastHandledFocusSeq] = useState<number>(0);
+
+  if (
+    focusedStoryBibleField &&
+    activeTab === 'story-bible' &&
+    focusedStoryBibleField.seq !== lastHandledFocusSeq
+  ) {
+    setLastHandledFocusSeq(focusedStoryBibleField.seq);
+    if (bibleDomainFilter !== 'all') setBibleDomainFilter('all');
+    if (bibleStatusFilter !== 'all') setBibleStatusFilter('all');
+  }
+
+  useEffect(() => {
+    if (!focusedStoryBibleField || activeTab !== 'story-bible') return;
+    const rafId = requestAnimationFrame(() => {
+      const el = document.getElementById(`bible-${focusedStoryBibleField.field}`);
+      if (el instanceof HTMLElement) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        el.focus();
+      }
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [focusedStoryBibleField, activeTab]);
 
   // New entity state
   const [newEntityName, setNewEntityName] = useState('');
@@ -1042,6 +1073,8 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                             examples,
                           }) => {
                             const field = snapshot.storyBible[key];
+                            const fieldError = storyBibleErrors?.[key];
+                            const inputErrorId = `bible-error-${key}`;
                             const hasValue = field.value.trim().length > 0;
                             const isConfirmed = hasValue && field.status === 'confirmed';
                             const isPending = hasValue && field.status === 'pending';
@@ -1092,7 +1125,13 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                                     value={field.value}
                                     onChange={(e) => onUpdateStoryBible(key, e.target.value)}
                                     placeholder={placeholder}
-                                    className="w-full text-xs bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                                    aria-invalid={Boolean(fieldError)}
+                                    aria-describedby={fieldError ? inputErrorId : undefined}
+                                    className={`w-full text-xs bg-white dark:bg-gray-900 border rounded p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 resize-y ${
+                                      fieldError
+                                        ? 'border-red-500 focus:ring-red-500'
+                                        : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
+                                    }`}
                                   />
                                 ) : (
                                   <input
@@ -1100,9 +1139,29 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                                     type="text"
                                     value={field.value}
                                     onChange={(e) => onUpdateStoryBible(key, e.target.value)}
+                                    onBlur={(e) => {
+                                      if (e.target.value !== e.target.value.trim()) {
+                                        onUpdateStoryBible(key, e.target.value.trim());
+                                      }
+                                    }}
                                     placeholder={placeholder}
-                                    className="w-full text-xs bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded px-2 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    aria-invalid={Boolean(fieldError)}
+                                    aria-describedby={fieldError ? inputErrorId : undefined}
+                                    className={`w-full text-xs bg-white dark:bg-gray-900 border rounded px-2 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 ${
+                                      fieldError
+                                        ? 'border-red-500 focus:ring-red-500'
+                                        : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
+                                    }`}
                                   />
+                                )}
+                                {fieldError && (
+                                  <p
+                                    id={inputErrorId}
+                                    role="alert"
+                                    className="text-[11px] font-medium text-red-600 dark:text-red-400"
+                                  >
+                                    {fieldError}
+                                  </p>
                                 )}
 
                                 {/* Provenance, Quick Suggestion Chips & Confirm/Clear Actions */}
@@ -1162,8 +1221,11 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             ) : (
               /* Classic Compact Vertical List View */
               <div className="space-y-3" role="region" aria-label="Story Bible list">
-                {filteredItems.map(({ key, label, placeholder, multiline }) => {
+                {filteredItems.map(({ key, label, shortLabel, placeholder, multiline }) => {
                   const field = snapshot.storyBible[key];
+                  const fieldError = storyBibleErrors?.[key];
+                  const hasValue = Boolean(field.value.trim());
+                  const inputErrorId = `bible-error-${key}`;
                   return (
                     <div key={key} className="space-y-1">
                       <div className="flex items-center justify-between text-xs">
@@ -1174,16 +1236,28 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                           {label}
                         </label>
                         <div className="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
-                          <span className="capitalize">{field.status}</span>
+                          <span className="capitalize">
+                            {hasValue ? field.status : 'unset'}
+                          </span>
                           <span aria-hidden="true">·</span>
                           <span>{field.provenance}</span>
-                          {field.status !== 'confirmed' && field.value.trim() && (
+                          {field.status !== 'confirmed' && hasValue && (
                             <button
                               type="button"
                               onClick={() => onUpdateStoryBible(key, field.value)}
                               className="text-blue-600 dark:text-blue-400 font-semibold hover:underline ml-1"
                             >
                               Confirm
+                            </button>
+                          )}
+                          {hasValue && (
+                            <button
+                              type="button"
+                              onClick={() => onUpdateStoryBible(key, '')}
+                              className="text-gray-500 hover:text-red-600 dark:hover:text-red-400 font-medium ml-1"
+                              title={`Clear ${shortLabel}`}
+                            >
+                              Clear
                             </button>
                           )}
                         </div>
@@ -1195,7 +1269,13 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                           value={field.value}
                           onChange={(e) => onUpdateStoryBible(key, e.target.value)}
                           placeholder={placeholder}
-                          className="w-full text-xs bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          aria-invalid={Boolean(fieldError)}
+                          aria-describedby={fieldError ? inputErrorId : undefined}
+                          className={`w-full text-xs bg-gray-50 dark:bg-gray-800 border rounded-md p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 ${
+                            fieldError
+                              ? 'border-red-500 focus:ring-red-500'
+                              : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
+                          }`}
                         />
                       ) : (
                         <input
@@ -1203,9 +1283,29 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                           type="text"
                           value={field.value}
                           onChange={(e) => onUpdateStoryBible(key, e.target.value)}
+                          onBlur={(e) => {
+                            if (e.target.value !== e.target.value.trim()) {
+                              onUpdateStoryBible(key, e.target.value.trim());
+                            }
+                          }}
                           placeholder={placeholder}
-                          className="w-full text-xs bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-2.5 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          aria-invalid={Boolean(fieldError)}
+                          aria-describedby={fieldError ? inputErrorId : undefined}
+                          className={`w-full text-xs bg-gray-50 dark:bg-gray-800 border rounded-md px-2.5 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 ${
+                            fieldError
+                              ? 'border-red-500 focus:ring-red-500'
+                              : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
+                          }`}
                         />
+                      )}
+                      {fieldError && (
+                        <p
+                          id={inputErrorId}
+                          role="alert"
+                          className="text-[11px] font-medium text-red-600 dark:text-red-400"
+                        >
+                          {fieldError}
+                        </p>
                       )}
                     </div>
                   );
@@ -1259,6 +1359,39 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                     <p className="text-gray-600 dark:text-gray-400 italic">
                       Recommendation: {issue.suggestedFix}
                     </p>
+                  )}
+                  {issue.targets && issue.targets.length > 0 && (
+                    <div
+                      className="flex flex-wrap items-center gap-1.5 pt-1"
+                      aria-label={`Navigation targets for ${issue.title}`}
+                    >
+                      {issue.targets.map((target) => {
+                        const resolved = resolveConsistencyIssueTarget(snapshot, target);
+                        if (!resolved.ok) {
+                          return (
+                            <button
+                              key={target.id}
+                              type="button"
+                              disabled
+                              title={resolved.reason}
+                              className="px-2 py-1 text-[11px] font-medium rounded border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                            >
+                              {target.label} (Unavailable)
+                            </button>
+                          );
+                        }
+                        return (
+                          <button
+                            key={target.id}
+                            type="button"
+                            onClick={() => onNavigateConsistencyTarget?.(target)}
+                            className="px-2.5 py-1 text-[11px] font-semibold rounded border border-blue-300 dark:border-blue-700 bg-white dark:bg-gray-900 text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 transition-colors"
+                          >
+                            {target.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               ))}

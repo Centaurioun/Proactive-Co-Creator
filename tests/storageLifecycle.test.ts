@@ -33,6 +33,7 @@ import {
   saveProjectToIndexedDb,
   saveProjectToLocalStorage,
   simulateBrowserProcessRestartForTesting,
+  verifyProjectCacheParity,
 } from '../lib/storageEngine.ts';
 import type { CreativeProject, GenerationArtifact } from '../shared/types.ts';
 
@@ -1086,3 +1087,475 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
     clearDeletedProjectId(deletedProj.id);
   });
 });
+
+describe('T4: Hydration Write Gate & Deletion Content Parity (ST-01 through ST-10)', () => {
+  beforeEach(() => {
+    mockStorage.clear();
+    fakeIdb.reset();
+    simulateBrowserProcessRestartForTesting();
+  });
+
+  it('T4.1â€“T4.3: Hydration write gate blocks unsolicited writes on read_error, unblocks unavailable IDB, and reconciles edited memory on retry cleanly', async () => {
+    const controllerMod = (await import('../lib/projectController.ts')) as Record<string, unknown>;
+    assert.equal(
+      typeof controllerMod.resolveHydrationWriteGate,
+      'function',
+      'resolveHydrationWriteGate helper must be exported from projectController'
+    );
+    assert.equal(
+      typeof controllerMod.shouldAllowUnsolicitedPersistence,
+      'function',
+      'shouldAllowUnsolicitedPersistence helper must be exported from projectController'
+    );
+
+    const resolveGate = controllerMod.resolveHydrationWriteGate as (s: string) => string;
+    const allowWrite = controllerMod.shouldAllowUnsolicitedPersistence as (p: {
+      hydrationGate: string;
+      hasLocalEditsSinceMount: boolean;
+      isDeleted: boolean;
+      storageAlertType?: 'conflict' | 'quota' | 'error' | null;
+      storageAlertProjectId?: string | null;
+      activeProjectId: string;
+    }) => boolean;
+
+    // T4.1: read_error -> blocked-read-error blocks all unsolicited persistence even with local edits
+    const gateOnErr = resolveGate('read_error');
+    assert.equal(gateOnErr, 'blocked-read-error');
+    assert.equal(
+      allowWrite({
+        hydrationGate: gateOnErr,
+        hasLocalEditsSinceMount: false,
+        isDeleted: false,
+        storageAlertType: 'error',
+        storageAlertProjectId: 'proj_1',
+        activeProjectId: 'proj_1',
+      }),
+      false
+    );
+    assert.equal(
+      allowWrite({
+        hydrationGate: gateOnErr,
+        hasLocalEditsSinceMount: true,
+        isDeleted: false,
+        storageAlertType: 'error',
+        storageAlertProjectId: 'proj_1',
+        activeProjectId: 'proj_1',
+      }),
+      false
+    );
+
+    // T4.3: unavailable IDB must allow localStorage fallback writes
+    const gateUnavailable = resolveGate('unavailable');
+    assert.equal(gateUnavailable, 'unavailable');
+    assert.equal(
+      allowWrite({
+        hydrationGate: gateUnavailable,
+        hasLocalEditsSinceMount: false,
+        isDeleted: false,
+        storageAlertType: null,
+        storageAlertProjectId: null,
+        activeProjectId: 'proj_1',
+      }),
+      true
+    );
+
+    // T4.3 actual localStorage fallback round-trip when indexedDB is unavailable
+    const prevIdb = (globalThis.window as { indexedDB?: unknown }).indexedDB;
+    try {
+      (globalThis.window as { indexedDB?: unknown }).indexedDB = undefined;
+      const legacyProj: CreativeProject = {
+        ...createSampleProject(),
+        id: 'proj_legacy_no_idb',
+        name: 'No IDB Environment',
+        revision: 2,
+        persistedRevision: 1,
+        snapshot: updateStoryBibleField(createSampleProject().snapshot, 'genre', 'Solarpunk'),
+      };
+      const saveFallback = await persistProjectDurably(legacyProj, {
+        expectedPersistedRevision: 1,
+      });
+      assert.equal(saveFallback.saved, true);
+      assert.equal(saveFallback.authoritativeStore, 'localstorage');
+      const loadedFallback = await reloadLatestProjectsFromStorage(legacyProj.id);
+      assert.equal(loadedFallback.idbStatus, 'unavailable');
+      assert.equal(loadedFallback.activeProject.snapshot.storyBible.genre.value, 'Solarpunk');
+    } finally {
+      (globalThis.window as { indexedDB?: unknown }).indexedDB = prevIdb;
+    }
+
+    // T4.2: retry while user edited in memory must preserve both IDB and local edits via conflict instead of silent clobber
+    const idbAuthoritative: CreativeProject = {
+      ...createSampleProject(),
+      id: 'proj_retry_reconcile',
+      name: 'Precious IDB World',
+      revision: 5,
+      persistedRevision: 5,
+      snapshot: updateStoryBibleField(createSampleProject().snapshot, 'setting', 'Clockwork Observatory'),
+    };
+    await saveProjectToIndexedDb(idbAuthoritative, { forceOverwrite: true });
+    const inMemoryEdit: CreativeProject = {
+      ...createSampleProject(),
+      id: 'proj_retry_reconcile',
+      name: 'Precious IDB World',
+      revision: 2,
+      persistedRevision: 1,
+      snapshot: updateStoryBibleField(createSampleProject().snapshot, 'setting', 'Local Offline Edit'),
+    };
+    const retryRes = await reloadLatestProjectsFromStorage(inMemoryEdit.id, {
+      inMemoryActiveProject: inMemoryEdit,
+      hasLocalEditsSinceMount: true,
+    } as Record<string, unknown>);
+    assert.equal(retryRes.conflictDetected, true);
+    const idbCheck = await loadProjectsFromIndexedDb();
+    assert.equal(
+      idbCheck.find((p) => p.id === inMemoryEdit.id)?.snapshot.storyBible.setting.value,
+      'Clockwork Observatory',
+      'Retrying storage read while user edited offline must preserve IDB record cleanly'
+    );
+  });
+
+  it('T4.5: same artifact count (1) with different artifact IDs fails content parity and refuses local compaction under quota', async () => {
+    const survivingId = 'proj_t4_5_surviving';
+    const doomedId = 'proj_t4_5_doomed';
+    const base = createSampleProject();
+    const localOnlyArtifact: GenerationArtifact = {
+      id: 'art_local_unique_1',
+      projectId: survivingId,
+      mode: 'story',
+      createdAt: 1000,
+      revisionId: 'rev_1',
+      sourceRevision: 1,
+      promptUsed: 'Prompt A',
+      promptDigest: 'digest_a',
+      storyText: 'Local-only unbacked story draft '.repeat(120),
+      isOutdated: false,
+    };
+    const idbDifferentArtifact: GenerationArtifact = {
+      ...localOnlyArtifact,
+      id: 'art_idb_different_1',
+      storyText: 'Different IDB story draft',
+    };
+
+    const survivingLocal: CreativeProject = {
+      ...base,
+      id: survivingId,
+      name: 'Surviving Local Diff ID',
+      revision: 3,
+      persistedRevision: 3,
+      artifacts: [localOnlyArtifact],
+    };
+    const survivingIdb: CreativeProject = {
+      ...survivingLocal,
+      artifacts: [idbDifferentArtifact],
+    };
+    const doomedProj: CreativeProject = {
+      ...base,
+      id: doomedId,
+      name: 'Doomed Project',
+    };
+
+    mockStorage.setItem('proactive_co_creator_backup_v2', JSON.stringify({ backup: 'keep-me' }));
+    saveProjectToLocalStorage(survivingLocal, { forceOverwrite: true });
+    saveProjectToLocalStorage(doomedProj, { forceOverwrite: true });
+    await saveProjectToIndexedDb(survivingIdb, { forceOverwrite: true });
+    await saveProjectToIndexedDb(doomedProj, { forceOverwrite: true });
+
+    mockStorage.quotaLimitBytes = 1200;
+    const delRes = await deleteProjectCompletely(doomedId);
+    mockStorage.quotaLimitBytes = null;
+
+    assert.equal(delRes.incompleteDeletion, true, 'Must flag incomplete deletion when compaction is unsafe');
+    assert.ok(mockStorage.getItem('proactive_co_creator_backup_v2'), 'Backup v2 must be preserved');
+    const localAfter = loadProjectsFromLocalStorage().projects.find((p) => p.id === survivingId);
+    assert.ok(localAfter, 'Surviving local project must remain intact');
+    assert.equal(localAfter.artifacts.length, 1, 'Local-only artifact must NOT be compacted away');
+    assert.equal(localAfter.artifacts[0].id, 'art_local_unique_1');
+    clearDeletedProjectId(doomedId);
+  });
+
+  it('T4.6: same artifact count and same ID with different payload, OR same revision with divergent revision snapshot/undo future fails parity', async () => {
+    const survivingId = 'proj_t4_6_surviving';
+    const doomedId = 'proj_t4_6_doomed';
+    const base = createSampleProject();
+    const undoR2 = updateStoryBibleField(base.snapshot, 'tone', 'Somber Tragedy');
+    const undoR2Alt = updateStoryBibleField(base.snapshot, 'tone', 'Whimsical Comedy');
+
+    const sharedArtLocal: GenerationArtifact = {
+      id: 'art_same_id',
+      projectId: survivingId,
+      mode: 'story',
+      createdAt: 1000,
+      revisionId: 'rev_1',
+      sourceRevision: 1,
+      promptUsed: 'Write scene',
+      promptDigest: 'd1',
+      storyText: 'Critical unique local text payload '.repeat(120),
+      images: ['data:image/png;base64,LOCALDATA'],
+      isOutdated: false,
+    };
+    const sharedArtIdb: GenerationArtifact = {
+      ...sharedArtLocal,
+      storyText: 'Altered different IDB text payload '.repeat(120),
+      images: ['data:image/png;base64,IDBDATA'],
+    };
+
+    const survivingLocal: CreativeProject = {
+      ...base,
+      id: survivingId,
+      name: 'Same ID Diff Content',
+      revision: 3,
+      persistedRevision: 3,
+      artifacts: [sharedArtLocal],
+      undoHistory: {
+        past: [{ label: 'Edit 1', snapshot: base.snapshot }],
+        future: [{ label: 'Redo Local Future', snapshot: undoR2 }],
+      },
+    };
+    const survivingIdb: CreativeProject = {
+      ...survivingLocal,
+      artifacts: [sharedArtIdb],
+      undoHistory: {
+        past: [{ label: 'Edit 1', snapshot: base.snapshot }],
+        future: [{ label: 'Redo IDB Future', snapshot: undoR2Alt }],
+      },
+    };
+    const doomedProj: CreativeProject = {
+      ...base,
+      id: doomedId,
+      name: 'Doomed Project 2',
+    };
+
+    saveProjectToLocalStorage(survivingLocal, { forceOverwrite: true });
+    saveProjectToLocalStorage(doomedProj, { forceOverwrite: true });
+    await saveProjectToIndexedDb(survivingIdb, { forceOverwrite: true });
+    await saveProjectToIndexedDb(doomedProj, { forceOverwrite: true });
+
+    mockStorage.quotaLimitBytes = 1200;
+    const delRes = await deleteProjectCompletely(doomedId);
+    mockStorage.quotaLimitBytes = null;
+
+    assert.equal(delRes.incompleteDeletion, true);
+    const localAfter = loadProjectsFromLocalStorage().projects.find((p) => p.id === survivingId);
+    assert.ok(localAfter);
+    assert.equal(localAfter.artifacts.length, 1);
+    assert.ok(localAfter.artifacts[0].storyText?.includes('Critical unique local text payload'));
+    clearDeletedProjectId(doomedId);
+  });
+
+  it('T4.7: strictly higher IDB revision missing a local-only artifact fails parity closed', async () => {
+    const survivingId = 'proj_t4_7_surviving';
+    const doomedId = 'proj_t4_7_doomed';
+    const base = createSampleProject();
+    const localArt: GenerationArtifact = {
+      id: 'art_local_orphan',
+      projectId: survivingId,
+      mode: 'story',
+      createdAt: 1000,
+      revisionId: 'rev_2',
+      sourceRevision: 2,
+      promptUsed: 'Local chapter',
+      promptDigest: 'd_local',
+      storyText: 'Unbacked local story '.repeat(120),
+      isOutdated: false,
+    };
+
+    const localR2: CreativeProject = {
+      ...base,
+      id: survivingId,
+      name: 'Higher Rev Parity Trap',
+      revision: 2,
+      persistedRevision: 2,
+      artifacts: [localArt],
+    };
+    const idbR5WithoutLocalArt: CreativeProject = {
+      ...localR2,
+      revision: 5,
+      persistedRevision: 5,
+      artifacts: [
+        {
+          id: 'art_idb_newer',
+          projectId: survivingId,
+          mode: 'story',
+          createdAt: 2000,
+          revisionId: 'rev_5',
+          sourceRevision: 5,
+          promptUsed: 'Newer chapter',
+          promptDigest: 'd_newer',
+          storyText: 'Newer IDB story',
+          isOutdated: false,
+        },
+      ],
+      revisions: [
+        ...localR2.revisions,
+        {
+          id: 'rev_5',
+          revisionNumber: 5,
+          timestamp: 2000,
+          label: 'Advance to R5',
+          summary: 'R5',
+          changeCount: 1,
+          snapshot: updateStoryBibleField(localR2.snapshot, 'genre', 'Mystery'),
+        },
+      ],
+    };
+    const doomedProj: CreativeProject = { ...base, id: doomedId, name: 'Doomed T4.7' };
+
+    saveProjectToLocalStorage(localR2, { forceOverwrite: true });
+    saveProjectToLocalStorage(doomedProj, { forceOverwrite: true });
+    await saveProjectToIndexedDb(idbR5WithoutLocalArt, { forceOverwrite: true });
+    await saveProjectToIndexedDb(doomedProj, { forceOverwrite: true });
+
+    mockStorage.quotaLimitBytes = 1200;
+    const delRes = await deleteProjectCompletely(doomedId);
+    mockStorage.quotaLimitBytes = null;
+
+    assert.equal(delRes.incompleteDeletion, true);
+    const localAfter = loadProjectsFromLocalStorage().projects.find((p) => p.id === survivingId);
+    assert.ok(localAfter);
+    assert.equal(localAfter.artifacts.length, 1);
+    assert.equal(localAfter.artifacts[0].id, 'art_local_orphan');
+    clearDeletedProjectId(doomedId);
+  });
+
+  it('T4.8: exact IDB content parity allows safe cache compaction under tight quota and full reload reproduces exact content', async () => {
+    const survivingId = 'proj_t4_8_surviving';
+    const doomedId = 'proj_t4_8_doomed';
+    const base = createSampleProject();
+    const art: GenerationArtifact = {
+      id: 'art_verified_mirror',
+      projectId: survivingId,
+      mode: 'story',
+      createdAt: 1000,
+      revisionId: base.revisions[0]?.id ?? 'rev_1',
+      sourceRevision: 1,
+      promptUsed: 'Mirrored prompt',
+      promptDigest: 'd_mirror',
+      storyText: 'Large mirrored story text '.repeat(140),
+      isOutdated: false,
+    };
+    const survivingExact: CreativeProject = {
+      ...base,
+      id: survivingId,
+      name: 'Verified Mirror Project',
+      revision: 2,
+      persistedRevision: 2,
+      artifacts: [art],
+      undoHistory: {
+        past: [{ label: 'Initial', snapshot: base.snapshot }],
+        future: [{ label: 'Future Redo', snapshot: updateStoryBibleField(base.snapshot, 'tone', 'Tense') }],
+      },
+    };
+    const doomedProj: CreativeProject = { ...base, id: doomedId, name: 'Doomed T4.8' };
+
+    mockStorage.setItem('proactive_co_creator_backup_v2', JSON.stringify({ intact: true }));
+    saveProjectToLocalStorage(survivingExact, { forceOverwrite: true });
+    saveProjectToLocalStorage(doomedProj, { forceOverwrite: true });
+    await saveProjectToIndexedDb(survivingExact, { forceOverwrite: true });
+    await saveProjectToIndexedDb(doomedProj, { forceOverwrite: true });
+
+    // Tight quota where surviving + tombstone only fit once cached artifact is compacted
+    const fullLocalSize = (mockStorage.getItem('proactive_co_creator_projects_v2') ?? '').length;
+    mockStorage.quotaLimitBytes = Math.max(1800, fullLocalSize - 1500);
+    const delRes = await deleteProjectCompletely(doomedId);
+    mockStorage.quotaLimitBytes = null;
+
+    assert.equal(delRes.tombstonePersisted, true);
+    assert.equal(delRes.incompleteDeletion, false);
+    assert.ok(mockStorage.getItem('proactive_co_creator_backup_v2'));
+
+    const reloaded = await reloadLatestProjectsFromStorage(survivingId);
+    assert.equal(reloaded.activeProject.id, survivingId);
+    assert.equal(reloaded.activeProject.artifacts.length, 1);
+    assert.equal(reloaded.activeProject.artifacts[0].id, 'art_verified_mirror');
+    assert.equal(reloaded.activeUndoState.future.length, 1);
+    clearDeletedProjectId(doomedId);
+  });
+
+  it('T4.9: IDB read_error or unavailable during deletion preserves backups and unrelated local projects and marks incompleteDeletion', async () => {
+    const survivingId = 'proj_t4_9_surviving';
+    const doomedId = 'proj_t4_9_doomed';
+    const base = createSampleProject();
+    const surviving: CreativeProject = {
+      ...base,
+      id: survivingId,
+      name: 'Surviving T4.9',
+      artifacts: [
+        {
+          id: 'art_t4_9',
+          projectId: survivingId,
+          mode: 'story',
+          createdAt: 1000,
+          revisionId: 'rev_1',
+          sourceRevision: 1,
+          promptUsed: 'Keep me',
+          promptDigest: 'k1',
+          storyText: 'Important local story '.repeat(120),
+          isOutdated: false,
+        },
+      ],
+    };
+    const doomedProj: CreativeProject = { ...base, id: doomedId, name: 'Doomed T4.9' };
+
+    mockStorage.setItem('proactive_co_creator_backup_v2', JSON.stringify({ critical: 'backup' }));
+    saveProjectToLocalStorage(surviving, { forceOverwrite: true });
+    saveProjectToLocalStorage(doomedProj, { forceOverwrite: true });
+    await saveProjectToIndexedDb(surviving, { forceOverwrite: true });
+    await saveProjectToIndexedDb(doomedProj, { forceOverwrite: true });
+
+    mockStorage.quotaLimitBytes = 1200;
+    fakeIdb.failNextGetAll = 'Simulated IDB read failure during quota parity check';
+    const delRes = await deleteProjectCompletely(doomedId);
+    mockStorage.quotaLimitBytes = null;
+
+    assert.equal(delRes.incompleteDeletion, true);
+    assert.equal(delRes.preservedBackups, true);
+    assert.ok(mockStorage.getItem('proactive_co_creator_backup_v2'));
+    const localAfter = loadProjectsFromLocalStorage().projects.find((p) => p.id === survivingId);
+    assert.ok(localAfter);
+    assert.equal(localAfter.artifacts.length, 1);
+    clearDeletedProjectId(doomedId);
+  });
+
+  it('T4.6b / ST-07: identical artifacts & revision number still fail verifyProjectCacheParity when revision snapshot or Undo future/past differs', () => {
+    const base = createSampleProject();
+    const sharedArt: GenerationArtifact = {
+      id: 'art_identical',
+      projectId: base.id,
+      mode: 'story',
+      createdAt: 1000,
+      revisionId: base.revisions[0]?.id ?? 'rev_1',
+      sourceRevision: 1,
+      promptUsed: 'Prompt',
+      promptDigest: 'd1',
+      storyText: 'Exact same artifact text',
+      isOutdated: false,
+    };
+    const localProj: CreativeProject = {
+      ...base,
+      revision: 3,
+      persistedRevision: 3,
+      artifacts: [sharedArt],
+      undoHistory: {
+        past: [{ label: 'Step 1', snapshot: base.snapshot }],
+        future: [{ label: 'Future A', snapshot: updateStoryBibleField(base.snapshot, 'tone', 'Cozy') }],
+      },
+    };
+    const idbDiffUndo: CreativeProject = {
+      ...structuredClone(localProj),
+      undoHistory: {
+        past: [{ label: 'Step 1', snapshot: base.snapshot }],
+        future: [{ label: 'Future B', snapshot: updateStoryBibleField(base.snapshot, 'tone', 'Dark') }],
+      },
+    };
+    assert.equal(verifyProjectCacheParity(localProj, idbDiffUndo), false);
+
+    const idbDiffRevSnap: CreativeProject = structuredClone(localProj);
+    idbDiffRevSnap.revisions[0] = {
+      ...idbDiffRevSnap.revisions[0],
+      snapshot: updateStoryBibleField(base.snapshot, 'setting', 'Divergent History Snapshot'),
+    };
+    assert.equal(verifyProjectCacheParity(localProj, idbDiffRevSnap), false);
+    assert.equal(verifyProjectCacheParity(localProj, structuredClone(localProj)), true);
+  });
+});
+

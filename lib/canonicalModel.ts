@@ -698,61 +698,158 @@ export function buildDecisionInboxFromSnapshot(snapshot: ProjectSnapshot): Decis
   return items;
 }
 
+export const SCENE_ATTR_TO_BIBLE_FIELD: Record<string, keyof StoryBibleFields> = {
+  genre: 'genre',
+  tone: 'tone',
+  atmosphere: 'tone',
+  narrative_perspective: 'narrativePerspective',
+  perspective: 'narrativePerspective',
+  audience: 'intendedAudience',
+  setting: 'setting',
+  location: 'setting',
+  themes: 'themes',
+  theme: 'themes',
+  central_conflict: 'centralConflict',
+  conflict: 'centralConflict',
+  pacing: 'pacing',
+  image_style: 'visualStyle',
+  style: 'visualStyle',
+  camera_angle: 'cameraAndLighting',
+  lighting: 'cameraAndLighting',
+};
+
+export const STORY_FIELD_TO_SCENE_ATTRS: Partial<Record<keyof StoryBibleFields, string[]>> = {
+  genre: ['genre'],
+  tone: ['tone', 'atmosphere'],
+  narrativePerspective: ['narrative_perspective', 'perspective'],
+  intendedAudience: ['audience'],
+  setting: ['setting', 'location'],
+  themes: ['themes', 'theme'],
+  centralConflict: ['central_conflict', 'conflict'],
+  pacing: ['pacing'],
+  visualStyle: ['image_style', 'style'],
+  cameraAndLighting: ['lighting', 'camera_angle'],
+};
+
+function containsUnsupportedControlChars(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (
+      (code >= 0 && code <= 8) ||
+      code === 11 ||
+      code === 12 ||
+      (code >= 14 && code <= 31) ||
+      code === 127
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface StoryBibleValidationResult {
+  ok: boolean;
+  normalized: string;
+  intent: 'set' | 'clear' | 'invalid';
+  error?: string;
+}
+
+/**
+ * Validates Story Bible input without imposing artificial enums or genre caps.
+ * Preserves Unicode, punctuation, newlines (\n/\r), and tabs (\t); rejects non-strings
+ * and unsupported ASCII control characters; separates deliberate clear from valid values.
+ */
+export function validateStoryBibleUpdate(
+  _field: keyof StoryBibleFields,
+  rawInput: unknown
+): StoryBibleValidationResult {
+  if (typeof rawInput !== 'string') {
+    return {
+      ok: false,
+      normalized: '',
+      intent: 'invalid',
+      error: 'Field value must be valid text.',
+    };
+  }
+  if (containsUnsupportedControlChars(rawInput)) {
+    return {
+      ok: false,
+      normalized: '',
+      intent: 'invalid',
+      error: 'Unsupported control characters are not allowed in Story Bible fields.',
+    };
+  }
+  if (rawInput.trim().length === 0) {
+    return {
+      ok: true,
+      normalized: '',
+      intent: 'clear',
+    };
+  }
+  return {
+    ok: true,
+    normalized: rawInput,
+    intent: 'set',
+  };
+}
+
+function isUserClearedStoryField(entry: { value: string; provenance?: DecisionProvenance }): boolean {
+  return entry.provenance === 'user-edit' && entry.value.trim().length === 0;
+}
+
 export function syncStoryBibleWithSceneEntity(snapshot: ProjectSnapshot): ProjectSnapshot {
   const next = structuredClone(snapshot);
   const { sceneEntity } = splitSceneAndObjectEntities(next.entities);
   const now = Date.now();
 
-  const attrToBibleMap: Record<string, keyof StoryBibleFields> = {
-    genre: 'genre',
-    tone: 'tone',
-    atmosphere: 'tone',
-    narrative_perspective: 'narrativePerspective',
-    perspective: 'narrativePerspective',
-    audience: 'intendedAudience',
-    setting: 'setting',
-    location: 'setting',
-    themes: 'themes',
-    theme: 'themes',
-    central_conflict: 'centralConflict',
-    conflict: 'centralConflict',
-    pacing: 'pacing',
-    image_style: 'visualStyle',
-    style: 'visualStyle',
-    camera_angle: 'cameraAndLighting',
-    lighting: 'cameraAndLighting',
-  };
-
   if (sceneEntity) {
     for (const attr of sceneEntity.attributes) {
-      const mappedField = attrToBibleMap[attr.name.toLowerCase()];
+      const mappedField = SCENE_ATTR_TO_BIBLE_FIELD[attr.name.toLowerCase()];
       if (!mappedField) continue;
       const bibleEntry = next.storyBible[mappedField];
       const attrVal = attr.confirmedValue ?? attr.value[0]?.name ?? '';
       const attrUpdatedAt = attr.updatedAt ?? 0;
+      const bibleClearedByUser = isUserClearedStoryField(bibleEntry);
+      const sceneEditedExplicitlyAfterClear =
+        bibleClearedByUser &&
+        attrUpdatedAt > bibleEntry.updatedAt &&
+        (attr.provenance === 'user-edit' || attr.provenance === 'accepted-suggestion') &&
+        attr.status === 'confirmed' &&
+        Boolean(attrVal.trim());
+
+      if (bibleClearedByUser && !sceneEditedExplicitlyAfterClear) {
+        attr.confirmedValue = undefined;
+        attr.status = 'pending';
+        attr.provenance = 'user-edit';
+        attr.updatedAt = Math.max(attrUpdatedAt, bibleEntry.updatedAt);
+        attr.value = [];
+        continue;
+      }
+
       const bibleIsNewerConfirmed =
         bibleEntry.status === 'confirmed' &&
         Boolean(bibleEntry.value.trim()) &&
         bibleEntry.updatedAt > attrUpdatedAt;
 
       if (bibleIsNewerConfirmed) {
-        attr.confirmedValue = bibleEntry.value;
+        const cleanVal = bibleEntry.value.trim();
+        attr.confirmedValue = cleanVal;
         attr.status = 'confirmed';
         attr.provenance = bibleEntry.provenance;
         attr.updatedAt = bibleEntry.updatedAt;
-        if (!attr.value.some((v) => v.name === bibleEntry.value)) {
-          attr.value = [{ name: bibleEntry.value }, ...attr.value];
+        if (!attr.value.some((v) => v.name === cleanVal)) {
+          attr.value = [{ name: cleanVal }, ...attr.value];
         }
-      } else if (attr.status === 'confirmed' && attrVal) {
+      } else if (attr.status === 'confirmed' && attrVal.trim()) {
         next.storyBible[mappedField] = {
-          value: attrVal,
+          value: attrVal.trim(),
           status: 'confirmed',
           provenance: attr.provenance ?? 'user-edit',
           updatedAt: attrUpdatedAt || bibleEntry.updatedAt || now,
         };
-      } else if (!bibleEntry.value && attrVal) {
+      } else if (!bibleEntry.value.trim() && attrVal.trim()) {
         next.storyBible[mappedField] = {
-          value: attrVal,
+          value: attrVal.trim(),
           status: attr.status ?? 'pending',
           provenance: attr.provenance ?? 'ai-inferred',
           updatedAt: attrUpdatedAt || bibleEntry.updatedAt || now,
@@ -808,25 +905,37 @@ export function setEntityAttribute(
   }
 
   const normAttr = attributeName.trim().toLowerCase();
+  const mappedBibleField = isSceneEntityName(entity.name)
+    ? SCENE_ATTR_TO_BIBLE_FIELD[normAttr]
+    : undefined;
   let attr = entity.attributes.find((a) => a.name.trim().toLowerCase() === normAttr);
+  const monotonicNow = Math.max(
+    now,
+    (attr?.updatedAt ?? 0) + 1,
+    mappedBibleField ? (next.storyBible[mappedBibleField]?.updatedAt ?? 0) + 1 : 0
+  );
+  const isClearingSceneAttr = Boolean(mappedBibleField && newValue.trim().length === 0);
+
   if (!attr) {
     attr = {
       id: makeStableId('attr'),
       name: attributeName.trim(),
       presence_in_prompt: false,
-      value: [{ name: newValue }],
-      confirmedValue: newValue,
-      status: 'confirmed',
+      value: isClearingSceneAttr ? [] : [{ name: newValue }],
+      confirmedValue: isClearingSceneAttr ? undefined : newValue,
+      status: isClearingSceneAttr ? 'pending' : 'confirmed',
       provenance,
-      updatedAt: now,
+      updatedAt: monotonicNow,
     };
     entity.attributes.push(attr);
   } else {
-    attr.confirmedValue = newValue;
-    attr.status = 'confirmed';
+    attr.confirmedValue = isClearingSceneAttr ? undefined : newValue;
+    attr.status = isClearingSceneAttr ? 'pending' : 'confirmed';
     attr.provenance = provenance;
-    attr.updatedAt = now;
-    if (!attr.value.some((v) => v.name === newValue)) {
+    attr.updatedAt = monotonicNow;
+    if (isClearingSceneAttr) {
+      attr.value = [];
+    } else if (!attr.value.some((v) => v.name === newValue)) {
       attr.value = [{ name: newValue }, ...attr.value];
     } else {
       attr.value = [
@@ -834,6 +943,15 @@ export function setEntityAttribute(
         ...attr.value.filter((v) => v.name !== newValue),
       ];
     }
+  }
+
+  if (isClearingSceneAttr && mappedBibleField) {
+    next.storyBible[mappedBibleField] = {
+      value: '',
+      status: 'pending',
+      provenance,
+      updatedAt: monotonicNow,
+    };
   }
 
   entity.status = 'confirmed';
@@ -1253,48 +1371,96 @@ export function updateStoryBibleField(
   value: string,
   provenance: DecisionProvenance = 'user-edit'
 ): ProjectSnapshot {
+  const validation = validateStoryBibleUpdate(field, value);
+  if (!validation.ok) {
+    return snapshot;
+  }
+
   const next = structuredClone(snapshot);
-  const now = Date.now();
+  const { sceneEntity } = splitSceneAndObjectEntities(next.entities);
+  const mappedAliases = new Set(STORY_FIELD_TO_SCENE_ATTRS[field] ?? []);
+  let maxSceneAttrUpdatedAt = 0;
+  if (sceneEntity) {
+    for (const attr of sceneEntity.attributes) {
+      if (
+        mappedAliases.has(attr.name.toLowerCase()) ||
+        SCENE_ATTR_TO_BIBLE_FIELD[attr.name.toLowerCase()] === field
+      ) {
+        maxSceneAttrUpdatedAt = Math.max(maxSceneAttrUpdatedAt, attr.updatedAt ?? 0);
+      }
+    }
+  }
+
+  const now = Math.max(
+    Date.now(),
+    (next.storyBible[field]?.updatedAt ?? 0) + 1,
+    maxSceneAttrUpdatedAt + 1
+  );
+
+  if (validation.intent === 'clear') {
+    next.storyBible[field] = {
+      value: '',
+      status: 'pending',
+      provenance,
+      updatedAt: now,
+    };
+
+    if (sceneEntity) {
+      for (const attr of sceneEntity.attributes) {
+        if (
+          mappedAliases.has(attr.name.toLowerCase()) ||
+          SCENE_ATTR_TO_BIBLE_FIELD[attr.name.toLowerCase()] === field
+        ) {
+          attr.confirmedValue = undefined;
+          attr.status = 'pending';
+          attr.provenance = provenance;
+          attr.updatedAt = now;
+          attr.value = [];
+        }
+      }
+    }
+
+    // Never mark unanswered clarifications as 'answered' when clearing a Story Bible field (R4 / SB-04)
+    next.decisions = buildDecisionInboxFromSnapshot(next);
+    next.refinedPrompt = synthesizeRefinedPrompt(next);
+    return next;
+  }
+
+  const storedValue = validation.normalized;
+  const displayValue = storedValue.trim();
   next.storyBible[field] = {
-    value: value.trim(),
+    value: storedValue,
     status: 'confirmed',
     provenance,
     updatedAt: now,
   };
 
-  // Synchronize back to "The Story" / "The Image" scene entity if present
-  const fieldToSceneAttr: Partial<Record<keyof StoryBibleFields, string>> = {
-    genre: 'genre',
-    tone: 'tone',
-    narrativePerspective: 'narrative_perspective',
-    setting: 'setting',
-    centralConflict: 'central_conflict',
-    pacing: 'pacing',
-    visualStyle: 'image_style',
-    cameraAndLighting: 'lighting',
-  };
-
-  const sceneAttrName = fieldToSceneAttr[field];
-  const { sceneEntity } = splitSceneAndObjectEntities(next.entities);
-  if (sceneEntity && sceneAttrName && value.trim()) {
-    const existingAttr = sceneEntity.attributes.find(
-      (a) => a.name.toLowerCase() === sceneAttrName.toLowerCase()
-    );
-    if (existingAttr) {
-      existingAttr.confirmedValue = value.trim();
-      existingAttr.status = 'confirmed';
-      existingAttr.provenance = provenance;
-      existingAttr.updatedAt = now;
-      if (!existingAttr.value.some((v) => v.name === value.trim())) {
-        existingAttr.value = [{ name: value.trim() }, ...existingAttr.value];
+  // Synchronize back to "The Story" / "The Image" scene entity and all mapped alias attributes
+  const primaryAttrName = STORY_FIELD_TO_SCENE_ATTRS[field]?.[0];
+  if (sceneEntity && primaryAttrName) {
+    let updatedAny = false;
+    for (const attr of sceneEntity.attributes) {
+      if (
+        mappedAliases.has(attr.name.toLowerCase()) ||
+        SCENE_ATTR_TO_BIBLE_FIELD[attr.name.toLowerCase()] === field
+      ) {
+        attr.confirmedValue = displayValue;
+        attr.status = 'confirmed';
+        attr.provenance = provenance;
+        attr.updatedAt = now;
+        if (!attr.value.some((v) => v.name === displayValue)) {
+          attr.value = [{ name: displayValue }, ...attr.value];
+        }
+        updatedAny = true;
       }
-    } else {
+    }
+    if (!updatedAny) {
       sceneEntity.attributes.push({
         id: makeStableId('attr'),
-        name: sceneAttrName,
+        name: primaryAttrName,
         presence_in_prompt: false,
-        value: [{ name: value.trim() }],
-        confirmedValue: value.trim(),
+        value: [{ name: displayValue }],
+        confirmedValue: displayValue,
         status: 'confirmed',
         provenance,
         updatedAt: now,
@@ -1302,7 +1468,7 @@ export function updateStoryBibleField(
     }
   }
 
-  // Mark matching clarifications as answered
+  // Mark matching clarifications as answered only for non-empty values
   next.clarifications = next.clarifications.map((c) => {
     if (c.target?.type === 'story_bible' && c.target.storyField === field) {
       return { ...c, status: 'answered' };
@@ -1357,14 +1523,22 @@ export function mergeAnalysisIntoSnapshot(
           matched.category = inferEntityCategory(rawEnt);
         }
 
-        // Merge attributes without overwriting confirmed or rejected attributes
+        // Merge attributes without overwriting confirmed, rejected, or user-cleared scene attributes
+        const matchedIsScene = isSceneEntityName(matched.name) || matched.category === 'scene';
         for (const rawAttr of rawEnt.attributes) {
+          const mappedField = matchedIsScene
+            ? SCENE_ATTR_TO_BIBLE_FIELD[rawAttr.name.toLowerCase()]
+            : undefined;
+          const mappedFieldClearedByUser = Boolean(
+            mappedField && isUserClearedStoryField(next.storyBible[mappedField])
+          );
+
           const existingAttr = matched.attributes.find(
             (a) => a.name.toLowerCase() === rawAttr.name.toLowerCase()
           );
           if (existingAttr) {
-            if (existingAttr.status === 'rejected') {
-              // Never resurrect rejected attributes
+            if (existingAttr.status === 'rejected' || mappedFieldClearedByUser) {
+              // Never resurrect rejected attributes or user-cleared Story Bible scene properties
               continue;
             }
             if (existingAttr.status === 'confirmed') {
@@ -1380,6 +1554,9 @@ export function mergeAnalysisIntoSnapshot(
               existingAttr.presence_in_prompt = rawAttr.presence_in_prompt;
             }
           } else {
+            if (mappedFieldClearedByUser) {
+              continue;
+            }
             matched.attributes.push({
               id: makeStableId('attr'),
               name: rawAttr.name,

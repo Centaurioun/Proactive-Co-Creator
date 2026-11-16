@@ -19,7 +19,11 @@ import {
 } from './historyEngine.ts';
 import { applyProposedOperations } from './nlBatchEngine.ts';
 import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts';
-import { getDeletedProjectIds, type StorageSaveResult } from './storageEngine.ts';
+import {
+  getDeletedProjectIds,
+  type IndexedDbLoadStatus,
+  type StorageSaveResult,
+} from './storageEngine.ts';
 import type {
   AiPolishProposal,
   AiRequestAction,
@@ -1050,6 +1054,7 @@ export function buildReviewDiffModel(params: {
   beforePrompt: string;
   afterPrompt: string;
   hasChanges: boolean;
+  hasStaleBatch: boolean;
 } {
   const {
     project,
@@ -1123,8 +1128,22 @@ export function buildReviewDiffModel(params: {
     simulatedSnapshot = appliedDec.snapshot;
   }
 
-  if (stagedBatch && stagedBatch.baseProjectId === project.id) {
+  const currentRevision = project.revision ?? 1;
+  const isStagedBatchForProject = Boolean(
+    stagedBatch && (stagedBatch.baseProjectId === undefined || stagedBatch.baseProjectId === project.id)
+  );
+  const isStagedBatchRevisionStale = Boolean(
+    isStagedBatchForProject &&
+      stagedBatch?.baseRevision !== undefined &&
+      stagedBatch.baseRevision !== currentRevision
+  );
+
+  if (stagedBatch && isStagedBatchForProject) {
     const selectedOps = stagedBatch.operations.filter((o) => o.selected);
+    const staleWarning = isStagedBatchRevisionStale
+      ? `Stale batch preview: generated at revision r${stagedBatch.baseRevision}, current revision is r${currentRevision}. Re-preview before applying.`
+      : undefined;
+
     for (const op of selectedOps) {
       const targetLabel =
         op.type === 'update_story_bible'
@@ -1143,11 +1162,11 @@ export function buildReviewDiffModel(params: {
         beforeValue: op.previousValue ?? 'Unspecified',
         afterValue: op.nextValue ?? op.newEntityName ?? (op.type === 'exclude_entity' ? 'Absent' : ''),
         provenance: 'user-edit',
-        conflictWarning: op.conflictWarning,
+        conflictWarning: op.conflictWarning ?? staleWarning,
       });
     }
 
-    if (selectedOps.length > 0) {
+    if (selectedOps.length > 0 && !isStagedBatchRevisionStale) {
       const appliedBatch = applyProposedOperations(simulatedSnapshot, selectedOps);
       if (appliedBatch.errors.length === 0) {
         simulatedSnapshot = appliedBatch.snapshot;
@@ -1184,11 +1203,12 @@ export function buildReviewDiffModel(params: {
   const beforePrompt = snapshot.refinedPrompt;
   return {
     projectId: project.id,
-    revision: project.revision ?? 1,
+    revision: currentRevision,
     items,
     beforePrompt,
     afterPrompt,
     hasChanges: items.length > 0 || beforePrompt !== afterPrompt,
+    hasStaleBatch: isStagedBatchRevisionStale,
   };
 }
 
@@ -1402,5 +1422,48 @@ export function createSerializedProjectSaveQueue(
     resetProject,
   };
 }
+
+export type HydrationWriteGate =
+  | 'pending'
+  | 'ready'
+  | 'unavailable'
+  | 'blocked-read-error';
+
+export function resolveHydrationWriteGate(status: IndexedDbLoadStatus): HydrationWriteGate {
+  if (status === 'ok' || status === 'empty') {
+    return 'ready';
+  }
+  if (status === 'unavailable') {
+    return 'unavailable';
+  }
+  return 'blocked-read-error';
+}
+
+export function shouldAllowUnsolicitedPersistence(params: {
+  hydrationGate: HydrationWriteGate;
+  hasLocalEditsSinceMount: boolean;
+  isDeleted: boolean;
+  storageAlertType?: 'conflict' | 'quota' | 'error' | null;
+  storageAlertProjectId?: string | null;
+  activeProjectId: string;
+}): boolean {
+  if (params.isDeleted) {
+    return false;
+  }
+  if (
+    params.storageAlertType === 'conflict' &&
+    params.storageAlertProjectId === params.activeProjectId
+  ) {
+    return false;
+  }
+  if (params.hydrationGate === 'blocked-read-error') {
+    return false;
+  }
+  if (params.hydrationGate === 'pending' && !params.hasLocalEditsSinceMount) {
+    return false;
+  }
+  return true;
+}
+
 
 

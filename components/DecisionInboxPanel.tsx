@@ -423,10 +423,11 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
                   type="button"
                   onClick={handleCommitBatchOperations}
                   disabled={
+                    isPreviewStale ||
                     batchPreview.operations.every((o) => !o.selected) ||
                     ((batchPreview.unhandledClauses?.length ?? 0) > 0 && !acknowledgeUnhandledClauses)
                   }
-                  className="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded transition-colors"
+                  className="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded transition-colors"
                 >
                   Apply Approved Batch ({batchPreview.operations.filter((o) => o.selected).length})
                 </button>
