@@ -576,4 +576,24 @@ describe('Release Qualification & Final Data Safety Suite', () => {
     assert.ok(content.includes('npm run build'), 'CI must run npm run build');
     assert.ok(content.includes('22'), 'CI must target supported Node.js 22');
   });
+
+  it('Task 3b: GitHub Actions CI workflow runs scripts/e2e-browser-smoke.sh without paid Gemini secrets', () => {
+    const workflowPath = path.resolve(process.cwd(), '.github/workflows/ci.yml');
+    const content = fs.readFileSync(workflowPath, 'utf8');
+    assert.ok(content.includes('e2e-browser:'), 'CI must include dedicated e2e-browser job');
+    assert.ok(content.includes('needs: verify'), 'e2e-browser job must depend on verify job');
+    assert.ok(
+      content.includes('scripts/e2e-browser-smoke.sh'),
+      'CI e2e-browser job must execute scripts/e2e-browser-smoke.sh'
+    );
+    assert.ok(
+      content.includes('@playwright/cli@0.1.22') && content.includes('install-browser chromium'),
+      'CI e2e-browser job must reproducibly install pinned @playwright/cli and chromium'
+    );
+    assert.equal(
+      content.includes('GEMINI_API_KEY'),
+      false,
+      'CI e2e-browser job must remain strictly non-billable without GEMINI_API_KEY'
+    );
+  });
 });
