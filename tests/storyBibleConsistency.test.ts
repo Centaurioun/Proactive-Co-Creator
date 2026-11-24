@@ -19,16 +19,25 @@ import { resolveProviderPrompt, synthesizeRefinedPrompt } from '../lib/promptBui
 import { evaluateProjectConsistency } from '../lib/consistencyChecker.ts';
 
 describe('T1: Story Bible Clear, Sync Authority, Clarifications & Validation (SB-01 through SB-06)', () => {
-  it('excludes unattributed belief claims from story and image prompts and blocks unknown legacy context', () => {
+  it('excludes unattributed belief and reported quotes from provider prompts and blocks unknown legacy context', () => {
     const base = createSampleProject().snapshot;
     const character = base.entities.find(entity => entity.category === 'character')!;
-    character.attributes.push({ id: 'imported-belief', name: 'secret', value: [{ name: 'Only Mira believes this' }], confirmedValue: 'Only Mira believes this', status: 'confirmed', provenance: 'accepted-suggestion', epistemicKind: 'belief', sourceBacked: true, presence_in_prompt: true });
+    character.attributes.push(
+      { id: 'imported-belief', name: 'secret', value: [{ name: 'Only Mira believes this' }], confirmedValue: 'Only Mira believes this', status: 'confirmed', provenance: 'accepted-suggestion', epistemicKind: 'belief', sourceBacked: true, presence_in_prompt: true },
+      // The quoted wording names Mira, but the record has no verified claimant/reporter association.
+      { id: 'unattributed-report', name: 'rumor', value: [{ name: '“Mira said the island is alive.”' }], confirmedValue: '“Mira said the island is alive.”', status: 'confirmed', provenance: 'accepted-suggestion', epistemicKind: 'reported', sourceBacked: true, presence_in_prompt: true },
+    );
+    assert.equal('claimantId' in character.attributes[1], false, 'quoted content alone is not a verified claimant association');
+    assert.equal('reporterId' in character.attributes[1], false, 'quoted content alone is not a verified reporter association');
     assert.equal(synthesizeRefinedPrompt(base, 'story').includes('Only Mira believes this'), false);
     assert.equal(synthesizeRefinedPrompt(base, 'image').includes('Only Mira believes this'), false);
+    assert.equal(synthesizeRefinedPrompt(base, 'story').includes('Mira said the island is alive'), false);
+    assert.equal(synthesizeRefinedPrompt(base, 'image').includes('Mira said the island is alive'), false);
     const safe = resolveProviderPrompt({ ...createSampleProject(), snapshot: base }, 'story');
     assert.equal(safe.ok, true);
     if (safe.ok) {
       assert.equal(safe.prompt.includes('Only Mira believes this'), false, 'provider prompt excludes the unsupported claim');
+      assert.equal(safe.prompt.includes('Mira said the island is alive'), false, 'provider prompt does not infer a reporter from quoted text');
       assert.match(safe.warning ?? '', /withheld/i, 'withholding is surfaced instead of silent');
     }
     character.attributes.find(attribute => attribute.id === 'imported-belief')!.epistemicKind = undefined;
