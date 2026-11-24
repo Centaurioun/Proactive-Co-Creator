@@ -16,7 +16,13 @@ export interface BoundedArchiveEntry {
 export interface BoundedArchiveReader {
   /** Compressed archive byte length, checked before any member is read. */
   archiveBytes: number;
-  /** Validated metadata for file entries only. Names must be archive-relative. */
+  /**
+   * Validated file entries in physical ZIP local-header order (not central-directory
+   * order). The adapter must prove that ordering from local headers and validate
+   * that the first entry is the stored, unencrypted `mimetype` with no local-header
+   * extra field. The core checks list order and declared method/encryption metadata,
+   * but cannot independently inspect ZIP headers or prove absence of extra fields.
+   */
   entries(): readonly BoundedArchiveEntry[];
   /**
    * Reads exactly one validated member and must honor maxBytes before returning it.
@@ -133,6 +139,7 @@ interface XmlElement {
   children: XmlNode[];
 }
 type XmlNode = XmlTextNode | XmlElement;
+interface XmlNodeBudget { used: number }
 
 function fail(status: FailureStatus, message: string, coverage?: EpubCoverage): never {
   throw new ParseFault(status, message, coverage);
@@ -238,12 +245,11 @@ function readTagEnd(xml: string, start: number): number {
   fail('malformed', 'EPUB XML contains an incomplete tag.');
 }
 
-function parseXml(xml: string, limits: EpubParseLimits): XmlElement {
+function parseXml(xml: string, limits: EpubParseLimits, budget: XmlNodeBudget): XmlElement {
   if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml)) fail('unsupported', 'EPUB XML declarations with DTD or entities are not supported.');
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(xml)) fail('malformed', 'EPUB XML contains invalid control characters.');
   let cursor = 0;
   let root: XmlElement | undefined;
-  let nodeCount = 0;
   let sawXmlDeclaration = false;
   const stack: XmlElement[] = [];
   const addText = (value: string) => {
@@ -252,8 +258,8 @@ function parseXml(xml: string, limits: EpubParseLimits): XmlElement {
       if (value.trim()) fail('malformed', 'EPUB XML has text outside its root element.');
       return;
     }
-    nodeCount += 1;
-    if (nodeCount > limits.maxXmlNodes) fail('limit-exceeded', 'EPUB XML exceeds the configured node limit.');
+    budget.used += 1;
+    if (budget.used > limits.maxXmlNodes) fail('limit-exceeded', 'EPUB archive exceeds the aggregate XML node limit.');
     stack[stack.length - 1].children.push({ type: 'text', value });
   };
 
@@ -366,8 +372,8 @@ function parseXml(xml: string, limits: EpubParseLimits): XmlElement {
         fail('malformed', 'EPUB XML attribute uses an invalid or undeclared namespace prefix.');
       }
     }
-    nodeCount += 1;
-    if (nodeCount > limits.maxXmlNodes) fail('limit-exceeded', 'EPUB XML exceeds the configured node limit.');
+    budget.used += 1;
+    if (budget.used > limits.maxXmlNodes) fail('limit-exceeded', 'EPUB archive exceeds the aggregate XML node limit.');
     const element: XmlElement = { type: 'element', name, localName, namespaceUri, attributes, namespaceBindings, children: [] };
     if (stack.length) stack[stack.length - 1].children.push(element);
     else if (!root) root = element;
@@ -477,6 +483,7 @@ export async function parseEpub(
 ): Promise<EpubParseResult> {
   const coverage = emptyCoverage();
   const warnings: string[] = [];
+  const xmlNodeBudget: XmlNodeBudget = { used: 0 };
   try {
     validateLimits(limits);
     if (!Number.isSafeInteger(reader.archiveBytes) || reader.archiveBytes < 0) fail('malformed', 'EPUB archive reader reported an invalid archive size.');
@@ -484,6 +491,7 @@ export async function parseEpub(
     const listed = reader.entries();
     if (!Array.isArray(listed)) fail('malformed', 'EPUB archive reader returned invalid member metadata.');
     if (listed.length > limits.maxEntries) fail('limit-exceeded', 'EPUB archive exceeds the configured member-count limit.');
+    if (listed[0]?.path !== 'mimetype') fail('malformed', 'EPUB mimetype must be the first physical archive member.');
     const entries = new Map<string, BoundedArchiveEntry>();
     let expandedTotal = 0;
     let compressedTotal = 0;
@@ -516,7 +524,7 @@ export async function parseEpub(
     const mimetype = await resolveTextMember(reader, entries, 'mimetype', limits);
     if (mimetype !== 'application/epub+zip') fail('malformed', 'EPUB mimetype member has an unexpected value.');
     const containerXml = await resolveTextMember(reader, entries, 'META-INF/container.xml', limits);
-    const container = parseXml(containerXml, limits);
+    const container = parseXml(containerXml, limits, xmlNodeBudget);
     if (container.localName !== 'container' || container.namespaceUri !== CONTAINER_NS) fail('unsupported', 'EPUB container namespace or root is not supported.');
     const rootfiles = findDescendant(container, 'rootfiles', CONTAINER_NS);
     if (!rootfiles) fail('malformed', 'EPUB container does not declare a rootfile list.');
@@ -525,7 +533,7 @@ export async function parseEpub(
     const packagePath = rootfile.attributes.get('full-path') ?? '';
     if (!isSafeMemberName(packagePath, limits.maxPathLength)) fail('unsupported', 'EPUB rootfile path is not a supported archive-relative member name.');
     const packageXml = await resolveTextMember(reader, entries, packagePath, limits);
-    const opf = parseXml(packageXml, limits);
+    const opf = parseXml(packageXml, limits, xmlNodeBudget);
     if (opf.localName !== 'package' || opf.namespaceUri !== OPF_NS) fail('unsupported', 'EPUB package namespace or root is not supported.');
     const version = opf.attributes.get('version') ?? '';
     if (!version.startsWith('2.') && !version.startsWith('3.')) fail('unsupported', 'Only EPUB package versions 2.x and 3.x are supported by this core.');
@@ -582,7 +590,7 @@ export async function parseEpub(
         coverage.unsupportedItems.push(`${plannedItem.id}: encrypted or unsupported member encoding`);
         continue;
       }
-      const xhtml = parseXml(await resolveTextMember(reader, entries, plannedItem.path, limits), limits);
+      const xhtml = parseXml(await resolveTextMember(reader, entries, plannedItem.path, limits), limits, xmlNodeBudget);
       if (xhtml.localName !== 'html' || xhtml.namespaceUri !== XHTML_NS) {
         coverage.omittedSpineItems += 1;
         coverage.unsupportedItems.push(`${plannedItem.id}: unsupported XHTML root or namespace`);

@@ -82,6 +82,35 @@ test('EPUB requires its declared mimetype member', async () => {
   assert.match(result.reason ?? '', /mimetype/i);
 });
 
+test('EPUB requires mimetype to be first in the reader validated physical entry order', async () => {
+  const archive = readerFor(validFiles(), ['META-INF/container.xml', 'mimetype', 'OEBPS/package.opf', 'OEBPS/chapter-01.xhtml', 'OEBPS/chapter-02.xhtml']);
+  const result = await parseEpub(archive);
+  assert.equal(result.status, 'malformed');
+  assert.match(result.reason ?? '', /mimetype.*first/i);
+  assert.deepEqual(archive.calls, []);
+});
+
+test('EPUB applies one aggregate XML node budget across many individually small spine documents', async () => {
+  const files: Record<string, string> = {
+    'mimetype': 'application/epub+zip',
+    'META-INF/container.xml': container,
+  };
+  const items: string[] = [];
+  const refs: string[] = [];
+  for (let index = 0; index < 8; index += 1) {
+    const name = `chapter-${index}.xhtml`;
+    items.push(`<item id="c${index}" href="${name}" media-type="application/xhtml+xml"/>`);
+    refs.push(`<itemref idref="c${index}"/>`);
+    files[`OEBPS/${name}`] = `<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Chapter ${index}</p></body></html>`;
+  }
+  files['OEBPS/package.opf'] = `<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest>${items.join('')}</manifest><spine>${refs.join('')}</spine></package>`;
+  const result = await parseEpub(readerFor(files), { ...DEFAULT_EPUB_PARSE_LIMITS, maxXmlNodes: 32 });
+  assert.equal(result.status, 'limit-exceeded');
+  assert.match(result.reason ?? '', /aggregate XML node limit/i);
+  assert.equal(result.text, '');
+  assert.deepEqual(result.blocks, []);
+});
+
 test('EPUB distinguishes no readable narrative text from a malformed XML document', async () => {
   const noText = readerFor({
     ...validFiles(),
