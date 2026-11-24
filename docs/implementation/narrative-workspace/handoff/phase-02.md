@@ -3,7 +3,7 @@
 Date: 2026-11-24
 Branch: `codex/phase-02-intelligent-narrative-import`
 Base: Phase 1 branch `codex/phase-01-foundation-writing` (commit `cc4fd6b4cd657ba4ab8a919ee6a7aeb99ead098f`)
-Status: implementation and local qualification complete; PR publication/hosted CI pending at handoff authoring.
+Status: implementation and local qualification complete; draft PR published; hosted CI pending for the recorded head revision.
 
 ## Delivered
 
@@ -44,4 +44,4 @@ The Playwright import proof uses synthetic data and intercepts the extraction AP
 
 ## Publication record
 
-Update this section after the Phase 2 branch is pushed and the draft PR targeting the Phase 1 branch is created. Record the PR URL, CI run URL, exact head SHA and hosted conclusion; leave pending if GitHub cannot be reached.
+Draft PR #10: https://github.com/Centaurioun/Proactive-Co-Creator/pull/10, targeting `codex/phase-01-foundation-writing`. Initial published head: `3edcf8fc379596f5af6645c6fbe8df6cac9ca9cb`. At first status check there were no check runs and commit status was pending; no hosted result is claimed. PR is open, draft, unmerged. Recheck CI against the final handoff commit and update the result if GitHub reports a conclusion.
