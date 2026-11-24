@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import AttributeEditor from './AttributeEditor';
-import { isSceneEntityName } from '../lib/beliefGraphUtils';
+import { getEffectiveAttributeValue, isSceneEntityName } from '../lib/beliefGraphUtils';
 import { resolveConsistencyIssueTarget } from '../lib/consistencyChecker';
 import { manuscriptSections } from '../lib/narrative/manuscriptModel';
 import OpportunityCenter from './opportunities/OpportunityCenter';
 import type { OpportunityProposalInput, OpportunityProposalStatus } from '../lib/narrative/opportunityProposals';
+import { computePromptDigest } from '../lib/promptBuilder';
 import type {
   ConsistencyIssue,
   ConsistencyIssueTarget,
@@ -69,6 +70,17 @@ interface ContextualInspectorProps {
 }
 
 type StoryBibleDomain = 'core' | 'narrative' | 'constraints' | 'visual';
+
+interface ConsistencyFixPreview {
+  issueId: string;
+  projectId: string;
+  baseRevision: number;
+  baseSnapshotDigest: string;
+  baseSnapshotJson: string;
+  entityId: string;
+  before: string;
+  after: string;
+}
 
 const STORY_BIBLE_DOMAINS: Array<{ id: StoryBibleDomain; label: string; description: string }> = [
   {
@@ -252,6 +264,16 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   isLoading,
 }) => {
   const { snapshot } = project;
+  const snapshotJson = useMemo(() => JSON.stringify(snapshot), [snapshot]);
+  const [consistencyFixPreview, setConsistencyFixPreview] = useState<ConsistencyFixPreview | null>(null);
+  const previewIsStale = consistencyFixPreview !== null && (
+    consistencyFixPreview.projectId !== project.id ||
+    consistencyFixPreview.baseRevision !== (project.revision ?? 1) ||
+    consistencyFixPreview.baseSnapshotDigest !== computePromptDigest(snapshotJson, snapshot.mode) ||
+    consistencyFixPreview.baseSnapshotJson !== snapshotJson ||
+    !consistencyIssues.some(issue => issue.id === consistencyFixPreview.issueId) ||
+    !snapshot.entities.some(entity => entity.id === consistencyFixPreview.entityId)
+  );
   const [renameDraft, setRenameDraft] = useState<string>('');
   const [newAttrName, setNewAttrName] = useState('');
   const [newAttrValue, setNewAttrValue] = useState('');
@@ -1396,6 +1418,32 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                       Recommendation: {issue.suggestedFix}
                     </p>
                   )}
+                  {issue.category === 'violated_exclusion' && !issue.id.startsWith('issue_excl_conflict_') &&
+                    issue.targets?.some(target => target.kind === 'entity' && target.entityId && issue.id === `issue_excl_${target.entityId}`) && (
+                    <button
+                      type="button"
+                      className="px-2.5 py-1 text-[11px] font-semibold rounded border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-gray-900 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                      onClick={() => {
+                        const target = issue.targets?.find(item => item.kind === 'entity' && item.entityId && issue.id === `issue_excl_${item.entityId}`);
+                        if (!target?.entityId) return;
+                        const resolved = resolveConsistencyIssueTarget(snapshot, target);
+                        if (!resolved.ok || resolved.kind !== 'entity') return;
+                        const existence = resolved.entity.attributes.find(attribute => attribute.name === 'existence' || attribute.name === 'existence_in_image');
+                        setConsistencyFixPreview({
+                          issueId: issue.id,
+                          projectId: project.id,
+                          baseRevision: project.revision ?? 1,
+                          baseSnapshotDigest: computePromptDigest(snapshotJson, snapshot.mode),
+                          baseSnapshotJson: snapshotJson,
+                          entityId: resolved.entity.id!,
+                          before: existence ? `Present (${getEffectiveAttributeValue(existence)})` : 'Present (implicit; no existence field)',
+                          after: 'Absent (proposed)',
+                        });
+                      }}
+                    >
+                      Preview possible fix
+                    </button>
+                  )}
                   {issue.targets && issue.targets.length > 0 && (
                     <div
                       className="flex flex-wrap items-center gap-1.5 pt-1"
@@ -1432,6 +1480,36 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                 </div>
               ))}
             </div>
+          )}
+          {consistencyFixPreview && (
+            <section aria-labelledby="consistency-fix-preview-heading" className="rounded-md border border-indigo-300 dark:border-indigo-700 p-3 space-y-2 text-xs">
+              <div className="flex items-start justify-between gap-2">
+                <h4 id="consistency-fix-preview-heading" className="font-semibold">Possible change preview</h4>
+                <button type="button" className="underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" onClick={() => setConsistencyFixPreview(null)}>
+                  Close preview
+                </button>
+              </div>
+              {previewIsStale ? (
+                <p role="status" className="text-amber-800 dark:text-amber-200">
+                  This proposal is unavailable because its project, revision, contents, finding, or target changed. Reopen a current finding to preview again.
+                </p>
+              ) : (
+                <>
+                  <dl className="grid gap-2 sm:grid-cols-2">
+                    <div className="rounded border border-red-300 dark:border-red-800 p-2">
+                      <dt className="font-semibold">Before</dt>
+                      <dd>{consistencyFixPreview.before}</dd>
+                    </div>
+                    <div className="rounded border border-emerald-300 dark:border-emerald-800 p-2">
+                      <dt className="font-semibold">Proposed after</dt>
+                      <dd>{consistencyFixPreview.after}</dd>
+                    </div>
+                  </dl>
+                  <p className="text-gray-600 dark:text-gray-300">Read-only preview · project {consistencyFixPreview.projectId} · revision r{consistencyFixPreview.baseRevision} · base {consistencyFixPreview.baseSnapshotDigest}</p>
+                  <p className="font-medium">No project change has been made.</p>
+                </>
+              )}
+            </section>
           )}
         </div>
       )}
