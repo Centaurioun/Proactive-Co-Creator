@@ -2,7 +2,7 @@
 
 ## Status and base
 
-This is a proposed stacked change based on dependency PR #3, currently based on the final dependency qualification commit `3c30befbc64088b9e3066d45ecf7350313ec4b07` (itself based on PR #3 head `e32fdb4457f2410b563395ec938828055c604b2b`). PR #3 remains open and draft. This TypeScript PR must target PR #3's branch until that PR is integrated, then be retargeted to `main` and requalified. No merge is authorized here.
+This is a proposed stacked change based on dependency PR #3, currently based on the final dependency qualification commit `3c30befbc64088b9e3066d45ecf7350313ec4b07` (itself based on PR #3 head `e32fdb4457f2410b563395ec938828055c604b2b`). PR #3 remains open and draft. The repository workflow filters pull-request checks to a `main` base, so PR #6 is temporarily targeted to `main` to start its CI run for the exact combined tree; after checks complete it will be returned to PR #3's branch and the final stacked base recorded. It must target PR #3's branch until that PR is integrated, then be retargeted to `main` and requalified. No merge is authorized here.
 
 PR: PENDING publication. Actions: PENDING. Local implementation checks are recorded below; remote Linux/macOS evidence is not yet available.
 
