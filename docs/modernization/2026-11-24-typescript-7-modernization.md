@@ -2,9 +2,9 @@
 
 ## Status and base
 
-This is a proposed stacked change based on dependency PR #3, currently based on the final dependency qualification commit `3c30befbc64088b9e3066d45ecf7350313ec4b07` (itself based on PR #3 head `e32fdb4457f2410b563395ec938828055c604b2b`). PR #3 remains open and draft. The repository workflow filters pull-request checks to a `main` base, so PR #6 is temporarily targeted to `main` to start its CI run for the exact combined tree; after checks complete it will be returned to PR #3's branch and the final stacked base recorded. It must target PR #3's branch until that PR is integrated, then be retargeted to `main` and requalified. No merge is authorized here.
+This is a proposed stacked change based on dependency PR #3, currently based on the final dependency qualification commit `3c30befbc64088b9e3066d45ecf7350313ec4b07` (itself based on PR #3 head `e32fdb4457f2410b563395ec938828055c604b2b`). PR #3 remains open and draft. The repository workflow filters pull-request checks to a `main` base, so PR #6 was temporarily targeted to `main` to start CI for the combined tree. After successful checks it will be returned to PR #3's branch and the final stacked base recorded. It must target PR #3's branch until that PR is integrated, then be retargeted to `main` and requalified. No merge is authorized here.
 
-PR: PENDING publication. Actions: PENDING. Local implementation checks are recorded below; remote Linux/macOS evidence is not yet available.
+PR #6: [Modernize typechecking with native TypeScript 7](https://github.com/Centaurioun/Proactive-Co-Creator/pull/6), draft. Exact implementation/workflow CI head `e7e88a9d368df5b5ed16c804ec061534a2058afb`; the report follow-up commit receives its own final-head run. The PR will be retargeted to dependency PR #3 after that run completes.
 
 ## Compatibility findings
 
@@ -75,13 +75,13 @@ Local checks on the TypeScript branch, after strict install:
 - ESLint: PASS; Node tests: 106/106 PASS; production build: PASS.
 - `npm audit` and `npm audit --omit=dev`: PASS, 0 vulnerabilities each.
 - Earlier PR #3 base qualification provides Node 22.23.5/npm 10.9.9 and Node 26.x installation/runtime coverage plus Chromium E2E-A–I, 9/9 PASS, at [Actions run 45336184627](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45336184627). This is base evidence, not evidence for this TypeScript head.
-- This PR's own Linux matrix and browser E2E: PENDING. macOS ARM64 is locally installed and benchmarked; a clean ARM64 `npm ci` was not separately repeated for this alias change. No paid Gemini requests were made.
+- This PR's own Linux Node 22/26 matrix and Chromium browser E2E-A–I: PASS on implementation/workflow head `e7e88a9d368df5b5ed16c804ec061534a2058afb` in [Actions run 45338161690](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45338161690). Both Node jobs passed strict install, compiler routing and versions, both typechecks, lint, 106/106 tests, build and both audits (0 vulnerabilities). Chromium E2E-A–I passed 9/9; controlled failure artifact diagnostics ran and the browser artifact uploaded. macOS ARM64 `npm ci --strict-peer-deps` and benchmark ran locally on Node 26.12.1/npm 11.20.0. No paid Gemini requests were made.
 
 The CI update uses `npm ci --strict-peer-deps`, prints both compiler versions and the classic API version, runs both typechecks, and retains lint, tests, build, Node 22/26 matrix, browser E2E and artifact diagnostics. Audit runs for full and production dependencies.
 
 ## Runtime and platform policy
 
-The dependency PR retains Node `>=22.12.0` and uses `@types/node@22.20.5`; this branch inherits that policy. TypeScript 7 is a CLI typechecker only and does not replace Node, `tsx`, or the production server runtime. Local checks used Node 26.12.1; PR #3 remote CI separately qualified Node 22 and 26. This branch still needs its own remote Node 22/26 and Linux runs before acceptance. No claim is made that Google AI Studio's hosted Node runtime was tested.
+The dependency PR retains Node `>=22.12.0` and uses `@types/node@22.20.5`; this branch inherits that policy. TypeScript 7 is a CLI typechecker only and does not replace Node, `tsx`, or the production server runtime. Local checks used Node 26.12.1; this branch's remote Linux CI qualified Node 22 and 26. No claim is made that Google AI Studio's hosted Node runtime was tested.
 
 ## Remaining warnings, rollback and exit criteria
 
@@ -93,9 +93,9 @@ The dependency PR retains Node `>=22.12.0` and uses `@types/node@22.20.5`; this 
 
 ## Publication record
 
-- TypeScript implementation commit: PENDING.
-- PR URL and target: PENDING; must target dependency PR #3 branch while it remains unmerged.
-- TypeScript PR Actions URL and final artifact SHA/URL: PENDING until remote CI runs for the exact final head.
+- TypeScript implementation commit: `ddf42c06710f575b554ba05f00c01c3a3e10e763`; CI workflow commit: `e2a25bfdc0a276aff78b668f1a1398ce0c190985`; subsequent report/CI-trigger documentation commit: `e7e88a9d368df5b5ed16c804ec061534a2058afb`.
+- PR: [#6](https://github.com/Centaurioun/Proactive-Co-Creator/pull/6), draft; stacked on dependency branch `experiment/dependencies-latest-except-typescript-2026-11-24` at base `3c30befbc64088b9e3066d45ecf7350313ec4b07` after its CI check.
+- Remote Actions: [run 45338161690](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45338161690). Artifact [playwright-e2e-artifacts](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45338161690/artifacts/14895196463), 7,383,264 bytes, SHA256 `74d9d3cfc207796b1a2de83ccbcabdab9740b929eec73e8cf0d7333279b05341`.
 - Dependency base PR: [PR #3](https://github.com/Centaurioun/Proactive-Co-Creator/pull/3).
 - Dependency base Actions/artifact: [run 45336184627](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45336184627), [artifact 14894367074](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45336184627/artifacts/14894367074), SHA256 `d0700b06dc27bd75262dfc739654ac5881ea5e86c287bf77828f6e7f9780076a`.
 
@@ -106,6 +106,6 @@ The dependency PR retains Node `>=22.12.0` and uses `@types/node@22.20.5`; this 
 3. **Implement:** add explicit aliases/scripts and the narrow Vite ambient type required for CSS imports.
 4. **Verify:** install strictly; run both compilers, controlled error, lint, tests, build and audits.
 5. **Measure:** compare TS5/6/7 on the same 53 project files over five runs; record spread, memory and startup separately.
-6. **Review:** keep CI gates and Node matrix, document stacked dependency, evidence boundaries and rollback; remote qualification remains pending.
+6. **Review:** keep CI gates and Node matrix, document stacked dependency, evidence boundaries and rollback; remote Linux, both Node versions, audits, and browser suite passed on the recorded implementation/workflow head.
 
 The six-cycle review of PR #3 is recorded in `2026-11-24-dependency-latest-experiment.md`; this report's six-cycle review covers TypeScript modernization. The six labels document iterative review passes, not six independent formal approvals.
