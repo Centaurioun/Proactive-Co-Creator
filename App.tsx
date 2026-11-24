@@ -77,6 +77,7 @@ import {
 } from './lib/projectController';
 import { synthesizeRefinedPrompt } from './lib/promptBuilder';
 import { transitionIssue } from './lib/narrative/issueRegistry';
+import { createOpportunityProposal, transitionOpportunityProposal, type OpportunityProposalInput, type OpportunityProposalStatus } from './lib/narrative/opportunityProposals';
 import {
   deleteProjectCompletely,
   exportProjectToJson,
@@ -733,6 +734,42 @@ function App() {
     hasLocalEditsSinceMountRef.current = true;
     setProject(next);
     setStatusNotification(`Issue marked ${disposition}.`);
+  };
+
+  const handleCreateOpportunity = (input: OpportunityProposalInput, expectedRevision: number) => {
+    try {
+      if (hydrationGateRef.current !== 'ready') throw new Error('Wait for project storage to finish loading before saving an opportunity.');
+      if (storageAlert?.type === 'conflict' && storageAlert.projectId === activeProjectRef.current.id) {
+        throw new Error('Resolve the project storage conflict before saving an opportunity.');
+      }
+      const before = activeProjectRef.current;
+      const next = createOpportunityProposal(before, expectedRevision, input);
+      activeProjectRef.current = next;
+      hasLocalEditsSinceMountRef.current = true;
+      setProject(next);
+      setStatusNotification('Creative opportunity saved as a pending idea.');
+    } catch (cause) {
+      setStatusNotification(cause instanceof Error ? cause.message : 'Could not save this opportunity.');
+    }
+  };
+
+  const handleTransitionOpportunity = (id: string, status: OpportunityProposalStatus, expectedRevision: number) => {
+    try {
+      if (hydrationGateRef.current !== 'ready') throw new Error('Wait for project storage to finish loading before updating an opportunity.');
+      if (storageAlert?.type === 'conflict' && storageAlert.projectId === activeProjectRef.current.id) {
+        throw new Error('Resolve the project storage conflict before updating an opportunity.');
+      }
+      const before = activeProjectRef.current;
+      const next = transitionOpportunityProposal(before, id, status, expectedRevision);
+      activeProjectRef.current = next;
+      hasLocalEditsSinceMountRef.current = true;
+      setProject(next);
+      setStatusNotification(status === 'accepted'
+        ? 'Opportunity accepted as an idea; no story content was changed.'
+        : `Opportunity marked ${status}.`);
+    } catch (cause) {
+      setStatusNotification(cause instanceof Error ? cause.message : 'Could not update this opportunity.');
+    }
   };
 
   // Keyboard shortcuts for Undo / Redo (F-04 / IA-08)
@@ -2357,6 +2394,8 @@ function App() {
             contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
             onExportContent={exportContent}
             onExportContentBundle={exportContentBundle}
+            onCreateOpportunity={handleCreateOpportunity}
+            onTransitionOpportunity={handleTransitionOpportunity}
             onImportProjectJson={handleImportProjectJson}
             onPreviewProjectJson={parseProjectBackup}
             isLoading={isGraphLoading}

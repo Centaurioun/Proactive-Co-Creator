@@ -78,6 +78,22 @@ const importProposalSchema = z.strictObject({
   evidence: evidenceSchema,
 });
 
+const opportunityProposalSchema = z.strictObject({
+  id,
+  projectId: id,
+  baseRevision: offset,
+  lifecycleRevision: offset,
+  description: z.string().min(1),
+  sourceRefs: z.array(id),
+  rationale: z.string().min(1),
+  benefit: z.string().min(1),
+  tradeOff: z.string().min(1),
+  assumptions: z.array(z.string()),
+  status: z.enum(['pending', 'deferred', 'staged', 'accepted', 'rejected']),
+  createdAt: offset,
+  updatedAt: offset,
+});
+
 export const narrativeSchema = z.strictObject({
   versions: z.array(z.strictObject({ id, sectionVersionIds: z.array(id) })),
   sectionVersions: z.array(z.strictObject({ id, section: sectionSchema })),
@@ -91,6 +107,7 @@ export const narrativeSchema = z.strictObject({
     anchors: z.array(evidenceSchema).min(1),
   })),
   proposals: z.array(importProposalSchema).optional(),
+  opportunities: z.array(opportunityProposalSchema).optional(),
   issues: z.array(z.strictObject({
     id,
     fingerprint: id,
