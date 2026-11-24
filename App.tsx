@@ -77,6 +77,7 @@ import {
 } from './lib/projectController';
 import { synthesizeRefinedPrompt } from './lib/promptBuilder';
 import { transitionIssue } from './lib/narrative/issueRegistry';
+import { projectRelationships } from './lib/narrative/projections/relationshipProjection';
 import { createOpportunityProposal, transitionOpportunityProposal, type OpportunityProposalInput, type OpportunityProposalStatus } from './lib/narrative/opportunityProposals';
 import {
   deleteProjectCompletely,
@@ -849,6 +850,7 @@ function App() {
     () => evaluateProjectConsistency(snapshot),
     [snapshot]
   );
+  const relationshipProjection = useMemo(() => projectRelationships(snapshot), [snapshot]);
 
   const latestStoryArtifact = useMemo(
     () => activeProject.artifacts.find((a) => a.mode === 'story' && a.storyText),
@@ -2306,6 +2308,7 @@ function App() {
               onAttributeChange={handleAttributeChange}
               currentPrompt={snapshot.originalIdea}
               consistencyIssues={consistencyIssues}
+              relationshipProjection={relationshipProjection}
             />
           </div>
 
