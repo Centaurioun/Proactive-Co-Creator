@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { NarrativeRecords } from './narrativeTypes.ts';
 export type GenerationMode = 'story' | 'image';
 
 export type DecisionProvenance =
@@ -330,6 +331,7 @@ export interface ProjectRevision {
 }
 
 export interface ProjectSnapshot {
+  manuscriptVersionId?: string;
   originalIdea: string;
   refinedPrompt: string;
   freeformNotes: string;
@@ -354,6 +356,7 @@ export interface PersistedUndoHistory {
 }
 
 export interface CreativeProject {
+  narrative?: NarrativeRecords;
   schemaVersion: number;
   id: string;
   revision: number;

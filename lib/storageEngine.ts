@@ -28,7 +28,10 @@ import type {
   StoryBibleFields,
 } from '../shared/types.ts';
 
+import { validateNarrativeRecords } from './narrative/evidenceRegistry.ts';
+
 export const CURRENT_SCHEMA_VERSION = 3;
+export const NARRATIVE_SCHEMA_VERSION = 4;
 export const LOCAL_STORAGE_PROJECTS_KEY = 'proactive_co_creator_projects_v2';
 export const LOCAL_STORAGE_ACTIVE_ID_KEY = 'proactive_co_creator_active_id_v2';
 export const LOCAL_STORAGE_BACKUP_V2_KEY = 'proactive_co_creator_backup_v2';
@@ -75,11 +78,15 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
 
   const obj = raw as Record<string, unknown>;
 
-  if (typeof obj.schemaVersion === 'number' && obj.schemaVersion > CURRENT_SCHEMA_VERSION) {
+  if (typeof obj.schemaVersion === 'number' && obj.schemaVersion > NARRATIVE_SCHEMA_VERSION) {
     throw new Error(
-      `Unsupported project schema version (${obj.schemaVersion}). This application supports up to schema version ${CURRENT_SCHEMA_VERSION}.`
+      `Unsupported project schema version (${obj.schemaVersion}). This application supports up to schema version ${NARRATIVE_SCHEMA_VERSION}.`
     );
   }
+
+  const hasNarrative = obj.schemaVersion === NARRATIVE_SCHEMA_VERSION;
+  if (!hasNarrative && obj.narrative !== undefined) throw new Error('Narrative data requires project schema 4.');
+  if (hasNarrative && (!obj.snapshot || typeof obj.snapshot !== 'object')) throw new Error('Missing schema 4 project snapshot.');
 
   const now = Date.now();
 
@@ -133,6 +140,7 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
     }
 
     let snapshot: ProjectSnapshot = {
+      ...(hasNarrative ? { manuscriptVersionId: rawSnap.manuscriptVersionId as string | undefined } : {}),
       originalIdea,
       refinedPrompt:
         typeof rawSnap.refinedPrompt === 'string' ? rawSnap.refinedPrompt : '',
@@ -192,8 +200,9 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
 
     void currentDigest;
 
-    return {
-      schemaVersion: CURRENT_SCHEMA_VERSION,
+    const project: CreativeProject = {
+      schemaVersion: hasNarrative ? NARRATIVE_SCHEMA_VERSION : CURRENT_SCHEMA_VERSION,
+      ...(hasNarrative ? { narrative: obj.narrative as CreativeProject['narrative'] } : {}),
       id: projectId,
       name:
         typeof obj.name === 'string' && obj.name.trim()
@@ -230,6 +239,8 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
           ? (obj.undoHistory as CreativeProject['undoHistory'])
           : undefined,
     };
+    if (hasNarrative) validateNarrativeRecords(project);
+    return project;
   }
 
   // Case 2: Legacy v1 project or raw BeliefState payload (may have `mode: 'video'`, `prompt`, `beliefGraph`, `story`, `images`)
@@ -483,7 +494,6 @@ export function exportProjectToJson(project: CreativeProject): string {
   return JSON.stringify(
     {
       ...project,
-      schemaVersion: CURRENT_SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
     },
     null,
@@ -645,10 +655,18 @@ function evaluateCasConflict(params: {
   existing: CreativeProject | undefined;
   candidate: CreativeProject;
   rawExpected?: number;
+  requireExactBase?: boolean;
   forceOverwrite: boolean;
   storeLabel: 'localStorage' | 'IndexedDB';
 }): StorageSaveResult | null {
   const { existing, candidate, rawExpected, forceOverwrite, storeLabel } = params;
+  if (existing && (existing.schemaVersion > NARRATIVE_SCHEMA_VERSION ||
+    (existing.schemaVersion === NARRATIVE_SCHEMA_VERSION && candidate.schemaVersion < NARRATIVE_SCHEMA_VERSION))) {
+    return { ok: false, saved: false, conflictDetected: true, error: 'Storage contains a newer project schema.' };
+  }
+  if (params.requireExactBase && (!existing || existing.revision !== rawExpected)) {
+    return { ok: false, saved: false, conflictDetected: true, error: 'The durable project revision changed. Reload storage before retrying.' };
+  }
   if (forceOverwrite || !existing) return null;
 
   const existingRev = typeof existing.revision === 'number' ? existing.revision : 1;
@@ -726,7 +744,7 @@ export function saveProjectToLocalStorage(
   project: CreativeProject,
   expectedBaseRevisionOrOptions?:
     | number
-    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean },
+    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean; requireExactBase?: boolean },
   options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): StorageSaveResult {
   if (typeof window === 'undefined' || !window.localStorage) {
@@ -753,6 +771,8 @@ export function saveProjectToLocalStorage(
     };
   }
 
+  const requireExactBase = typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+    ? expectedBaseRevisionOrOptions.requireExactBase : undefined;
   const rawExpected =
     typeof expectedBaseRevisionOrOptions === 'number'
       ? expectedBaseRevisionOrOptions
@@ -769,6 +789,7 @@ export function saveProjectToLocalStorage(
       existing,
       candidate: project,
       rawExpected,
+      requireExactBase,
       forceOverwrite: normalizedForce,
       storeLabel: 'localStorage',
     });
@@ -779,7 +800,6 @@ export function saveProjectToLocalStorage(
     const nextRevision = project.revision ?? 1;
     const projectToStore: CreativeProject = {
       ...project,
-      schemaVersion: CURRENT_SCHEMA_VERSION,
       revision: nextRevision,
       persistedRevision: nextRevision,
     };
@@ -1118,6 +1138,7 @@ export function verifyProjectCacheParity(
   if (!localProject || !idbProject) return false;
   if (localProject.id !== idbProject.id) return false;
   if ((localProject.name ?? '') !== (idbProject.name ?? '')) return false;
+  if (JSON.stringify(localProject.narrative) !== JSON.stringify(idbProject.narrative)) return false;
 
   const localRev = localProject.revision ?? 1;
   const idbRev = idbProject.revision ?? 1;
@@ -1320,7 +1341,7 @@ export async function saveProjectToIndexedDb(
   project: CreativeProject,
   expectedBaseRevisionOrOptions?:
     | number
-    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean },
+    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean; requireExactBase?: boolean },
   options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): Promise<StorageSaveResult> {
   if (typeof window === 'undefined' || !('indexedDB' in window) || !window.indexedDB) {
@@ -1345,6 +1366,8 @@ export async function saveProjectToIndexedDb(
     };
   }
 
+  const requireExactBase = typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+    ? expectedBaseRevisionOrOptions.requireExactBase : undefined;
   const rawExpected =
     typeof expectedBaseRevisionOrOptions === 'number'
       ? expectedBaseRevisionOrOptions
@@ -1388,75 +1411,89 @@ export async function saveProjectToIndexedDb(
           const getReq = store.get(project.id);
 
           getReq.onsuccess = () => {
-            // Guard against delayed saves resurrecting a project deleted while `get` was in flight
-            if (!allowDeleted && getDeletedProjectIds().has(project.id)) {
-              try {
-                tx.abort();
-              } catch {
-                // Ignore abort error
+            try {
+              // Guard against delayed saves resurrecting a project deleted while `get` was in flight
+              if (!allowDeleted && getDeletedProjectIds().has(project.id)) {
+                try {
+                  tx.abort();
+                } catch {
+                  // Ignore abort error
+                }
+                try {
+                  db.close();
+                } catch {
+                  // Ignore close error
+                }
+                finish({
+                  ok: false,
+                  saved: false,
+                  error: `Project "${project.id}" was deleted before IndexedDB write could commit.`,
+                });
+                return;
               }
-              try {
-                db.close();
-              } catch {
-                // Ignore close error
+
+              const existing = getReq.result as CreativeProject | undefined;
+              const casConflict = evaluateCasConflict({
+                existing,
+                candidate: project,
+                rawExpected,
+                requireExactBase,
+                forceOverwrite: normalizedForce,
+                storeLabel: 'IndexedDB',
+              });
+
+              if (casConflict) {
+                try {
+                  tx.abort();
+                } catch {
+                  // Ignore abort error
+                }
+                try {
+                  db.close();
+                } catch {
+                  // Ignore close error
+                }
+                finish(casConflict);
+                return;
               }
+
+              const nextRev = project.revision ?? 1;
+              const putReq = store.put({
+                ...project,
+                revision: nextRev,
+                persistedRevision: nextRev,
+              });
+              putReq.onerror = () => {
+                const errObj = putReq.error ?? tx.error;
+                const errMsg = errObj?.message ?? 'IndexedDB put request failed.';
+                const isQuota =
+                  errObj?.name === 'QuotaExceededError' || /quota/i.test(errMsg);
+                try {
+                  db.close();
+                } catch {
+                  // Ignore close error
+                }
+                finish({
+                  ok: false,
+                  saved: false,
+                  quotaExceeded: isQuota,
+                  persistedRevision: project.persistedRevision,
+                  error: errMsg,
+                });
+              };
+            } catch (error) {
+              // A synchronous put/validation exception leaves no write request in the transaction.
+              // Abort it explicitly so oncomplete cannot acknowledge an unwritten project.
+              try { tx.abort(); } catch { /* Transaction already closed. */ }
+              db.close();
+              const message = error instanceof Error ? error.message : 'IndexedDB write failed.';
               finish({
                 ok: false,
                 saved: false,
-                error: `Project "${project.id}" was deleted before IndexedDB write could commit.`,
+                error: message,
+                quotaExceeded: error instanceof Error && (error.name === 'QuotaExceededError' || /quota/i.test(message)),
               });
-              return;
             }
-
-            const existing = getReq.result as CreativeProject | undefined;
-            const casConflict = evaluateCasConflict({
-              existing,
-              candidate: project,
-              rawExpected,
-              forceOverwrite: normalizedForce,
-              storeLabel: 'IndexedDB',
-            });
-
-            if (casConflict) {
-              try {
-                tx.abort();
-              } catch {
-                // Ignore abort error
-              }
-              try {
-                db.close();
-              } catch {
-                // Ignore close error
-              }
-              finish(casConflict);
-              return;
-            }
-
-            const nextRev = project.revision ?? 1;
-            const putReq = store.put({
-              ...project,
-              schemaVersion: CURRENT_SCHEMA_VERSION,
-              revision: nextRev,
-              persistedRevision: nextRev,
-            });
-            putReq.onerror = () => {
-              const errObj = putReq.error ?? tx.error;
-              const errMsg = errObj?.message ?? 'IndexedDB put request failed.';
-              const isQuota =
-                errObj?.name === 'QuotaExceededError' || /quota/i.test(errMsg);
-              try {
-                db.close();
-              } catch {
-                // Ignore close error
-              }
-              finish({
-                ok: false,
-                saved: false,
-                quotaExceeded: isQuota,
-                persistedRevision: project.persistedRevision,
-                error: errMsg,
-              });
-            };
           };
 
           getReq.onerror = () => {
@@ -1564,7 +1601,7 @@ export async function persistProjectDurably(
   project: CreativeProject,
   expectedBaseRevisionOrOptions?:
     | number
-    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean },
+    | { expectedPersistedRevision?: number; forceOverwrite?: boolean; allowDeleted?: boolean; requireExactBase?: boolean },
   options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): Promise<StorageSaveResult> {
   const normalizedForce =
@@ -1575,6 +1612,8 @@ export async function persistProjectDurably(
     typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
       ? Boolean(expectedBaseRevisionOrOptions.allowDeleted)
       : Boolean(options?.allowDeleted);
+  const requireExactBase = typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+    ? expectedBaseRevisionOrOptions.requireExactBase : undefined;
   const rawExpected =
     typeof expectedBaseRevisionOrOptions === 'number'
       ? expectedBaseRevisionOrOptions
@@ -1595,9 +1634,14 @@ export async function persistProjectDurably(
   const hasIndexedDb =
     typeof window !== 'undefined' && 'indexedDB' in window && Boolean(window.indexedDB);
 
+  if (!hasIndexedDb && project.narrative) {
+    return { ok: false, saved: false, error: 'IndexedDB is required for manuscript saves.' };
+  }
+
   if (hasIndexedDb) {
     const idbRes = await saveProjectToIndexedDb(project, {
       expectedPersistedRevision: rawExpected,
+      requireExactBase,
       forceOverwrite: normalizedForce,
       allowDeleted,
     });
@@ -1678,6 +1722,7 @@ export async function persistProjectDurably(
 
   const fallbackRes = saveProjectToLocalStorage(project, {
     expectedPersistedRevision: rawExpected,
+    requireExactBase,
     forceOverwrite: normalizedForce,
     allowDeleted,
   });
@@ -1976,7 +2021,8 @@ export function reconcileHydratedProjects(params: {
         mergedById.set(ip.id, normalizedIp);
       }
     } else if (idbRev === localRev) {
-      const sameSnapshot = isSnapshotSemanticallyEqual(lp.snapshot, ip.snapshot);
+      const sameSnapshot = isSnapshotSemanticallyEqual(lp.snapshot, ip.snapshot) &&
+        JSON.stringify(lp.narrative) === JSON.stringify(ip.narrative);
       if (!sameSnapshot && !ignoreDivergenceConflict) {
         // Divergent creative decisions at the same revision: preserve local in mergedById and surface IDB as conflict
         divergenceConflictsById.set(ip.id, normalizedIp);

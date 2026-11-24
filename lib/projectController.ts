@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { recordNarrativeChange } from './narrative/changeAudit.ts';
 import {
   applyDecisionBatch,
   makeStableId,
@@ -990,7 +991,7 @@ export function commitUndoTransaction(
   );
 
   return {
-    project: nextProject,
+    project: recordNarrativeChange(project, nextProject, 'undo', undoneLabel),
     undoState: nextUndoState,
     undoneLabel,
     changed: true,
@@ -1031,7 +1032,7 @@ export function commitRedoTransaction(
   );
 
   return {
-    project: nextProject,
+    project: recordNarrativeChange(project, nextProject, 'redo', redoneLabel),
     undoState: nextUndoState,
     redoneLabel,
     changed: true,
@@ -1346,6 +1347,7 @@ export function reconcileAsyncSaveAcknowledgement(params: {
 }
 
 export interface SerializedSaveOptions {
+  requireExactBase?: boolean;
   expectedPersistedRevision?: number;
   forceOverwrite?: boolean;
   allowDeleted?: boolean;
@@ -1385,7 +1387,7 @@ export function createSerializedProjectSaveQueue(
         const lastKnown = lastCommittedRevisions.get(project.id);
         const rawExpected = options?.expectedPersistedRevision ?? project.persistedRevision;
         const effectiveExpected =
-          lastKnown !== undefined
+          lastKnown !== undefined && !options?.requireExactBase
             ? Math.max(rawExpected ?? 0, lastKnown)
             : rawExpected;
 

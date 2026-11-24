@@ -509,14 +509,16 @@ async (page) => {
       name: 'Imported J09 World',
     });
     await p.locator('input[placeholder*="paste raw project JSON" i]').fill(importPayload);
-    await p.getByRole('button', { name: 'Import JSON' }).click();
+    await p.getByRole('button', { name: 'Preview JSON' }).click();
+    await p.getByRole('button', { name: 'Restore a copy' }).click();
+    await p.getByText('Restored project copy saved.', { exact: true }).waitFor();
     await p.waitForTimeout(200);
-    const importedVisible = await p.getByText('Imported J09 World').first().isVisible();
+    const importedVisible = await p.getByText(/Imported J09 World \(restored copy\)/).first().isVisible();
     const exportPromptBtnText = await p.getByRole('button', { name: /Export Refined Prompt/i }).textContent();
     return {
       status: survivedGenre === 'Maritime Noir' && importedVisible ? 'PASS' : 'FAIL',
-      clicks: 7,
-      steps: ['Open History', 'Create Project Alpha J09', 'Edit genre', 'Switch away & back', 'Reload & verify', 'Import JSON via paste'],
+      clicks: 8,
+      steps: ['Open History', 'Create Project Alpha J09', 'Edit genre', 'Switch away & back', 'Reload & verify', 'Preview and restore JSON as a copy via paste'],
       evidence: { survivedGenre, importedVisible, exportPromptBtnText: (exportPromptBtnText || '').trim() },
       friction: [
         'Project creation/switching/export/import are buried inside the right-side "History" tab instead of a top-level project selector',

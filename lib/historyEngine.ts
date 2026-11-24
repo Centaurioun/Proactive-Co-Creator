@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { recordNarrativeChange } from './narrative/changeAudit.ts';
 import { makeStableId } from './canonicalModel.ts';
 import type {
   CreativeProject,
@@ -121,6 +122,7 @@ export function createUndoRedoStateFromProject(project: CreativeProject): UndoRe
  */
 export function normalizeSnapshotForComparison(snapshot: ProjectSnapshot): unknown {
   return {
+    manuscriptVersionId: snapshot.manuscriptVersionId,
     originalIdea: snapshot.originalIdea,
     refinedPrompt: snapshot.refinedPrompt,
     freeformNotes: snapshot.freeformNotes,
@@ -465,5 +467,5 @@ export function restoreProjectRevision(
     undoHistory: serializeUndoHistory(nextUndoState),
   };
 
-  return { project: nextProject, undoState: nextUndoState };
+  return { project: recordNarrativeChange(project, nextProject, 'restore', targetRev.label), undoState: nextUndoState };
 }

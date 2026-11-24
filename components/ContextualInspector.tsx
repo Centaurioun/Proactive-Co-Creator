@@ -53,7 +53,12 @@ interface ContextualInspectorProps {
   onExportJson: () => void;
   onExportStoryBibleMarkdown: () => void;
   onExportPromptText: () => void;
-  onImportProjectJson: (rawJson: string) => { ok: boolean; error?: string };
+  onExportManuscript?: () => void;
+  historyTarget?: { id: string; sequence: number } | null;
+  contentExports: { id: string; label: string }[];
+  onExportContent: (id: string) => void;
+  onPreviewProjectJson: (rawJson: string) => Promise<CreativeProject>;
+  onImportProjectJson: (rawJson: string) => Promise<{ ok: boolean; error?: string }>;
   isLoading: boolean;
 }
 
@@ -230,6 +235,11 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   onExportStoryBibleMarkdown,
   onExportPromptText,
   onImportProjectJson,
+  onPreviewProjectJson,
+  onExportManuscript,
+  historyTarget,
+  contentExports,
+  onExportContent,
   isLoading,
 }) => {
   const { snapshot } = project;
@@ -278,6 +288,15 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
 
   // Import/New project state
   const [importJsonText, setImportJsonText] = useState('');
+  const [selectedExport, setSelectedExport] = useState('');
+  useEffect(() => {
+    if (activeTab !== 'history' || !historyTarget) return;
+    const target = document.getElementById(historyTarget.id);
+    target?.scrollIntoView({ block: 'start' });
+    target?.focus({ preventScroll: true });
+  }, [activeTab, historyTarget]);
+  const [restorePreview, setRestorePreview] = useState<{ raw: string; project: CreativeProject } | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [importMessage, setImportMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [newProjName, setNewProjName] = useState('');
   const [newProjIdea, setNewProjIdea] = useState('');
@@ -296,20 +315,25 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       )
     : [];
 
-  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  async function previewProjectBackup(raw: string) {
+    setRestorePreview(null);
+    setImportMessage(null);
+    setRestoreBusy(true);
+    try {
+      const preview = await onPreviewProjectJson(raw);
+      setRestorePreview({ raw, project: preview });
+    } catch (cause) {
+      setImportMessage({ ok: false, text: cause instanceof Error ? cause.message : 'Invalid backup.' });
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
+
+  const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const content = typeof reader.result === 'string' ? reader.result : '';
-      const res = onImportProjectJson(content);
-      setImportMessage({
-        ok: res.ok,
-        text: res.ok ? 'Project imported successfully.' : (res.error ?? 'Import failed.'),
-      });
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+    event.target.value = '';
+    void file.text().then(previewProjectBackup, () => setImportMessage({ ok: false, text: 'Backup file could not be read.' }));
   };
 
   return (
@@ -1404,9 +1428,9 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       {activeTab === 'history' && (
         <div className="flex-1 overflow-y-auto p-4 space-y-5 min-h-0">
           {/* Export & Import Section */}
-          <div className="space-y-2.5">
+          <div id="export-content" tabIndex={-1} className="space-y-2.5">
             <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
-              Export &amp; Reuse
+              Export Content
             </h3>
             <div className="grid grid-cols-1 gap-2">
               <button
@@ -1414,7 +1438,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                 onClick={onExportJson}
                 className="w-full text-left px-3 py-2 text-xs font-semibold rounded border border-gray-200 dark:border-gray-700 bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-100 transition-colors"
               >
-                Export Full Project JSON (v3 Schema)
+                Download Project Backup (.json)
               </button>
               <button
                 type="button"
@@ -1432,10 +1456,27 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
               </button>
             </div>
 
+            <div className="flex flex-wrap gap-2 text-xs underline">
+              {onExportManuscript && <button onClick={onExportManuscript}>Download Working Manuscript (.md)</button>}
+            </div>
+            {contentExports.length > 0 && (
+              <div className="flex flex-wrap gap-2 text-xs">
+                <label className="flex min-w-0 flex-col gap-1">Source or generated text
+                  <select className="max-w-full rounded border bg-transparent p-1" value={selectedExport}
+                    onChange={event => setSelectedExport(event.target.value)}>
+                    <option value="">Select content</option>
+                    {contentExports.map(entry => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                  </select>
+                </label>
+                <button className="self-end underline disabled:opacity-50"
+                  disabled={!contentExports.some(entry => entry.id === selectedExport)}
+                  onClick={() => onExportContent(selectedExport)}>Download Text (.txt)</button>
+              </div>
+            )}
             {/* Import JSON */}
             <div className="pt-2 space-y-2">
               <label className="block text-xs font-semibold text-gray-800 dark:text-gray-200">
-                Import Project JSON File or Paste JSON
+                Restore Project Backup from JSON File or Paste JSON
               </label>
               <input
                 type="file"
@@ -1455,20 +1496,27 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                 />
                 <button
                   type="button"
-                  disabled={!importJsonText.trim()}
-                  onClick={() => {
-                    const res = onImportProjectJson(importJsonText);
-                    setImportMessage({
-                      ok: res.ok,
-                      text: res.ok ? 'Project imported successfully.' : (res.error ?? 'Invalid JSON.'),
-                    });
-                    if (res.ok) setImportJsonText('');
-                  }}
+                  disabled={restoreBusy || !importJsonText.trim()}
+                  onClick={() => void previewProjectBackup(importJsonText)}
                   className="px-2.5 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded disabled:opacity-40 whitespace-nowrap"
                 >
-                  Import JSON
+                  Preview JSON
                 </button>
               </div>
+              {restorePreview && (
+                <div className="space-y-2 rounded border border-amber-400 p-3 text-xs">
+                  <p className="break-words">{restorePreview.project.name} · Schema {restorePreview.project.schemaVersion} · Revision {restorePreview.project.revision}</p>
+                  <p>A separate project will be created with the included manuscript, plan, artifacts and history.</p>
+                  <button type="button" className="mr-2 underline" disabled={restoreBusy} onClick={async () => {
+                    setRestoreBusy(true);
+                    const result = await onImportProjectJson(restorePreview.raw);
+                    setRestoreBusy(false);
+                    setImportMessage({ ok: result.ok, text: result.ok ? 'Restored project copy saved.' : (result.error ?? 'Restore failed.') });
+                    if (result.ok) { setRestorePreview(null); setImportJsonText(''); }
+                  }}>Restore a copy</button>
+                  <button type="button" className="underline" disabled={restoreBusy} onClick={() => setRestorePreview(null)}>Cancel</button>
+                </div>
+              )}
               {importMessage && (
                 <p
                   role="alert"
@@ -1485,7 +1533,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
           </div>
 
           {/* Saved Local Projects Switcher */}
-          <div className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
+          <div id="project-management" tabIndex={-1} className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
             <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
               Saved Local Projects ({savedProjects.length})
             </h3>
@@ -1569,7 +1617,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
           </div>
 
           {/* Durable Version History */}
-          <div className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
+          <div id="revision-history" tabIndex={-1} className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
             <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
               Revision History ({project.revisions.length})
             </h3>

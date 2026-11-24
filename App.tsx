@@ -3,6 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import ManuscriptEditor, { workspaceButton } from './components/manuscript/ManuscriptEditor';
+import ProjectHub from './components/workspace/ProjectHub';
+import NarrativeReview from './components/workspace/NarrativeReview';
+import { manuscriptSections, manuscriptText, prepareManuscriptChange, type NarrativeBase } from './lib/narrative/manuscriptModel';
+import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplacement, registryReport, safeFilename, saveBackup } from './lib/narrative/recovery';
+import type { ArtifactAnchor, ManuscriptSection } from './shared/narrativeTypes';
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import BeliefGraph from './components/BeliefGraph';
 import ContextualInspector, { type RightPanelTab } from './components/ContextualInspector';
@@ -74,12 +80,12 @@ import {
   LOCAL_STORAGE_ACTIVE_ID_KEY,
   loadProjectsFromIndexedDbDetailed,
   loadProjectsFromLocalStorage,
-  migrateProjectPayload,
   persistProjectDurably,
   reconcileHydratedProjects,
   reloadLatestProjectsFromStorage,
   saveProjectToIndexedDb,
   saveProjectToLocalStorage,
+  type StorageSaveResult,
 } from './lib/storageEngine';
 import {
   analyzePromptToBeliefGraph,
@@ -162,6 +168,18 @@ function App() {
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('inspector');
+  const [adoptArtifactId, setAdoptArtifactId] = useState<string>();
+  const [historyTarget, setHistoryTarget] = useState<{ id: string; sequence: number } | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects'>('plan');
+  const draftDirtyRef = useRef(false);
+  const restorePendingRef = useRef(false);
+
+  function allowNavigation(): boolean {
+    if (!draftDirtyRef.current && !restorePendingRef.current) return true;
+    setStatusNotification('Save the open manuscript draft or wait for the restore before leaving this workspace.');
+    return false;
+  }
+
   const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
   const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(true);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
@@ -235,7 +253,7 @@ function App() {
     (
       targetProject: CreativeProject,
       options?: SerializedSaveOptions & { clearConflictOnSuccess?: boolean; successNotification?: string }
-    ) => {
+    ): Promise<StorageSaveResult> => {
       if (!options?.allowDeleted && getDeletedProjectIds().has(targetProject.id)) {
         setSavedProjects((prev) => {
           const next = prev.filter((p) => p.id !== targetProject.id);
@@ -435,8 +453,10 @@ function App() {
       return;
     }
 
+    if (activeProject.narrative && activeProject.persistedRevision === activeProject.revision) return;
     const timer = setTimeout(() => {
       autosaveTimerRef.current = null;
+      if (draftDirtyRef.current || restorePendingRef.current) return;
       const targetProject = activeProject;
       if (
         !shouldAllowUnsolicitedPersistence({
@@ -468,6 +488,7 @@ function App() {
   // Flush dirty active edits immediately if tab hides or page unloads before 250ms debounce settles
   useEffect(() => {
     const flushOnBackground = () => {
+      if (draftDirtyRef.current || restorePendingRef.current) return;
       const current = activeProjectRef.current;
       if (
         !shouldAllowUnsolicitedPersistence({
@@ -490,9 +511,9 @@ function App() {
         clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = null;
       }
-      saveProjectToLocalStorage(current, {
-        expectedPersistedRevision: current.persistedRevision,
-      });
+      if (!current.narrative) {
+        saveProjectToLocalStorage(current, { expectedPersistedRevision: current.persistedRevision });
+      }
       void flushProjectDurably(current, {
         expectedPersistedRevision: current.persistedRevision,
       });
@@ -545,9 +566,61 @@ function App() {
     }
   }, [isDarkMode]);
 
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      const current = activeProjectRef.current;
+      if (draftDirtyRef.current || restorePendingRef.current ||
+        (current.narrative && current.persistedRevision !== current.revision)) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, []);
+
+  const saveManuscript = async (base: NarrativeBase, sections: ManuscriptSection[], artifact?: ArtifactAnchor) => {
+    if (hydrationGateRef.current !== 'ready' || !window.indexedDB) {
+      throw new Error('IndexedDB must be available and the workspace must finish loading.');
+    }
+    const before = activeProjectRef.current;
+    if (Object.values(inFlightTickets).some(ticket => ticket.projectId === before.id)) {
+      throw new Error('Wait for the current project operation to finish before saving.');
+    }
+    const prepared = prepareManuscriptChange(before, undoStateRef.current, base, sections, artifact);
+    if (!prepared) return;
+    if (storageAlert?.type === 'conflict' && storageAlert.projectId === before.id) {
+      throw new Error('The project has a storage conflict. Copy the open text before reloading.');
+    }
+
+    if (!before.narrative) {
+      const written = await flushProjectDurably(before, { expectedPersistedRevision: before.persistedRevision });
+      if (!written.saved || written.authoritativeStore !== 'indexeddb') {
+        throw new Error(written.error ?? 'The prior project could not be saved before the manuscript upgrade.');
+      }
+      const backups = await listBackups(before.id);
+      if (!backups.some(backup => backup.pinned && backup.payload === JSON.stringify(before, null, 2))) {
+        await saveBackup(before, 'Before first manuscript save', true);
+      }
+    }
+    const current = activeProjectRef.current;
+    if (current.id !== before.id || current.revision !== before.revision) {
+      throw new Error('The project changed while preparing the manuscript. The draft is still open.');
+    }
+    const result = await flushProjectDurably(prepared.project, { expectedPersistedRevision: before.revision, requireExactBase: true, clearConflictOnSuccess: true });
+    if (!result.saved) throw new Error(result.error ?? 'The manuscript could not be saved.');
+    const committed = { ...prepared.project, persistedRevision: result.persistedRevision ?? prepared.project.revision };
+    activeProjectRef.current = committed;
+    undoStateRef.current = prepared.undoState;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(committed);
+    setUndoState(prepared.undoState);
+  };
+
   // Keyboard shortcuts for Undo / Redo (F-04 / IA-08)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (draftDirtyRef.current || restorePendingRef.current) return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
@@ -1311,6 +1384,7 @@ function App() {
   // --- Persistence, Conflict Resolution, History & Export/Import Handlers ---
 
   const handleReloadLatestFromStorage = (resolution?: 'prefer-idb' | 'prefer-local') => {
+    if (!allowNavigation()) return;
     const currentActive = activeProjectRef.current;
     const originId = currentActive.id;
     const originRevision = currentActive.revision;
@@ -1393,6 +1467,7 @@ function App() {
   };
 
   const handleForceOverwriteStorage = () => {
+    if (!allowNavigation()) return;
     const targetProject = activeProjectRef.current;
     updateHydrationGate('ready');
     saveQueueRef.current.resetProject(targetProject.id);
@@ -1425,6 +1500,7 @@ function App() {
   };
 
   const handleRestoreRevision = (revisionId: string) => {
+    if (!allowNavigation()) return;
     const res = restoreProjectRevision(activeProject, undoState, revisionId);
     if (!res) return;
     hasLocalEditsSinceMountRef.current = true;
@@ -1434,6 +1510,7 @@ function App() {
   };
 
   const handleResetSampleProject = () => {
+    if (!allowNavigation()) return;
     if (autosaveTimerRef.current) {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
@@ -1473,6 +1550,7 @@ function App() {
   };
 
   const handleSwitchProject = (projectId: string) => {
+    if (!allowNavigation()) return;
     const current = activeProjectRef.current;
     if (projectId === current.id) return;
 
@@ -1522,6 +1600,7 @@ function App() {
   };
 
   const handleCreateNewProject = (name: string, initialPrompt: string) => {
+    if (!allowNavigation()) return;
     if (autosaveTimerRef.current) {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
@@ -1600,6 +1679,7 @@ function App() {
   };
 
   const handleDeleteProject = (projectId: string) => {
+    if (!allowNavigation()) return;
     if (autosaveTimerRef.current && activeProjectRef.current.id === projectId) {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
@@ -1659,7 +1739,7 @@ function App() {
 
   const handleExportJson = () => {
     downloadTextFile(
-      `${activeProject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'project'}.json`,
+      safeFilename(activeProject.name, `r${activeProject.revision}-backup`, 'json'),
       exportProjectToJson(activeProject),
       'application/json;charset=utf-8'
     );
@@ -1667,78 +1747,112 @@ function App() {
 
   const handleExportStoryBibleMarkdown = () => {
     downloadTextFile(
-      `${activeProject.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'story'}-bible.md`,
+      safeFilename(activeProject.name, 'story-bible', 'md'),
       exportStoryBibleMarkdown(activeProject),
       'text/markdown;charset=utf-8'
     );
   };
 
   const handleExportPromptText = () => {
-    downloadTextFile('refined-prompt.md', snapshot.refinedPrompt, 'text/markdown;charset=utf-8');
+    downloadTextFile(safeFilename(activeProject.name, 'refined-prompt', 'txt'), snapshot.refinedPrompt, 'text/plain;charset=utf-8');
   };
 
-  const handleImportProjectJson = (rawJson: string): { ok: boolean; error?: string } => {
+  const handleImportProjectJson = async (rawJson: string, replace = false): Promise<{ ok: boolean; error?: string }> => {
+    if (!allowNavigation()) return { ok: false, error: 'Save the current draft before restoring a backup.' };
+    if (hydrationGateRef.current === 'blocked-read-error' || hydrationGateRef.current === 'pending') {
+      return { ok: false, error: 'Wait for workspace storage to finish loading before restoring.' };
+    }
+    restorePendingRef.current = true;
     try {
-      const parsed = JSON.parse(rawJson) as unknown;
-      const migrated = migrateProjectPayload(parsed);
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = null;
+      const legacyOrPortable = await parseProjectBackup(rawJson);
+      const outgoing = activeProjectRef.current;
+      if (Object.values(inFlightTickets).some(ticket => ticket.projectId === outgoing.id)) {
+        throw new Error('Wait for the current project operation to finish before restoring.');
       }
-
-      const switchRes = prepareProjectSwitch({
-        currentProject: activeProjectRef.current,
-        savedProjects: savedProjectsRef.current,
-        targetProjectId: migrated.id,
+      const migrated = replace ? prepareBackupReplacement(outgoing, legacyOrPortable) : prepareBackupCopy(legacyOrPortable);
+      const transition = prepareProjectSwitch({
+        currentProject: outgoing, savedProjects: savedProjectsRef.current, targetProjectId: migrated.id,
       });
-      if (switchRes.projectToFlush && switchRes.projectToFlush.id !== migrated.id) {
-        void flushProjectDurably(switchRes.projectToFlush, {
-          expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
-        });
+      if (replace) {
+        if (hydrationGateRef.current !== 'ready' || outgoing.persistedRevision !== outgoing.revision) {
+          throw new Error('A durable current revision is required before replacement.');
+        }
+        await saveBackup(outgoing, 'Before replacing project from backup', true);
+      } else if (transition.projectToFlush) {
+        const flushed = await flushProjectDurably(transition.projectToFlush);
+        if (!flushed.saved) throw new Error(flushed.error ?? 'Save the current project before restoring.');
       }
-
-      const migratedUndo = createUndoRedoState(
-        migrated.snapshot,
-        migrated.revisions,
-        migrated.undoHistory
-      );
-      const nextSaved = upsertProjectInSavedList(switchRes.savedProjects, migrated);
+      if (activeProjectRef.current.id !== outgoing.id || activeProjectRef.current.revision !== outgoing.revision) {
+        throw new Error('The current project changed while preparing the restore.');
+      }
+      const result = await flushProjectDurably(migrated, replace ? {
+        expectedPersistedRevision: outgoing.revision, requireExactBase: true,
+      } : undefined);
+      if (!result.saved) throw new Error(result.error ?? 'The restored project could not be saved.');
+      const saved = { ...migrated, persistedRevision: result.persistedRevision ?? migrated.revision };
+      const migratedUndo = createUndoRedoState(saved.snapshot, saved.revisions, saved.undoHistory);
+      const latestSaved = replace ? savedProjectsRef.current
+        : upsertProjectInSavedList(savedProjectsRef.current, activeProjectRef.current);
+      const nextSaved = upsertProjectInSavedList(latestSaved, saved);
       savedProjectsRef.current = nextSaved;
-      activeProjectRef.current = migrated;
+      activeProjectRef.current = saved;
       undoStateRef.current = migratedUndo;
-      saveQueueRef.current.resetProject(migrated.id);
-
       hasLocalEditsSinceMountRef.current = true;
       setSavedProjects(nextSaved);
-      setProject(migrated);
+      setProject(saved);
       setUndoState(migratedUndo);
       setSelectedEntityId(null);
       setSelectedRelationshipId(null);
       setStoryBibleErrors({});
-      setStorageAlert(null);
-
-      void flushProjectDurably(migrated, {
-        forceOverwrite: true,
-        allowDeleted: true,
-        successNotification: `Imported and saved project "${migrated.name}".`,
-      });
-      setStatusNotification(`Imported project "${migrated.name}".`);
+      setStatusNotification(`Restored and saved project ${replace ? '' : 'copy '}“${saved.name}”.`);
       return { ok: true };
     } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Invalid project JSON file.',
-      };
+      return { ok: false, error: err instanceof Error ? err.message : 'Invalid project JSON file.' };
+    } finally {
+      restorePendingRef.current = false;
     }
   };
 
+  function openPlan(panel: RightPanelTab, target?: 'revision-history' | 'project-management' | 'export-content') {
+    if (!allowNavigation()) return;
+    setRightPanelTab(panel);
+    setMobileTab('inspector');
+    if (target) setHistoryTarget(previous => ({ id: target, sequence: (previous?.sequence ?? 0) + 1 }));
+    setWorkspaceMode('plan');
+  }
+
+  function exportManuscript() {
+    downloadTextFile(safeFilename(activeProject.name, 'manuscript', 'md'), manuscriptText(manuscriptSections(activeProject)), 'text/markdown;charset=utf-8');
+  }
+
+  const contentExports = [
+    ...activeProject.artifacts.flatMap(artifact => artifact.mode === 'story' && artifact.storyText
+      ? [{ id: `artifact:${artifact.id}`, label: `Generated story · ${new Date(artifact.createdAt).toLocaleString()}`,
+        text: artifact.storyText, key: artifact.id, kind: 'generated' }]
+      : []),
+    ...(activeProject.narrative?.sources ?? []).map(source => ({
+      id: `source:${JSON.stringify([source.id, source.version])}`,
+      label: `Original source text · ${source.id} / ${source.version}`,
+      text: source.text, key: `${source.id}-${source.version}`, kind: 'original-text',
+    })),
+  ];
+
+  function exportContent(id: string) {
+    const entry = contentExports.find(item => item.id === id);
+    if (entry) downloadTextFile(
+      safeFilename(activeProject.name, safeFilename(entry.key, entry.kind, 'txt').slice(0, -4), 'txt'),
+      entry.text, 'text/plain;charset=utf-8',
+    );
+  }
+
   const handleSelectHeaderSection = (section: WorkspaceSection) => {
+    if (!allowNavigation()) return;
+    setWorkspaceMode('plan');
     if (section === 'story-bible') {
       setRightPanelTab('story-bible');
       setMobileTab('inspector');
     } else if (section === 'history') {
-      setRightPanelTab('history');
-      setMobileTab('inspector');
+      openPlan('history', 'revision-history');
     } else if (section === 'output') {
       setShowOutputDrawer(true);
       setMobileTab('output');
@@ -1902,6 +2016,37 @@ function App() {
         </div>
       )}
 
+      <nav aria-label="Narrative workspace" className="flex flex-wrap gap-1 border-b border-gray-200 bg-white px-2 py-1.5 dark:border-gray-800 dark:bg-gray-900 sm:px-4">
+        {([['write', 'Write'], ['plan', 'Plan'], ['review', 'Review'], ['projects', 'Projects']] as const).map(([mode, label]) => (
+          <button type="button" key={mode} aria-current={workspaceMode === mode ? 'page' : undefined}
+            className={`${workspaceButton} aria-[current=page]:bg-amber-100 dark:aria-[current=page]:bg-amber-950`}
+            onClick={() => { if (allowNavigation()) { setAdoptArtifactId(undefined); setWorkspaceMode(mode); } }}>{label}</button>
+        ))}
+      </nav>
+
+      {workspaceMode === 'write' && (
+        <ManuscriptEditor key={activeProject.id} project={activeProject} onSave={saveManuscript} initialArtifactId={adoptArtifactId}
+          onExportDraft={sections => downloadTextFile(safeFilename(activeProject.name, 'unsaved-draft', 'md'), manuscriptText(sections), 'text/markdown;charset=utf-8')}
+          onDirty={dirty => { draftDirtyRef.current = dirty; }}
+          onUndo={handleUndo} onRedo={handleRedo} canUndo={undoState.past.length > 0} canRedo={undoState.future.length > 0}
+          enabled={hydrationGate === 'ready' && typeof window !== 'undefined' && Boolean(window.indexedDB)} />
+      )}
+      {workspaceMode === 'review' && (
+        <NarrativeReview project={activeProject} checks={consistencyIssues}
+          openChecks={() => openPlan('consistency')} openHistory={() => openPlan('history', 'revision-history')}
+          openOutput={() => handleSelectHeaderSection('output')}
+          exportReport={format => downloadTextFile(safeFilename(activeProject.name, 'evidence-audit', format),
+            registryReport(activeProject, format), format === 'json' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8')} />
+      )}
+      {workspaceMode === 'projects' && (
+        <ProjectHub key={activeProject.id} project={activeProject}
+          openProjects={() => openPlan('history', 'project-management')} openExport={() => openPlan('history', 'export-content')}
+          restore={handleImportProjectJson}
+          downloadBackup={backup => downloadTextFile(safeFilename(activeProject.name, `r${backup.revision}-${backup.id.slice(0, 8)}-backup`, 'json'),
+            JSON.stringify(backup, null, 2), 'application/json;charset=utf-8')} />
+      )}
+
+      <div className={workspaceMode === 'plan' ? 'contents' : 'hidden'}>
       {/* Unified Three-Panel Desktop Workspace */}
       <main className="flex-1 grid grid-cols-1 xl:grid-cols-12 gap-3 p-3 overflow-hidden min-h-0">
         {/* Left Panel (3 cols on xl): Decision Inbox, Clarifications 2.0 & Natural-Language Batch Editing */}
@@ -2013,6 +2158,11 @@ function App() {
                 error={currentGalleryError}
                 isOutdated={isCurrentOutputOutdated}
                 onGenerate={handleGenerateOutput}
+                onAdoptStory={artifactId => {
+                  if (!allowNavigation()) return;
+                  setAdoptArtifactId(artifactId);
+                  setWorkspaceMode('write');
+                }}
               />
             </div>
           )}
@@ -2026,6 +2176,7 @@ function App() {
         >
           <ContextualInspector
             activeTab={rightPanelTab}
+            historyTarget={historyTarget}
             onSelectTab={setRightPanelTab}
             project={activeProject}
             savedProjects={savedProjects}
@@ -2057,7 +2208,11 @@ function App() {
             onExportJson={handleExportJson}
             onExportStoryBibleMarkdown={handleExportStoryBibleMarkdown}
             onExportPromptText={handleExportPromptText}
+            onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
+            contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
+            onExportContent={exportContent}
             onImportProjectJson={handleImportProjectJson}
+            onPreviewProjectJson={parseProjectBackup}
             isLoading={isGraphLoading}
           />
         </div>
@@ -2113,6 +2268,7 @@ function App() {
         revisionCount={activeProject.revision}
         isOutdated={isCurrentOutputOutdated}
       />
+      </div>
 
       {/* Dedicated Review Plan & Prompt Changes Modal (AC19, U-01, U-03, IA-17, IA-18) */}
       {isReviewModalOpen && (
