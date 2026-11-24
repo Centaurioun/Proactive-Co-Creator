@@ -9,6 +9,8 @@ import NarrativeReview from './components/workspace/NarrativeReview';
 import ImportWorkflow from './components/narrativeImport/ImportWorkflow';
 import { manuscriptSections, manuscriptText, prepareManuscriptChange, type NarrativeBase } from './lib/narrative/manuscriptModel';
 import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplacement, registryReport, safeFilename, saveBackup } from './lib/narrative/recovery';
+import { projectContentExport, type ContentExportSelection } from './lib/narrative/recovery/contentExport';
+import { projectContentBundle } from './lib/narrative/recovery/bundleExporter';
 import type { ArtifactAnchor, ManuscriptSection } from './shared/narrativeTypes';
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import BeliefGraph from './components/BeliefGraph';
@@ -136,6 +138,18 @@ function downloadTextFile(filename: string, content: string, mimeType: string = 
   const element = document.createElement('a');
   const file = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(file);
+  element.href = url;
+  element.download = filename;
+  document.body.appendChild(element);
+  element.click();
+  document.body.removeChild(element);
+  setTimeout(() => URL.revokeObjectURL(url), 100);
+}
+
+function downloadBinaryFile(filename: string, content: Uint8Array, mimeType: string) {
+  const blob = new Blob([content as BlobPart], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const element = document.createElement('a');
   element.href = url;
   element.download = filename;
   document.body.appendChild(element);
@@ -1958,27 +1972,51 @@ function App() {
   }
 
   function exportManuscript() {
-    downloadTextFile(safeFilename(activeProject.name, 'manuscript', 'md'), manuscriptText(manuscriptSections(activeProject)), 'text/markdown;charset=utf-8');
+    const file = projectContentExport(activeProject, { kind: 'manuscript' });
+    downloadTextFile(file.name, file.text, file.mediaType);
   }
 
-  const contentExports = [
+  const contentExports: Array<{ id: string; label: string; selection: ContentExportSelection }> = [
+    ...(activeProject.snapshot.manuscriptVersionId
+      ? [{ id: 'manuscript:full', label: 'Working manuscript · Markdown', selection: { kind: 'manuscript' } as const }]
+      : []),
+    ...manuscriptSections(activeProject).map(section => ({
+      id: `manuscript-section:${section.id}`,
+      label: `${section.kind === 'chapter' ? 'Chapter' : 'Scene'} · ${section.title}`,
+      selection: { kind: 'manuscript' as const, sectionIds: [section.id] },
+    })),
     ...activeProject.artifacts.flatMap(artifact => artifact.mode === 'story' && artifact.storyText
       ? [{ id: `artifact:${artifact.id}`, label: `Generated story · ${new Date(artifact.createdAt).toLocaleString()}`,
-        text: artifact.storyText, key: artifact.id, kind: 'generated' }]
+        selection: { kind: 'generated-story', artifactId: artifact.id } as const }]
       : []),
     ...(activeProject.narrative?.sources ?? []).map(source => ({
       id: `source:${JSON.stringify([source.id, source.version])}`,
       label: `Original source text · ${source.id} / ${source.version}`,
-      text: source.text, key: `${source.id}-${source.version}`, kind: 'original-text',
+      selection: { kind: 'source-text', sourceId: source.id, version: source.version } as const,
     })),
+    { id: 'evidence-report:md', label: 'Evidence report · Markdown', selection: { kind: 'evidence-report', format: 'md' } },
+    { id: 'evidence-report:json', label: 'Evidence report · JSON', selection: { kind: 'evidence-report', format: 'json' } },
   ];
 
   function exportContent(id: string) {
     const entry = contentExports.find(item => item.id === id);
-    if (entry) downloadTextFile(
-      safeFilename(activeProject.name, safeFilename(entry.key, entry.kind, 'txt').slice(0, -4), 'txt'),
-      entry.text, 'text/plain;charset=utf-8',
-    );
+    if (!entry) return;
+    try {
+      const file = projectContentExport(activeProject, entry.selection);
+      downloadTextFile(file.name, file.text, file.mediaType);
+    } catch (cause) {
+      setStatusNotification(cause instanceof Error ? cause.message : 'Selected content could not be exported.');
+    }
+  }
+
+  async function exportContentBundle(ids: string[]) {
+    try {
+      const selections = ids.map(id => contentExports.find(item => item.id === id)).filter((entry): entry is typeof contentExports[number] => Boolean(entry)).map(entry => entry.selection);
+      const bundle = await projectContentBundle(activeProject, selections);
+      downloadBinaryFile(bundle.name, bundle.bytes, 'application/zip');
+    } catch (cause) {
+      setStatusNotification(cause instanceof Error ? cause.message : 'Selected content bundle could not be exported.');
+    }
   }
 
   const handleSelectHeaderSection = (section: WorkspaceSection) => {
@@ -2349,6 +2387,7 @@ function App() {
             onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
             contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
             onExportContent={exportContent}
+            onExportContentBundle={exportContentBundle}
             onImportProjectJson={handleImportProjectJson}
             onPreviewProjectJson={parseProjectBackup}
             isLoading={isGraphLoading}

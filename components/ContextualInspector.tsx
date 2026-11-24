@@ -57,6 +57,7 @@ interface ContextualInspectorProps {
   historyTarget?: { id: string; sequence: number } | null;
   contentExports: { id: string; label: string }[];
   onExportContent: (id: string) => void;
+  onExportContentBundle: (ids: string[]) => void;
   onPreviewProjectJson: (rawJson: string) => Promise<CreativeProject>;
   onImportProjectJson: (rawJson: string) => Promise<{ ok: boolean; error?: string }>;
   isLoading: boolean;
@@ -240,6 +241,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   historyTarget,
   contentExports,
   onExportContent,
+  onExportContentBundle,
   isLoading,
 }) => {
   const { snapshot } = project;
@@ -289,6 +291,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   // Import/New project state
   const [importJsonText, setImportJsonText] = useState('');
   const [selectedExport, setSelectedExport] = useState('');
+  const [selectedBundleExports, setSelectedBundleExports] = useState<string[]>([]);
   useEffect(() => {
     if (activeTab !== 'history' || !historyTarget) return;
     const target = document.getElementById(historyTarget.id);
@@ -1460,8 +1463,8 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
               {onExportManuscript && <button onClick={onExportManuscript}>Download Working Manuscript (.md)</button>}
             </div>
             {contentExports.length > 0 && (
-              <div className="flex flex-wrap gap-2 text-xs">
-                <label className="flex min-w-0 flex-col gap-1">Source or generated text
+              <div className="flex flex-col gap-2 text-xs">
+                <label className="flex min-w-0 flex-col gap-1">Content to export
                   <select className="max-w-full rounded border bg-transparent p-1" value={selectedExport}
                     onChange={event => setSelectedExport(event.target.value)}>
                     <option value="">Select content</option>
@@ -1470,7 +1473,22 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                 </label>
                 <button className="self-end underline disabled:opacity-50"
                   disabled={!contentExports.some(entry => entry.id === selectedExport)}
-                  onClick={() => onExportContent(selectedExport)}>Download Text (.txt)</button>
+                  onClick={() => onExportContent(selectedExport)}>Download selected content</button>
+                <fieldset className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
+                  <legend className="px-1 font-semibold">Content ZIP bundle</legend>
+                  {contentExports.map(entry => (
+                    <label key={entry.id} className="flex items-start gap-2">
+                      <input type="checkbox" checked={selectedBundleExports.includes(entry.id)}
+                        onChange={event => setSelectedBundleExports(previous => event.target.checked
+                          ? [...previous, entry.id]
+                          : previous.filter(id => id !== entry.id))} />
+                      <span>{entry.label}</span>
+                    </label>
+                  ))}
+                  <p className="text-[11px] text-gray-500">ZIP includes a manifest and selected content. It is not a full project backup.</p>
+                  <button type="button" className="underline disabled:opacity-50" disabled={selectedBundleExports.length === 0}
+                    onClick={() => onExportContentBundle(selectedBundleExports)}>Download selected content ZIP</button>
+                </fieldset>
               </div>
             )}
             {/* Import JSON */}
