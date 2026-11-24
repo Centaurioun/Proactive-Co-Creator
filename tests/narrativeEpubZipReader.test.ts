@@ -96,9 +96,24 @@ test('ZIP reader reports physical local-header order and reads bounded stored me
   assert.equal(new TextDecoder().decode(await reader.readEntry('OEBPS/a.xhtml', 100)), '<p>safe</p>');
 });
 
-test('product source parser rejects EPUB and cannot dispatch to the isolated ZIP reader', async () => {
-  const bytes = archive({ mimetype: strToU8('application/epub+zip'), 'OEBPS/chapter.xhtml': strToU8('<p>not enabled</p>') });
-  await assert.rejects(() => parseNarrativeSource(bytes, 'book.epub'), /Supported sources are pasted text/i);
+test('product source parser reads a valid stored EPUB and rejects an incomplete EPUB', async () => {
+  const bytes = archive({
+    mimetype: strToU8('application/epub+zip'),
+    'META-INF/container.xml': strToU8('<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'),
+    'OEBPS/book.opf': strToU8('<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>'),
+    'OEBPS/chapter.xhtml': strToU8('<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Bölüm 1</h1><p>Leyla bekledi.</p></body></html>'),
+  });
+  const parsed = await parseNarrativeSource(bytes, 'book.epub');
+  assert.equal(parsed.mediaType, 'application/epub+zip');
+  assert.equal(parsed.text, 'Bölüm 1\nLeyla bekledi.');
+  assert.deepEqual(parsed.blocks.map(block => parsed.text.slice(block.start, block.end)), ['Bölüm 1', 'Leyla bekledi.']);
+  assert.equal(parsed.retention, 'original-and-extracted');
+  const incomplete = archive({ mimetype: strToU8('application/epub+zip'), 'OEBPS/chapter.xhtml': strToU8('<p>incomplete</p>') });
+  await assert.rejects(() => parseNarrativeSource(incomplete, 'book.epub'), {
+    name: 'NarrativeSourceParseError',
+    kind: 'malformed',
+    message: /missing required member "META-INF\/container\.xml"/i,
+  });
 });
 
 test('ZIP reader rejects mimetype that is not the first physical local header', () => {

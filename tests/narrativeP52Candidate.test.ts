@@ -118,6 +118,10 @@ test('navigation preserves authored order while grouping chapters and surfacing 
   assert.deepEqual(filterManuscriptSections(sections, { chronology: 'flashback' }).map(section => section.id), ['free-scene']);
 });
 
-test('EPUB remains disabled in product source dispatch while pure parsing is reader-injected', async () => {
-  await assert.rejects(() => parseNarrativeSource(new Uint8Array([1, 2, 3]), 'book.epub'), /supported sources/i);
+test('product EPUB source dispatch rejects malformed ZIP bytes with a typed error', async () => {
+  await assert.rejects(() => parseNarrativeSource(new Uint8Array([1, 2, 3]), 'book.epub'), {
+    name: 'NarrativeSourceParseError',
+    kind: 'malformed',
+    message: /EPUB ZIP archive is too short/i,
+  });
 });
