@@ -91,6 +91,33 @@ export function resolveProviderPrompt(project: CreativeProject, targetMode: Gene
   };
 }
 
+export type StartupAnalysisProviderInputs =
+  | { ok: true; prompt: string; mode: GenerationMode; askedQuestions: string[]; confirmedFacts: string[]; warning?: string }
+  | { ok: false; reason: string };
+
+export function buildStartupAnalysisProviderInputs(project: CreativeProject): StartupAnalysisProviderInputs {
+  const decision = resolveProviderPrompt(project, project.snapshot.mode);
+  if (!decision.ok) return decision;
+  const confirmedFacts = [
+    ...Object.entries(decision.contextSnapshot.storyBible)
+      .filter(([, field]) => field.status === 'confirmed' && field.value)
+      .map(([key, field]) => `${key}: ${field.value}`),
+    ...decision.contextSnapshot.entities
+      .filter(entity => !entity.excluded)
+      .flatMap(entity => entity.attributes
+        .filter(attribute => attribute.status === 'confirmed' && attribute.confirmedValue)
+        .map(attribute => `${entity.name} ${attribute.name}: ${attribute.confirmedValue}`)),
+  ];
+  return {
+    ok: true,
+    prompt: decision.prompt,
+    mode: project.snapshot.mode,
+    askedQuestions: [...project.snapshot.answeredQuestions, ...project.snapshot.skippedQuestions],
+    confirmedFacts,
+    ...(decision.warning ? { warning: decision.warning } : {}),
+  };
+}
+
 /**
  * Deterministic fast hash for comparing prompt + mode across revisions and artifacts.
  */

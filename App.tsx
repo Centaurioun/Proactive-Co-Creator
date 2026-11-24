@@ -73,7 +73,7 @@ import {
   type InFlightTicketsMap,
   type SerializedSaveOptions,
 } from './lib/projectController';
-import { resolveProviderPrompt, synthesizeRefinedPrompt } from './lib/promptBuilder';
+import { buildStartupAnalysisProviderInputs, resolveProviderPrompt, synthesizeRefinedPrompt } from './lib/promptBuilder';
 import { transitionIssue } from './lib/narrative/issueRegistry';
 import {
   deleteProjectCompletely,
@@ -1168,18 +1168,16 @@ function App() {
 
   const handleAnalyzeIdea = useCallback(async () => {
     const originProject = activeProjectRef.current;
-    const originSnap = originProject.snapshot;
-    const trimmed = originSnap.originalIdea.trim();
-    if (!trimmed) return;
-
-    const promptDecision = resolveProviderPrompt(originProject, originSnap.mode);
-    if (!promptDecision.ok) {
-      setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: promptDecision.reason }));
-      setClarificationErrors((prev) => ({ ...prev, [originProject.id]: promptDecision.reason }));
-      setStatusNotification(promptDecision.reason);
+    const providerInputs = buildStartupAnalysisProviderInputs(originProject);
+    if (!providerInputs.ok) {
+      setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: providerInputs.reason }));
+      setClarificationErrors((prev) => ({ ...prev, [originProject.id]: providerInputs.reason }));
+      setStatusNotification(providerInputs.reason);
       return;
     }
-    if (promptDecision.warning) setStatusNotification(promptDecision.warning);
+    if (providerInputs.warning) setStatusNotification(providerInputs.warning);
+    const trimmed = providerInputs.prompt.trim();
+    if (!trimmed) return;
 
     const lengthCheck = validateEffectivePromptLength(trimmed, MAX_PROMPT_CHARS);
     if (!lengthCheck.ok) {
@@ -1199,22 +1197,9 @@ function App() {
     setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: null }));
     setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
 
-    const confirmedFacts = [
-      ...Object.entries(promptDecision.contextSnapshot.storyBible)
-        .filter(([, f]) => f.status === 'confirmed' && f.value)
-        .map(([k, f]) => `${k}: ${f.value}`),
-      ...promptDecision.contextSnapshot.entities
-        .filter((e) => !e.excluded)
-        .flatMap((e) =>
-          e.attributes
-            .filter((a) => a.status === 'confirmed' && a.confirmedValue)
-            .map((a) => `${e.name} ${a.name}: ${a.confirmedValue}`)
-        ),
-    ];
-
     try {
       const [newGraph, newClarifications] = await Promise.all([
-        analyzePromptToBeliefGraph(trimmed, originSnap.mode, controller.signal).catch((err) => {
+        analyzePromptToBeliefGraph(providerInputs.prompt, providerInputs.mode, controller.signal).catch((err) => {
           if (!isAbortError(err)) {
             setAnalysisErrors((prev) => ({
               ...prev,
@@ -1227,11 +1212,11 @@ function App() {
           return null;
         }),
         generateClarifications(
-          trimmed,
-          [...originSnap.answeredQuestions, ...originSnap.skippedQuestions],
-          originSnap.mode,
+          providerInputs.prompt,
+          providerInputs.askedQuestions,
+          providerInputs.mode,
           controller.signal,
-          confirmedFacts
+          providerInputs.confirmedFacts
         ).catch((err) => {
           if (!isAbortError(err)) {
             setClarificationErrors((prev) => ({
