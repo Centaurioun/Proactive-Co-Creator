@@ -78,6 +78,7 @@ test('evidence reports use shared records without embedding retained original by
   const markdown = projectContentExport(project, { kind: 'evidence-report', format: 'md' });
   assert.equal(markdown.mediaType, 'text/markdown;charset=utf-8');
   assert.equal(markdown.name.endsWith('.md'), true);
+  assert.doesNotMatch(markdown.text, /AQID|originalBytesBase64/u);
 });
 
 test('exports are deterministic and do not mutate project records', () => {
@@ -86,4 +87,47 @@ test('exports are deterministic and do not mutate project records', () => {
   const selection = { kind: 'source-text', sourceId: 'source-1', version: 'source-v1' } as const;
   assert.deepEqual(projectContentExport(project, selection), projectContentExport(project, selection));
   assert.equal(JSON.stringify(project), before);
+});
+
+test('rejects duplicate generated artifact IDs as ambiguous', () => {
+  const project = projectFixture();
+  project.artifacts.push({ ...project.artifacts[0], storyText: 'Conflicting second artifact.' });
+  assert.throws(() => projectContentExport(project, { kind: 'generated-story', artifactId: 'artifact-1' }), /ambiguous/i);
+});
+
+test('uses project artifact collection membership when an optional projectId is absent', () => {
+  const project = projectFixture();
+  delete project.artifacts[0].projectId;
+  const result = projectContentExport(project, { kind: 'generated-story', artifactId: 'artifact-1' });
+  assert.equal(result.text, 'Üretilmiş öykü.');
+});
+
+test('rejects non-story and empty generated artifacts', () => {
+  const nonStory = projectFixture();
+  nonStory.artifacts[0].mode = 'image';
+  assert.throws(() => projectContentExport(nonStory, { kind: 'generated-story', artifactId: 'artifact-1' }), /artifact/i);
+
+  const emptyStory = projectFixture();
+  emptyStory.artifacts[0].storyText = '';
+  assert.throws(() => projectContentExport(emptyStory, { kind: 'generated-story', artifactId: 'artifact-1' }), /artifact/i);
+});
+
+test('sanitizes reserved and control filenames and bounds long base names', () => {
+  const reservedProject = projectFixture();
+  reservedProject.name = 'CON';
+  assert.equal(projectContentExport(reservedProject, { kind: 'manuscript' }).name, 'project-CON-manuscript.md');
+
+  const controlProject = projectFixture();
+  controlProject.name = 'A\u0000B';
+  const controlName = projectContentExport(controlProject, { kind: 'manuscript' }).name;
+  assert.equal(controlName, 'A-B-manuscript.md');
+  const hasUnsafeCharacter = Array.from(controlName).some(character => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f || character === '/' || character === '\\';
+  });
+  assert.equal(hasUnsafeCharacter, false);
+
+  const longProject = projectFixture();
+  longProject.name = 'a'.repeat(100);
+  assert.equal(projectContentExport(longProject, { kind: 'manuscript' }).name, `${'a'.repeat(64)}-manuscript.md`);
 });
