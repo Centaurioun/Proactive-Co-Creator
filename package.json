@@ -11,7 +11,9 @@
     "start": "node server.ts",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "npm run typecheck:native",
+    "typecheck:native": "./node_modules/typescript7/bin/tsc --noEmit",
+    "typecheck:classic": "./node_modules/typescript/bin/tsc6 --noEmit",
     "lint": "eslint .",
     "test": "tsx --test tests/*.test.ts"
   },
@@ -34,8 +36,9 @@
     "eslint-plugin-react-hooks": "7.1.1",
     "tailwindcss": "4.3.5",
     "tsx": "4.23.15",
-    "typescript": "5.8.3",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-eslint": "8.74.0",
+    "typescript7": "npm:typescript@7.0.2",
     "vite": "8.3.8"
   }
 }
