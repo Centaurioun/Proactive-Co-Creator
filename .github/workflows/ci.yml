@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['22.x']
+        node-version: ['22.x', '26.x']
 
     steps:
       - name: Checkout repository
@@ -126,4 +126,3 @@ jobs:
             .playwright-cli/e2e-server.log
           if-no-files-found: error
           include-hidden-files: true
-
