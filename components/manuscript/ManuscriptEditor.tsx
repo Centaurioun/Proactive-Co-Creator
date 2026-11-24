@@ -32,6 +32,7 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const [search, setSearch] = useState('');
   const [chapterFilter, setChapterFilter] = useState('');
   const [chronologyFilter, setChronologyFilter] = useState('');
+  const [previewSection, setPreviewSection] = useState(false);
   const [adopting, setAdopting] = useState(Boolean(initialArtifactId));
   const [confirming, setConfirming] = useState<'delete' | 'merge' | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -204,21 +205,30 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
             ) : null}
             <label className="block text-sm">
               Manuscript text
-              <textarea ref={textarea} aria-describedby="manuscript-markdown-hint" className={`${field} mt-1 min-h-[40vh] resize-y font-serif text-lg leading-relaxed`}
-                value={selected?.text ?? ''} readOnly={saving} placeholder="Start writing here…"
-                onChange={event => {
-                  if (selected) {
-                    update({ text: event.target.value });
-                  } else {
-                    const section: ManuscriptSection = { id: crypto.randomUUID(), kind: 'scene', title: '', text: event.target.value };
-                    edit([section]);
-                    setSelectedId(section.id);
-                  }
-                }}
-                onCompositionStart={() => setIsComposing(true)}
-                onCompositionEnd={() => setIsComposing(false)} spellCheck />
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                <span id="manuscript-markdown-hint" className="text-xs text-gray-600 dark:text-gray-300">Markdown remains literal source text; preview displays it safely without interpreting HTML.</span>
+                <button type="button" className={workspaceButton} aria-pressed={previewSection} onClick={() => setPreviewSection(value => !value)}>
+                  {previewSection ? 'Edit section' : 'Preview section'}
+                </button>
+              </div>
+              {previewSection ? (
+                <pre aria-label="Section preview" className="mt-2 min-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-gray-300 bg-stone-50 p-4 font-serif text-lg leading-relaxed dark:border-gray-700 dark:bg-gray-950">{selected?.text || 'Nothing to preview yet.'}</pre>
+              ) : (
+                <textarea ref={textarea} aria-describedby="manuscript-markdown-hint" className={`${field} mt-2 min-h-[40vh] resize-y font-serif text-lg leading-relaxed`}
+                  value={selected?.text ?? ''} readOnly={saving} placeholder="Start writing here…"
+                  onChange={event => {
+                    if (selected) {
+                      update({ text: event.target.value });
+                    } else {
+                      const section: ManuscriptSection = { id: crypto.randomUUID(), kind: 'scene', title: '', text: event.target.value };
+                      edit([section]);
+                      setSelectedId(section.id);
+                    }
+                  }}
+                  onCompositionStart={() => setIsComposing(true)}
+                  onCompositionEnd={() => setIsComposing(false)} spellCheck />
+              )}
             </label>
-            <p id="manuscript-markdown-hint" className="text-xs text-gray-600 dark:text-gray-300">Markdown headings, emphasis, quotes and lists remain editable as text.</p>
             {selected && (
               <fieldset disabled={saving} className="min-w-0 space-y-3">
               <div className="flex flex-wrap gap-2">
