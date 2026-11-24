@@ -228,8 +228,8 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
 
         <section className="space-y-3 rounded-lg border border-gray-300 p-4 dark:border-gray-700" aria-labelledby="import-source-title">
           <h2 id="import-source-title" className="font-semibold">1. Select source</h2>
-          <label className="block text-sm" htmlFor="import-file">Choose a TXT, Markdown, or DOCX file</label>
-          <input id="import-file" type="file" accept=".txt,.md,.markdown,.docx" onChange={event => readFile(event.currentTarget.files?.[0] ?? null)} />
+          <label className="block text-sm" htmlFor="import-file">Choose a TXT, Markdown, DOCX, or selectable-text PDF file</label>
+          <input id="import-file" type="file" accept=".txt,.md,.markdown,.docx,.pdf,application/pdf" onChange={event => readFile(event.currentTarget.files?.[0] ?? null)} />
           <label className="block text-sm" htmlFor="import-pasted-text">Or paste narrative text</label>
           <textarea id="import-pasted-text" className="min-h-36 w-full rounded border p-2 dark:bg-gray-950" value={pastedText}
             onChange={event => { sourceReadEpochRef.current += 1; setPastedText(event.target.value); if (file) setFile(null); setSource(null); resetAnalysis(); }} placeholder="Paste text to preview locally" />
