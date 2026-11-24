@@ -9,6 +9,10 @@ Purpose: preserve the original brainstorming, owner feedback and subsequent refi
 | [01 — Initial brainstorming](01-initial-brainstorming.md) | V1 feature hypothesis, alternatives, original six-cycle review, scope and dependencies |
 | [02 — Owner feedback](02-owner-feedback.md) | User's follow-up ideas, preferences, unresolved questions and intent |
 | [03 — Refined design proposal](03-refined-design-v2.md) | V2 six-cycle review, recommended UX/data contracts, issue lifecycle, scope and acceptance gates |
+| [04 — Owner feedback round 3](04-owner-feedback-v3.md) | V2 agreements, new diagnostics/opportunities/maps/backup ideas |
+| [05 — Refined design V3](05-refined-design-v3.md) | Continuous narrative intelligence, issue resolution, visualizations, recovery, six-cycle review |
+| [06 — Decision register](06-decision-register.md) | Agreed, proposed and open decisions with stable IDs |
+| [07 — Design evolution log](07-design-evolution-log.md) | Earlier idea → revised direction, reason and status |
 
 Source baseline reviewed: `0b34d01fb0feb0e73655291f572e370fd95e0fe4` (Stage 0 and independent CodeScene audit integrated). This archive is intentionally independent of the active dependency and TypeScript modernization PRs.
 
@@ -17,3 +21,5 @@ Related: [Stage 0 execution plan](../../modernization/2026-11-24-stage-0-product
 Workflow: refine and approve product decisions first; then create an approved design specification, separately reviewable implementation plan, Figma flows and test-first implementation PRs. Do not change application code, schema, dependencies, live AI providers or deployment during this discovery task. Existing import/export and data safety behavior must be preserved. No automatic merge.
 
 Future discovery records should be appended as numbered files and linked here. Keep owner ideas separate from accepted decisions and mark superseded proposals explicitly instead of erasing history.
+
+V3 extends the archive beyond import to ongoing narrative diagnostics, creative opportunities, visualization and backup/recovery. The decision register is the current review reference; the evolution log explains changes without erasing history. New V3 proposals remain pending owner review. No implementation authorization inferred.
