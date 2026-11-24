@@ -1,6 +1,6 @@
 # 06 — Product decision register
 
-Date: 2026-11-24. Living register, not a code implementation approval. Statuses: AGREED (explicit owner agreement on direction); PROPOSED (assistant recommendation or owner new idea still to refine); OPEN (decision not made); SUPERSEDED (historical approach replaced, see 07). Maintain stable decision IDs; append later decisions or record status transitions with reason rather than erase earlier versions.
+Date: 2026-11-24. Living register, not a code implementation approval. Statuses: AGREED (explicit owner agreement on direction); PROPOSED (assistant recommendation or owner new idea still to refine); OPEN (decision not made); SUPERSEDED (historical approach replaced, see 07); DELEGATED (assistant-selected product default under explicit owner delegation, technical details subject to evidence). Maintain stable decision IDs; append later decisions or record status transitions with reason rather than erase earlier versions.
 
 | ID | Status | Decision / boundary | Evidence |
 |---|---|---|---|
@@ -13,15 +13,24 @@ Date: 2026-11-24. Living register, not a code implementation approval. Statuses:
 | NI-D07 | AGREED | Replace arbitrary 8000-character product ceiling with dynamic token/operation budget, no silent loss or unsafe unlimited request. | 02–04 |
 | NI-D08 | AGREED | Descriptive export filenames and one content export center; backup separate from derived exports. | 02–04 |
 | NI-D09 | AGREED | Preserve historical owner ideas, assistant recommendations and agreed decisions separately in GitHub. | 02, 04 |
-| NI-D10 | PROPOSED | Extend Checks to on-demand AI semantic diagnostics for native and imported projects, retain deterministic auto local checks and shared persistent issue registry. | owner 04, design 05 |
-| NI-D11 | PROPOSED | Up to three AI fix alternatives, none/clarify/retry; no auto apply, budgeted bounded impact revalidation. | owner 04, design 05 |
-| NI-D12 | PROPOSED | Separate Creative Opportunities from Problems, optional user-goal-driven ideas and staged changes. | owner 04, design 05 |
-| NI-D13 | PROPOSED | Shared Belief Graph / Character Relationship Map / Mind Map projections with issue overlays; family tree specialized kinship view. | owner 04, design 05 |
-| NI-D14 | PROPOSED | Managed Create Backup independent of download, internal browser recovery vault + optional explicitly permitted external folder, portability fallback. | owner 04, design 05 |
-| NI-D15 | PROPOSED | Optional ZIP bundle checkbox for selected content exports, distinguish from complete restorable archive. | owner 04, design 05 |
-| NI-D16 | OPEN | Working Manuscript editor vs structured project/derived versions; exact targets of prose edits. | 03, 05 |
-| NI-D17 | OPEN | Original source byte retention and extracted text policy, schema migration and source-store authority. | 03, 05 |
-| NI-D18 | OPEN | Existing-project append in first release or later; revision/CAS semantics. | 01, 03 |
-| NI-D19 | OPEN | Exact V3 release scope, visual IA/Figma, backup retention/auto schedule/location, optional auto AI consent/cost. | 05 |
+| NI-D10 | AGREED | Extend Checks to on-demand AI semantic diagnostics for native and imported projects, retain deterministic auto local checks and shared persistent issue registry. | owner 04, design 05, approval 08 |
+| NI-D11 | AGREED | Up to three AI fix alternatives, none/clarify/retry; no auto apply, budgeted bounded impact revalidation. | owner 04, design 05, approval 08 |
+| NI-D12 | AGREED | Separate Creative Opportunities from Problems, optional user-goal-driven ideas and staged changes. | owner 04, design 05, approval 08 |
+| NI-D13 | AGREED | Shared Belief Graph / Character Relationship Map / Mind Map projections with issue overlays; family tree specialized kinship view. | owner 04, design 05, approval 08 |
+| NI-D14 | AGREED | Managed Create Backup independent of download, internal browser recovery vault + optional explicitly permitted external folder, portability fallback. | owner 04, design 05, approval 08 |
+| NI-D15 | AGREED | Optional ZIP bundle checkbox for selected content exports, distinguish from complete restorable archive. | owner 04, design 05, approval 08 |
+| NI-D16 | AGREED | Writer-focused Working Manuscript separate from immutable original and generated artifacts, coordinated with graph/Bible; no Word clone. | 03, 05, approval 08, design 09 |
+| NI-D17 | DELEGATED | Retain original file bytes by default within safe budget, explicit extracted-only option; immutable source references, tested migration and transaction authority. | 08, 09 |
+| NI-D18 | DELEGATED | New-project import first; existing-project append follow-on, explicit preview/revision guard; never overwrite silently. | 08, 09 |
+| NI-D19 | DELEGATED | Deliver all agreed capabilities in dependency-ordered slices; manual AI default, optional consent/budget automation later, backup retention configurable after measurement; actual IA/Figma and limits validated before implementation. | 08, 09 |
+
+| NI-D20 | DELEGATED | One primary editable manuscript, optional chapter/scene/block structure with stable IDs; unstructured writing permitted; narration vs chronology separate. | 08, 09 |
+| NI-D21 | DELEGATED | Text↔model sync: automatic local freshness and impact detection; explicit AI proposals, human approval, no silent bidirectional rewrite. | 08, 09 |
+| NI-D22 | DELEGATED | Keep generated artifacts immutable; explicit adoption of selected output into working manuscript with provenance. | 08, 09 |
+| NI-D23 | DELEGATED | Shared recoverable text/model/evidence transaction and undo/redo; version refs instead of copying entire manuscript per edit. | 08, 09 |
+| NI-D24 | DELEGATED | Writing-focused lightweight editor, outline and context; choose exact editor/library, storage format and layout through tests/Figma. | 08, 09 |
 
 Agreed directions are product decisions only. Final design/implementation plan, schema, dependency choices, specific limits and Figma layout require review. New V3 proposals are not automatically promoted to AGREED merely because owner raised them. Source: actual conversation recaps 02 and 04. No unresolved question is silently answered.
+
+## Round 4 status transition (2026-11-24)
+NI-D10–15 PROPOSED → AGREED; NI-D16 OPEN → AGREED, explicit owner acceptance 08. NI-D17–19 OPEN → DELEGATED, assistant selected defaults per owner request. NI-D20–24 added DELEGATED. Original V1–V3 records and Git history retained. No separate technical implementation approval inferred for a particular schema, library, numeric limit or merge. All accepted features targeted across stages, not all in one release.

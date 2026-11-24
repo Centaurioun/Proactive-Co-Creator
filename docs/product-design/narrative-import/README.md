@@ -13,6 +13,8 @@ Purpose: preserve the original brainstorming, owner feedback and subsequent refi
 | [05 — Refined design V3](05-refined-design-v3.md) | Continuous narrative intelligence, issue resolution, visualizations, recovery, six-cycle review |
 | [06 — Decision register](06-decision-register.md) | Agreed, proposed and open decisions with stable IDs |
 | [07 — Design evolution log](07-design-evolution-log.md) | Earlier idea → revised direction, reason and status |
+| [08 — Owner approval & delegation](08-owner-approval-v4.md) | Explicit V3 agreement and delegated V4 decisions |
+| [09 — Refined design V4](09-working-manuscript-design-v4.md) | Writer-focused editor, chapters/scenes, synchronization, six-cycle review and staged delivery |
 
 Source baseline reviewed: `0b34d01fb0feb0e73655291f572e370fd95e0fe4` (Stage 0 and independent CodeScene audit integrated). This archive is intentionally independent of the active dependency and TypeScript modernization PRs.
 
@@ -22,4 +24,4 @@ Workflow: refine and approve product decisions first; then create an approved de
 
 Future discovery records should be appended as numbered files and linked here. Keep owner ideas separate from accepted decisions and mark superseded proposals explicitly instead of erasing history.
 
-V3 extends the archive beyond import to ongoing narrative diagnostics, creative opportunities, visualization and backup/recovery. The decision register is the current review reference; the evolution log explains changes without erasing history. New V3 proposals remain pending owner review. No implementation authorization inferred.
+V3 extends the archive beyond import to ongoing narrative diagnostics, creative opportunities, visualization and backup/recovery. The decision register is the current review reference; the evolution log explains changes without erasing history. V3 directions accepted in round 4; see 08 and updated register. V4 detailed defaults chosen under explicit owner delegation; implementation remains staged and unstarted.
