@@ -109,3 +109,23 @@ test('does not compare records across destinations or count external records aga
   assert.deepEqual(result.candidates, []);
   assert.deepEqual(result.warnings, ['1 record(s) outside the internal vault were excluded.']);
 });
+
+test('keeps each project’s sole verified backup despite another project having a newer backup', () => {
+  const result = planBackupRetention([
+    record('project-a-only', { projectId: 'project-a', createdAt: 1 }),
+    record('project-b-newer', { projectId: 'project-b', createdAt: 100 }),
+  ], { enabled: true, maxBackups: 1 });
+  assert.deepEqual(result.candidates, []);
+  assert.deepEqual(result.warnings, []);
+});
+
+test('keeps newest and count ranking isolated by project and destination scope', () => {
+  const result = planBackupRetention([
+    record('a-old', { projectId: 'project-a', destinationId: 'internal-vault', createdAt: 1, payloadSha256: 'a'.repeat(64) }),
+    record('a-new', { projectId: 'project-a', destinationId: 'internal-vault', createdAt: 2, payloadSha256: 'b'.repeat(64) }),
+    record('b-only', { projectId: 'project-b', destinationId: 'internal-vault', createdAt: 100, payloadSha256: 'c'.repeat(64) }),
+    record('a-external-newest', { projectId: 'project-a', destinationId: 'external-drive', createdAt: 1000, payloadSha256: 'd'.repeat(64) }),
+  ], { enabled: true, maxBackups: 1 });
+  assert.deepEqual(result.candidates, [{ id: 'a-old', reasons: ['exceeds-max-backups'] }]);
+  assert.deepEqual(result.warnings, ['1 record(s) outside the internal vault were excluded.']);
+});

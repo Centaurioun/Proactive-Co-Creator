@@ -56,40 +56,54 @@ export function planBackupRetention(
   if (excludedCount > 0) warnings.push(`${excludedCount} unverified or corrupt record(s) were excluded.`);
 
   const candidates = new Map<string, Set<string>>();
-  const protectedIds = new Set(verified.filter(record => record.pinned).map(record => record.id));
-  const newest = [...verified].sort(byNewestThenId)[0];
-  if (newest) protectedIds.add(newest.id);
-
-  const groups = new Map<string, RetentionRecord[]>();
+  const scopes = new Map<string, RetentionRecord[]>();
   for (const record of verified) {
-    const key = duplicateIdentity(record);
-    const group = groups.get(key) ?? [];
-    group.push(record);
-    groups.set(key, group);
-  }
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const winner = [...group].sort(byNewestThenId)[0];
-    if (winner) protectedIds.add(winner.id);
-    for (const record of group) {
-      if (!protectedIds.has(record.id)) addReason(candidates, record.id, 'duplicate-content');
-    }
+    const key = JSON.stringify([record.projectId, record.destinationId]);
+    const scope = scopes.get(key) ?? [];
+    scope.push(record);
+    scopes.set(key, scope);
   }
 
-  if (policy.maxBackups !== undefined) {
-    const capOrder = [...verified].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-    let projectedCount = verified.length - candidates.size;
-    for (const record of capOrder) {
-      if (projectedCount <= policy.maxBackups) break;
-      if (protectedIds.has(record.id)) continue;
-      if (candidates.has(record.id)) continue;
-      addReason(candidates, record.id, 'exceeds-max-backups');
-      projectedCount--;
+  let countLimitBlocked = false;
+  for (const scope of scopes.values()) {
+    const protectedIds = new Set(scope.filter(record => record.pinned).map(record => record.id));
+    const newest = [...scope].sort(byNewestThenId)[0];
+    if (newest) protectedIds.add(newest.id);
+    const scopeCandidates = new Set<string>();
+
+    const groups = new Map<string, RetentionRecord[]>();
+    for (const record of scope) {
+      const key = duplicateIdentity(record);
+      const group = groups.get(key) ?? [];
+      group.push(record);
+      groups.set(key, group);
     }
-    if (projectedCount > policy.maxBackups) {
-      warnings.push('Configured count limit cannot be met because protected records exceed it.');
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const winner = [...group].sort(byNewestThenId)[0];
+      if (winner) protectedIds.add(winner.id);
+      for (const record of group) {
+        if (!protectedIds.has(record.id)) {
+          addReason(candidates, record.id, 'duplicate-content');
+          scopeCandidates.add(record.id);
+        }
+      }
+    }
+
+    if (policy.maxBackups !== undefined) {
+      const capOrder = [...scope].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+      let projectedCount = scope.length - scopeCandidates.size;
+      for (const record of capOrder) {
+        if (projectedCount <= policy.maxBackups) break;
+        if (protectedIds.has(record.id) || scopeCandidates.has(record.id)) continue;
+        addReason(candidates, record.id, 'exceeds-max-backups');
+        scopeCandidates.add(record.id);
+        projectedCount--;
+      }
+      if (projectedCount > policy.maxBackups) countLimitBlocked = true;
     }
   }
+  if (countLimitBlocked) warnings.push('Configured count limit cannot be met because protected records exceed it.');
 
   return {
     candidates: [...candidates.entries()]
