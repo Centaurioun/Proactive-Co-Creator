@@ -8,6 +8,8 @@ import AttributeEditor from './AttributeEditor';
 import { isSceneEntityName } from '../lib/beliefGraphUtils';
 import { resolveConsistencyIssueTarget } from '../lib/consistencyChecker';
 import { manuscriptSections } from '../lib/narrative/manuscriptModel';
+import OpportunityCenter from './opportunities/OpportunityCenter';
+import type { OpportunityProposalInput, OpportunityProposalStatus } from '../lib/narrative/opportunityProposals';
 import type {
   ConsistencyIssue,
   ConsistencyIssueTarget,
@@ -18,7 +20,7 @@ import type {
   StoryBibleFields,
 } from '../shared/types';
 
-export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history' | 'timeline';
+export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history' | 'timeline' | 'opportunities';
 
 interface ContextualInspectorProps {
   activeTab: RightPanelTab;
@@ -59,6 +61,8 @@ interface ContextualInspectorProps {
   contentExports: { id: string; label: string }[];
   onExportContent: (id: string) => void;
   onExportContentBundle: (ids: string[]) => void;
+  onCreateOpportunity: (input: OpportunityProposalInput, expectedRevision: number) => void;
+  onTransitionOpportunity: (id: string, status: OpportunityProposalStatus, expectedRevision: number) => void;
   onPreviewProjectJson: (rawJson: string) => Promise<CreativeProject>;
   onImportProjectJson: (rawJson: string) => Promise<{ ok: boolean; error?: string }>;
   isLoading: boolean;
@@ -243,6 +247,8 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   contentExports,
   onExportContent,
   onExportContentBundle,
+  onCreateOpportunity,
+  onTransitionOpportunity,
   isLoading,
 }) => {
   const { snapshot } = project;
@@ -349,7 +355,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       <div
         role="tablist"
         aria-label="Inspector views"
-        className="grid grid-cols-5 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
+        className="grid grid-cols-6 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
       >
         {(
           [
@@ -358,6 +364,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             ['consistency', `Checks (${consistencyIssues.length})`],
             ['history', 'History'],
             ['timeline', 'Timeline'],
+            ['opportunities', 'Ideas'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -1427,6 +1434,16 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === 'opportunities' && (
+        <OpportunityCenter
+          projectId={project.id}
+          projectRevision={project.revision}
+          proposals={project.narrative?.opportunities ?? []}
+          onCreate={onCreateOpportunity}
+          onTransition={onTransitionOpportunity}
+        />
       )}
 
       {activeTab === 'timeline' && (() => {
