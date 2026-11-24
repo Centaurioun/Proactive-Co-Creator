@@ -13,7 +13,7 @@
 | Depo / dal | `/Users/yusuf/Repos/Proactive-Co-Creator`; `codex/stage-0-final-qualification` |
 | Başlangıç HEAD'i | `3526c24fec45c60878937a331e487fc387e28d0b` |
 | Fetch edilmiş `origin/main` | Başlangıç HEAD'i ile aynı SHA; daha yeni uzak commit yok |
-| Commit'ler | `d330db6` doğrulama/CI/lockfile; raporlama commit'i bu rapordan sonra oluşturulacak |
+| Commit'ler | `d330db6` doğrulama/CI/lockfile; `460592a` Stage 0 raporları; PR takibi için güncelleme commit'i eklenecek |
 | Başlangıç çalışma ağacı | `graft/`, `.gitignore` düzenlemesi ve `.ignore` korunuyor; Stage 0 PR'ına alınmayacak |
 | Git ortamı | `GIT_CONFIG_COUNT=10`, fakat `GIT_CONFIG_KEY_0`–`_9` yoktu (değerler yazdırılmadı). `GIT_CONFIG_COUNT=0` yalnızca ilgili Git süreçlerinde kullanıldı; global veya kalıcı config değişmedi. `git fetch origin main` başarılı, başlangıç `HEAD` ve `origin/main` aynı. |
 | İşletim sistemi / mimari | macOS `darwin 27.0.0 arm64` (Apple M5 Pro) |
@@ -95,7 +95,7 @@ GitHub [45300419119](https://github.com/Centaurioun/Proactive-Co-Creator/actions
 
 ### Mevcut güvenlik PR'ı ile çakışma kontrolü
 
-Audit bulgusu için yeni bir paket güncelleme PR'ı açılmadı. Açık Dependabot PR #1 `typescript-eslint` sürümünü `^8.72.2`'den `^8.73.0`'a yükseltmeyi öneriyor; ancak PR dalının lockfile kaydı ve PR workflow sonucu bu rapor hazırlanırken bağımsız olarak doğrulanamadı. Bu yüzden PR #1'in yedi bulguyu giderdiği varsayılmıyor; PR #1 değiştirilmedi. İnceleme, GitHub'ın [GHSA-g3hv-75wg-m249](https://github.com/isaacs/minimatch/security/advisories/GHSA-g3hv-75wg-m249) kaydında bildirilen koşullu glob CPU/bellek tüketimi riskidir. Bu, geliştirme/test araçlarında yer alır; üretim bağımlılıkları denetiminde bulgu yoktur. PR #1 incelenip kendi CI'sı geçene kadar güvenlik bulgusu açık kabul edilmelidir.
+Audit bulgusu için ikinci bir paket güncelleme PR'ı açılmadı. Açık Dependabot PR #1'in açıklaması `minimatch` 10.2.6→11.0.8 güncellemesini bildiriyor; manifest diff'inde `typescript-eslint` `^8.72.2`→`^8.73.0`, lockfile'da `@typescript-eslint/typescript-estree` 8.73.0 ve kök `minimatch` 11.0.8 doğrulandı. PR #1'in package/lockfile anlık görüntüsüne karşı salt-okunur `npm audit` sonucu 0 bulgu; bu, PR'ın workflow/uyumluluk testlerinin geçtiğini kanıtlamaz. PR #1'in base SHA'sı güncel `main`den eski ve kendi PR workflow run'ı bulunmadı; PR #1 değiştirilmedi ve merge edilmedi. Bu Stage 0 dalının kendi `npm audit` sonucu 7 moderate, `npm audit --omit=dev` sonucu 0'dır. İlgili koşullu glob CPU/bellek tüketimi senaryosu GitHub'ın [GHSA-g3hv-75wg-m249](https://github.com/isaacs/minimatch/security/advisories/GHSA-g3hv-75wg-m249) kaydındadır; geliştirme/test araçlarındadır, üretim bağımlılıkları denetiminde bulgu yoktur. PR #1 güncel tabana getirilmeli ve CI/inceleme kapısını geçmelidir.
 
 ## Altı döngülü yinelemeli incelemeler
 
@@ -126,7 +126,7 @@ Audit bulgusu için yeni bir paket güncelleme PR'ı açılmadı. Açık Dependa
 
 ## Riskler, geri alma ve son kapı
 
-- Kod/doğrulama commit'i `d330db6` oluşturuldu; final raporlama commit'i ve uzak PR henüz yok. Commit/push için oturum talimatındaki süreç kapsamlı `GIT_CONFIG_COUNT=0` kullanıldı; global veya kalıcı Git ayarı değiştirilmedi. Başlangıçtaki `.gitignore`, `.ignore` ve `graft/` kullanıcı malzemesi korunuyor ve Stage 0 PR'ına alınmıyor.
+- Kod/doğrulama commit'i `d330db6`, rapor commit'i `460592a`; Stage 0 PR #4 açık/draft olarak inceleme bekliyor. CI/artifact incelemesi sonuçlanmadı. Commit/push için süreç kapsamlı `GIT_CONFIG_COUNT=0` kullanıldı; global veya kalıcı Git ayarı değiştirilmedi. Başlangıçtaki `.gitignore`, `.ignore` ve `graft/` kullanıcı malzemesi korunuyor ve Stage 0 PR'ına alınmıyor.
 - Yalnızca bu işe ait değişiklikleri geri almak için `git diff` ile 11 değişmiş tracked dosyayı ve eklenen qualification raporunu inceleyip seçerek geri yükleyin. `graft/` dizinini silmeyin ve branch'i resetlemeyin.
-- Açık kapı: Stage 0 değişiklikleri için ayrı bir dal/PR aç; o PR SHA'sında `Verify (Node 22.x)` ile `Browser E2E Smoke (Chromium)` işlerinin ikisi de geçmeli. Artifact'te ekran görüntüsü, sonuç JSON'u, server log, environment metadata ve kontrollü hata kanıtlarının bulunduğu doğrulanmalı. Merge yetkisi verilmedi.
+- Açık kapı: PR #4'ün son SHA'sında `Verify (Node 22.x)` ile `Browser E2E Smoke (Chromium)` işlerinin ikisi de geçmeli. Artifact'te ekran görüntüsü, sonuç JSON'u, server log, environment metadata ve kontrollü hata kanıtlarının bulunduğu doğrulanmalı. Merge yetkisi verilmedi.
 - **Stage 1 uygulaması: NO-GO.** Figma keşfi mevcut handoff ile sürdürülebilir; ürün kodlaması uzak CI yeşil olduktan ve beş ürün kapsam kararı netleştikten sonra başlamalı.
