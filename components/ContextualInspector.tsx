@@ -7,6 +7,7 @@ import React, { useEffect, useState } from 'react';
 import AttributeEditor from './AttributeEditor';
 import { isSceneEntityName } from '../lib/beliefGraphUtils';
 import { resolveConsistencyIssueTarget } from '../lib/consistencyChecker';
+import { manuscriptSections } from '../lib/narrative/manuscriptModel';
 import type {
   ConsistencyIssue,
   ConsistencyIssueTarget,
@@ -17,7 +18,7 @@ import type {
   StoryBibleFields,
 } from '../shared/types';
 
-export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history';
+export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history' | 'timeline';
 
 interface ContextualInspectorProps {
   activeTab: RightPanelTab;
@@ -348,7 +349,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       <div
         role="tablist"
         aria-label="Inspector views"
-        className="grid grid-cols-4 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
+        className="grid grid-cols-5 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
       >
         {(
           [
@@ -356,6 +357,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             ['story-bible', 'Story Bible'],
             ['consistency', `Checks (${consistencyIssues.length})`],
             ['history', 'History'],
+            ['timeline', 'Timeline'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -1426,6 +1428,52 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
           )}
         </div>
       )}
+
+      {activeTab === 'timeline' && (() => {
+        const sections = manuscriptSections(project);
+        return (
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+            <div>
+              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Story Timeline</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Rows follow the current manuscript order. Chronology notes are shown as authored; no dates or event order are inferred.
+              </p>
+            </div>
+            {sections.length === 0 ? (
+              <p className="rounded border border-gray-200 p-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
+                No current manuscript sections are available. The timeline is empty.
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
+                <table className="w-full border-collapse text-left text-xs">
+                  <caption className="sr-only">Current manuscript order and authored chronology notes</caption>
+                  <thead className="bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                    <tr>
+                      <th scope="col" className="px-3 py-2">Authored order</th>
+                      <th scope="col" className="px-3 py-2">Section</th>
+                      <th scope="col" className="px-3 py-2">Chronology note</th>
+                      <th scope="col" className="px-3 py-2">Temporal status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                    {sections.map((section, index) => {
+                      const note = section.chronology?.trim();
+                      return (
+                        <tr key={section.id}>
+                          <td className="px-3 py-2 font-mono">{index + 1}</td>
+                          <th scope="row" className="px-3 py-2 font-semibold">{section.title || `Untitled ${section.kind}`}</th>
+                          <td className="px-3 py-2">{note ? `Authored note: ${note}` : 'No chronology note recorded.'}</td>
+                          <td className="px-3 py-2">{note ? 'Authored; not date-verified' : 'Undated / unspecified'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Tab 4: Revision History, Persistence, Export & Import */}
       {activeTab === 'history' && (
