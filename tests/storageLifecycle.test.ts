@@ -955,6 +955,14 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
     });
     assert.equal(firstWrite.saved, true);
 
+    const changedOutsideSnapshot = { ...candidate, name: `${candidate.name} with different operation content` };
+    const reusedIntent = await persistProjectDurably(changedOutsideSnapshot, {
+      expectedPersistedRevision: base.revision,
+      intentId,
+    });
+    assert.equal(reusedIntent.saved, false, 'A reused intent ID with changed project content must fail closed.');
+    assert.equal(reusedIntent.conflictDetected, true);
+
     const newer = {
       ...candidate,
       revision: 3,
@@ -963,12 +971,14 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
     };
     assert.equal((await persistProjectDurably(newer, { expectedPersistedRevision: 2 })).saved, true);
 
+    mockStorage.failNextSetItemError = 'SecurityError: localStorage access denied during idempotent replay';
     const replay = await persistProjectDurably(candidate, {
       expectedPersistedRevision: base.revision,
       intentId,
     });
     assert.equal(replay.saved, true);
     assert.equal(replay.idempotentHit, true);
+    assert.equal(replay.cacheSynced, false, 'Idempotent replay must disclose a failed local cache reconciliation.');
     assert.equal(replay.storedProject?.revision, 3);
     assert.equal(replay.storedProject?.snapshot.storyBible.genre.value, 'Newer authoritative result');
   });

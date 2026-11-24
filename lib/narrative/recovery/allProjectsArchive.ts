@@ -347,3 +347,27 @@ export async function parseAndVerifyAllProjectsArchive(
     warnings,
   };
 }
+
+export type ArchiveRestoreSequenceResult<T> =
+  | { ok: true; count: number }
+  | { ok: false; count: number; error: string; remainingProjects: T[] };
+
+/** Restore in archive order and return the uncommitted suffix so a retry skips completed projects. */
+export async function restoreArchiveProjectsSequentially<T>(
+  projects: T[],
+  persistProject: (project: T) => Promise<void>,
+): Promise<ArchiveRestoreSequenceResult<T>> {
+  for (let index = 0; index < projects.length; index += 1) {
+    try {
+      await persistProject(projects[index]);
+    } catch (cause) {
+      return {
+        ok: false,
+        count: index,
+        error: cause instanceof Error ? cause.message : 'Archive restore failed.',
+        remainingProjects: projects.slice(index),
+      };
+    }
+  }
+  return { ok: true, count: projects.length };
+}

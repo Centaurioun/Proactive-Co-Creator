@@ -58,6 +58,7 @@ import { parseNarrativeSource } from '../lib/narrative/import/sourceParser.ts';
 import {
   buildAllProjectsArchiveZip,
   parseAndVerifyAllProjectsArchive,
+  restoreArchiveProjectsSequentially,
 } from '../lib/narrative/recovery/allProjectsArchive.ts';
 import {
   applyAppendToExistingProject,
@@ -813,6 +814,25 @@ describe('Package G — DOCX Export round-trip and Verified All-Projects ZIP Arc
     const oversized = new Uint8Array(49 * 1024 * 1024);
     const archive = zipSync({ 'projects/oversized.json': oversized });
     await assert.rejects(() => parseAndVerifyAllProjectsArchive(archive, new Set()), /expands beyond|maximum safe size/i);
+  });
+
+  it('returns only uncommitted archive projects for a safe retry', async () => {
+    const firstAttempt: string[] = [];
+    const partial = await restoreArchiveProjectsSequentially(['one', 'two', 'three'], async (project) => {
+      firstAttempt.push(project);
+      if (project === 'two') throw new Error('synthetic persistence failure');
+    });
+    assert.deepEqual(firstAttempt, ['one', 'two']);
+    assert.deepEqual(partial, {
+      ok: false, count: 1, error: 'synthetic persistence failure', remainingProjects: ['two', 'three'],
+    });
+
+    const retryAttempt: string[] = [];
+    const completed = await restoreArchiveProjectsSequentially(partial.remainingProjects, async (project) => {
+      retryAttempt.push(project);
+    });
+    assert.deepEqual(retryAttempt, ['two', 'three']);
+    assert.deepEqual(completed, { ok: true, count: 2 });
   });
 });
 

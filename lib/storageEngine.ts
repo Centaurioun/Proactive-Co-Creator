@@ -694,8 +694,19 @@ export function simulateBrowserProcessRestartForTesting(): void {
 
 const MAX_RECENT_INTENT_IDS = 50;
 
-function intentSnapshotFingerprint(project: CreativeProject): string {
-  const text = JSON.stringify(project.snapshot);
+function stableIntentSerialization(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableIntentSerialization).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().filter((key) => record[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${stableIntentSerialization(record[key])}`).join(',')}}`;
+}
+
+function intentOperationFingerprint(project: CreativeProject): string {
+  const operationContent = Object.fromEntries(
+    Object.entries(project).filter(([key]) => !['revision', 'persistedRevision', 'updatedAt', 'recentIntentIds'].includes(key))
+  );
+  const text = stableIntentSerialization(operationContent);
   let a = 0x811c9dc5;
   let b = 0x9e3779b9;
   for (let i = 0; i < text.length; i += 1) {
@@ -708,7 +719,7 @@ function intentSnapshotFingerprint(project: CreativeProject): string {
 
 function intentRecordId(project: CreativeProject, intentId?: string, expectedBaseRevision?: number): string | undefined {
   const baseRevision = expectedBaseRevision ?? project.persistedRevision ?? 0;
-  return intentId ? `${intentId}:${baseRevision}:${intentSnapshotFingerprint(project)}` : undefined;
+  return intentId ? `${intentId}:${baseRevision}:${intentOperationFingerprint(project)}` : undefined;
 }
 
 function mergeIntentIds(existing: CreativeProject | undefined, candidate: CreativeProject, intentId?: string, expectedBaseRevision?: number): string[] | undefined {
@@ -1807,14 +1818,20 @@ export async function persistProjectDurably(
     }
 
     if (idbRes.idempotentHit) {
-      if (hasLocalStorage && idbRes.storedProject) {
-        saveProjectToLocalStorage(idbRes.storedProject, { forceOverwrite: true, allowDeleted });
-      }
+      const localRes = hasLocalStorage && idbRes.storedProject
+        ? saveProjectToLocalStorage(idbRes.storedProject, { forceOverwrite: true, allowDeleted })
+        : undefined;
+      const cacheSynced = Boolean(localRes?.saved);
       return {
         ...idbRes,
         authoritativeStore: 'indexeddb',
         idbSaved: true,
-        cacheSynced: true,
+        localSaved: cacheSynced,
+        cacheSynced,
+        ...(!cacheSynced && hasLocalStorage ? {
+          quotaExceeded: Boolean(localRes?.quotaExceeded),
+          cacheWarning: localRes?.error ?? 'The authoritative IndexedDB result could not be synchronized to the localStorage cache.',
+        } : {}),
       };
     }
 

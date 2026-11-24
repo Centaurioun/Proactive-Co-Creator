@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { AI_OPERATION_POLICIES, maxAttemptsWithinOperationBudget, reserveAggregateOperationUsage } from '../server/aiBudget.ts';
-import { runWritingAssistant, type NarrativeAiClientLike } from '../server/narrative/narrativeAiService.ts';
+import { runBudgetedJsonOperation, runWritingAssistant, type NarrativeAiClientLike } from '../server/narrative/narrativeAiService.ts';
 import { extractNarrativeChunk } from '../server/narrative/extractionService.ts';
 
 const request = {
@@ -78,5 +78,21 @@ describe('narrative AI budget enforcement', () => {
     };
     await assert.rejects(() => runWritingAssistant(request, undefined, client), /timed out/i);
     assert.equal(generated, false);
+  });
+
+  it('releases the AI concurrency slot when provider initialization throws', async () => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(() => runBudgetedJsonOperation({
+        operation: 'writing', prompt: 'Synthetic prompt', parse: (value) => value,
+        clientFactory: () => { throw new Error('synthetic provider initialization failure'); },
+      }));
+    }
+    const client: NarrativeAiClientLike = {
+      models: {
+        countTokens: async () => ({ totalTokens: 20 }),
+        generateContent: async () => ({ text: JSON.stringify({ proposals: [{ id: 'p1', label: 'Clearer', text: 'Synthetic text', rationale: 'Focused rewrite', assumptions: [] }] }) }),
+      },
+    };
+    await runWritingAssistant(request, undefined, client);
   });
 });

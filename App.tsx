@@ -13,6 +13,7 @@ import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplac
 import { projectContentExport, type ContentExportSelection } from './lib/narrative/recovery/contentExport';
 import { projectContentBundle } from './lib/narrative/recovery/bundleExporter';
 import { buildDeterministicExportFilename, buildManuscriptDocxBytes } from './lib/narrative/recovery/docxExport';
+import { restoreArchiveProjectsSequentially, type ArchiveRestoreSequenceResult } from './lib/narrative/recovery/allProjectsArchive';
 import {
   applyDiagnosticFixAlternative,
   collectLocalDiagnosticFindings,
@@ -1204,39 +1205,30 @@ function App() {
 
   const handleRestoreArchiveProjects = async (
     restoredProjects: CreativeProject[]
-  ): Promise<{ ok: boolean; count: number; error?: string }> => {
+  ): Promise<ArchiveRestoreSequenceResult<CreativeProject>> => {
     let nextSaved = [...savedProjectsRef.current];
-    let savedCount = 0;
-    try {
-      for (const candidate of restoredProjects) {
-        const res = await flushProjectDurably(candidate, { expectedPersistedRevision: 0 });
-        if (!res.saved) {
-          throw new Error(res.error ?? `Could not restore "${candidate.name}".`);
-        }
-        const committed = res.idempotentHit && res.storedProject
-          ? res.storedProject
-          : { ...candidate, persistedRevision: res.persistedRevision ?? candidate.revision };
-        nextSaved = upsertProjectInSavedList(nextSaved, committed);
-        savedCount += 1;
-      }
+    const result = await restoreArchiveProjectsSequentially(restoredProjects, async (candidate) => {
+      const res = await flushProjectDurably(candidate, { expectedPersistedRevision: 0 });
+      if (!res.saved) throw new Error(res.error ?? `Could not restore "${candidate.name}".`);
+      const committed = res.idempotentHit && res.storedProject
+        ? res.storedProject
+        : { ...candidate, persistedRevision: res.persistedRevision ?? candidate.revision };
+      nextSaved = upsertProjectInSavedList(nextSaved, committed);
+    });
+    if (result.ok || result.count > 0) {
       savedProjectsRef.current = nextSaved;
       setSavedProjects(nextSaved);
-      setStatusNotification(`Restored ${savedCount} verified project(s) from portable archive.`);
-      return { ok: true, count: savedCount };
-    } catch (cause) {
-      if (savedCount > 0) {
-        savedProjectsRef.current = nextSaved;
-        setSavedProjects(nextSaved);
-      }
-      const detail = cause instanceof Error ? cause.message : 'Archive restore failed.';
-      return {
-        ok: false,
-        count: savedCount,
-        error: savedCount > 0
-          ? `Partial archive restore: ${savedCount} project(s) were durably restored before the next save failed. ${detail}`
-          : detail,
-      };
     }
+    if (result.ok) {
+      setStatusNotification(`Restored ${result.count} verified project(s) from portable archive.`);
+      return result;
+    }
+    return {
+      ...result,
+      error: result.count > 0
+        ? `Partial archive restore: ${result.count} project(s) were durably restored. ${result.remainingProjects.length} remain and can be retried. ${result.error}`
+        : result.error,
+    };
   };
 
   // Keyboard shortcuts for Undo / Redo (F-04 / IA-08)

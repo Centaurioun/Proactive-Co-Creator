@@ -83,12 +83,13 @@ function stripJsonFences(raw: string): string {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
-async function runBudgetedJsonOperation<T>(params: {
+export async function runBudgetedJsonOperation<T>(params: {
   operation: AiOperation;
   prompt: string;
   parse: (json: unknown) => T;
   signal?: AbortSignal;
   client?: NarrativeAiClientLike;
+  clientFactory?: () => NarrativeAiClientLike;
 }): Promise<{ data: T; usage: AiUsageReport }> {
   const policy = AI_OPERATION_POLICIES[params.operation];
   const inputChars = params.prompt.length;
@@ -107,13 +108,12 @@ async function runBudgetedJsonOperation<T>(params: {
     throw new AppApiError('RATE_LIMITED', slot.reason, 429, true);
   }
 
-  const ai: NarrativeAiClientLike = params.client ?? (getGeminiClient() as unknown as NarrativeAiClientLike);
-  const { signal: reqSignal, cleanup } = combineSignals(
-    params.signal,
-    Math.min(policy.timeoutMs, policy.maxAggregateElapsedMs)
-  );
-
+  let cleanup: () => void = () => {};
   try {
+    const ai: NarrativeAiClientLike = params.clientFactory?.() ?? params.client ?? (getGeminiClient() as unknown as NarrativeAiClientLike);
+    const combined = combineSignals(params.signal, Math.min(policy.timeoutMs, policy.maxAggregateElapsedMs));
+    cleanup = combined.cleanup;
+    const reqSignal = combined.signal;
     if (typeof ai.models.countTokens !== 'function') {
       throw new AppApiError('VALIDATION_ERROR', 'This operation is unavailable because provider token counting is not supported.', 503, false);
     }
