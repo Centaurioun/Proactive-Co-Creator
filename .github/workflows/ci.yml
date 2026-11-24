@@ -31,10 +31,20 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --strict-peer-deps
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Verify compiler routing
+        run: |
+          ./node_modules/typescript7/bin/tsc --version
+          ./node_modules/typescript/bin/tsc6 --version
+          node -p "require('typescript').version"
+          npm ls typescript7 typescript --depth=0
+
+      - name: Native TypeScript 7 typecheck
+        run: npm run typecheck:native
+
+      - name: Classic TypeScript 6 typecheck
+        run: npm run typecheck:classic
 
       - name: Lint
         run: npm run lint
@@ -44,6 +54,11 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+      - name: Dependency security audit
+        run: |
+          npm audit
+          npm audit --omit=dev
 
   e2e-browser:
     name: Browser E2E Smoke (Chromium)
@@ -62,7 +77,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --strict-peer-deps
 
       - name: Production build
         run: npm run build
