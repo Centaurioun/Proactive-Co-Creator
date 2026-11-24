@@ -24,6 +24,7 @@ import type {
   Entity,
   EntityCategory,
   Relationship,
+  ConsistencyIssue,
 } from '../shared/types';
 import RelationshipEditor from './RelationshipEditor';
 
@@ -38,6 +39,7 @@ export interface BeliefGraphProps {
   onRelationshipChange: (source: string, target: string, newLabel: string, relationshipId?: string) => void;
   onAttributeChange?: (entityName: string, attributeName: string, newValue: string) => void;
   currentPrompt: string;
+  consistencyIssues?: ConsistencyIssue[];
 }
 
 const BeliefGraph: React.FC<BeliefGraphProps> = ({
@@ -49,6 +51,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
   onSelectEntity,
   onSelectRelationship,
   onRelationshipChange,
+  consistencyIssues = [],
 }) => {
   // Belief Graph 2.0 navigation & filtering state
   const [searchQuery, setSearchQuery] = useState('');
@@ -609,17 +612,31 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                 {selectedEntityRelationshipsOnly ? 'Show all relationships' : 'Filter to selected character'}
               </button>
             </div>
+            <p className="mb-2 text-[11px] text-gray-500" id="relationship-checks-help">
+              Checks reflect the current project snapshot and are read-only. They are also listed in the Checks tab.
+            </p>
             <table className="w-full text-left border-collapse text-xs">
+              <caption className="sr-only">Directed relationships and current related consistency findings</caption>
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-800 text-gray-500 dark:text-gray-400">
                   <th className="py-2 px-2.5 font-semibold">Source</th>
                   <th className="py-2 px-2.5 font-semibold">Directed Label</th>
                   <th className="py-2 px-2.5 font-semibold">Target</th>
                   <th className="py-2 px-2.5 font-semibold text-right">Status</th>
+                  <th className="py-2 px-2.5 font-semibold">Current checks</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                 {tableRelationships.map((rel, idx) => {
+                  const endpointNames = new Set([rel.source, rel.target]);
+                  const endpointIds = new Set((data?.entities ?? [])
+                    .filter(entity => endpointNames.has(entity.name) && entity.id)
+                    .map(entity => entity.id as string));
+                  const rowIssues = consistencyIssues.filter(issue =>
+                    issue.relationshipId === rel.id ||
+                    issue.targets?.some(target => target.kind === 'relationship' && target.relationshipId === rel.id) ||
+                    issue.affectedEntityIds.some(id => endpointNames.has(id) || endpointIds.has(id))
+                  );
                   const isSelected =
                     selectedRelationship?.id === rel.id ||
                     (selectedRelationship?.source === rel.source &&
@@ -658,11 +675,24 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                       <td className="py-2 px-2.5 text-right capitalize text-gray-600 dark:text-gray-400">
                         {rel.status ?? 'confirmed'}
                       </td>
+                      <td className="py-2 px-2.5 text-gray-700 dark:text-gray-300">
+                        {rowIssues.length ? (
+                          <ul aria-label={`Current consistency findings related to ${rel.source} ${rel.label} ${rel.target}`} className="space-y-1">
+                            {rowIssues.map(issue => (
+                              <li key={issue.id} className="rounded border border-amber-300 bg-amber-50 p-1.5 dark:border-amber-800 dark:bg-amber-950/30">
+                                <span className="font-semibold">{issue.severity === 'error' ? 'Error' : 'Warning'} · {issue.category}</span>
+                                <p className="font-medium">{issue.title}</p>
+                                <p>{issue.description}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : <span className="text-gray-500">None</span>}
+                      </td>
                     </tr>
                   );
                 })}
                 {tableRelationships.length === 0 && (
-                  <tr><td colSpan={4} className="py-3 px-2.5 text-center text-gray-500">No relationships match this filter.</td></tr>
+                  <tr><td colSpan={5} className="py-3 px-2.5 text-center text-gray-500">No relationships match this filter.</td></tr>
                 )}
               </tbody>
             </table>

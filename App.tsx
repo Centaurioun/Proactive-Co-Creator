@@ -2300,6 +2300,7 @@ function App() {
               onRelationshipChange={handleUpsertRelationship}
               onAttributeChange={handleAttributeChange}
               currentPrompt={snapshot.originalIdea}
+              consistencyIssues={consistencyIssues}
             />
           </div>
 
