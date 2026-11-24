@@ -1,4 +1,4 @@
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
+import { strFromU8, strToU8, Unzip, UnzipInflate, zipSync } from 'fflate';
 import type { CreativeProject } from '../../../shared/types.ts';
 import { makeStableId } from '../../canonicalModel.ts';
 import { migrateProjectPayload } from '../../storageEngine.ts';
@@ -52,6 +52,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 function isSafeArchivePath(path: string): boolean {
   if (!path || path.startsWith('/') || path.includes('\\') || path.includes('..')) return false;
+  if (path.split('/').some((part) => part.length === 0 || part === '.')) return false;
   return /^[a-z0-9._/-]+$/i.test(path);
 }
 
@@ -190,23 +191,54 @@ export async function parseAndVerifyAllProjectsArchive(
     throw new Error('The archive exceeds the maximum safe size limit (48 MiB).');
   }
 
-  let entriesMap: Record<string, Uint8Array>;
-  try {
-    entriesMap = unzipSync(zipBytes);
-  } catch {
-    throw new Error('The selected file is not a valid ZIP archive.');
-  }
-
+  const entriesMap: Record<string, Uint8Array> = Object.create(null) as Record<string, Uint8Array>;
   let totalExpanded = 0;
-  for (const [path, data] of Object.entries(entriesMap)) {
-    if (!isSafeArchivePath(path)) {
-      throw new Error(`Archive contains an unsafe path: "${path}".`);
+  let entryCount = 0;
+  const unzipper = new Unzip();
+  unzipper.register(UnzipInflate);
+  const extraction = new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } };
+    unzipper.onfile = (file) => {
+      const path = file.name;
+      entryCount += 1;
+      if (entryCount > MAX_ARCHIVE_PROJECTS + 1) return fail(new Error('Archive contains more entries than the supported project limit.'));
+      if (!isSafeArchivePath(path)) return fail(new Error(`Archive contains an unsafe path: "${path}".`));
+      if (Object.hasOwn(entriesMap, path)) return fail(new Error(`Archive contains a duplicate entry: "${path}".`));
+      if (typeof file.originalSize === 'number' && file.originalSize > MAX_ARCHIVE_EXPANDED_BYTES) {
+        return fail(new Error('Archive entry expands beyond the safe 48 MiB restoration limit.'));
+      }
+      const chunks: Uint8Array[] = [];
+      let entrySize = 0;
+      file.ondata = (error, chunk, final) => {
+        if (error) return fail(new Error('The selected file is not a valid ZIP archive.'));
+        entrySize += chunk.byteLength;
+        totalExpanded += chunk.byteLength;
+        if (entrySize > MAX_ARCHIVE_EXPANDED_BYTES || totalExpanded > MAX_ARCHIVE_EXPANDED_BYTES) {
+          return fail(new Error('Archive expands beyond the safe 48 MiB restoration limit.'));
+        }
+        chunks.push(chunk);
+        if (final && !settled) {
+          const data = new Uint8Array(entrySize);
+          let offset = 0;
+          for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
+          entriesMap[path] = data;
+        }
+      };
+      file.start();
+    };
+    try {
+      const inputChunkBytes = 64 * 1024;
+      for (let offset = 0; offset < zipBytes.byteLength && !settled; offset += inputChunkBytes) {
+        const end = Math.min(offset + inputChunkBytes, zipBytes.byteLength);
+        unzipper.push(zipBytes.subarray(offset, end), end === zipBytes.byteLength);
+      }
+      if (!settled) { settled = true; resolve(); }
+    } catch {
+      fail(new Error('The selected file is not a valid ZIP archive.'));
     }
-    totalExpanded += data.byteLength;
-    if (totalExpanded > MAX_ARCHIVE_EXPANDED_BYTES) {
-      throw new Error('Archive expands beyond the safe 48 MiB restoration limit.');
-    }
-  }
+  });
+  await extraction;
 
   const manifestBytes = entriesMap['manifest.json'];
   if (!manifestBytes) {

@@ -34,7 +34,7 @@ import { encodeNarrativeSourceData } from './extractionService.ts';
 
 export interface NarrativeAiClientLike {
   models: {
-    countTokens?: (params: { model: string; contents: string }) => Promise<{ totalTokens?: number }>;
+    countTokens?: (params: { model: string; contents: string; config?: { abortSignal?: AbortSignal } }) => Promise<{ totalTokens?: number }>;
     generateContent: (params: {
       model: string;
       contents: string;
@@ -110,19 +110,38 @@ async function runBudgetedJsonOperation<T>(params: {
   const { signal: reqSignal, cleanup } = combineSignals(params.signal, policy.timeoutMs);
 
   try {
-    let providerInputTokens: number | undefined;
-    if (typeof ai.models.countTokens === 'function') {
-      try {
-        const countRes = await ai.models.countTokens({
-          model: policy.model,
-          contents: params.prompt,
-        });
-        if (typeof countRes?.totalTokens === 'number' && Number.isFinite(countRes.totalTokens)) {
-          providerInputTokens = countRes.totalTokens;
-        }
-      } catch {
-        // Fall back to deterministic estimate when provider countTokens is unavailable
-      }
+    if (typeof ai.models.countTokens !== 'function') {
+      throw new AppApiError('VALIDATION_ERROR', 'This operation is unavailable because provider token counting is not supported.', 503, false);
+    }
+    const countController = new AbortController();
+    const abortCount = () => countController.abort(reqSignal.reason);
+    if (reqSignal.aborted) abortCount();
+    else reqSignal.addEventListener('abort', abortCount, { once: true });
+    let countTimer: ReturnType<typeof setTimeout> | undefined;
+    let countRes: { totalTokens?: number } | undefined;
+    try {
+      countRes = await Promise.race([
+        ai.models.countTokens({ model: policy.model, contents: params.prompt, config: { abortSignal: countController.signal } }),
+        new Promise<never>((_, reject) => {
+          countTimer = setTimeout(() => {
+            countController.abort();
+            reject(new AppApiError('TIMEOUT', 'Provider token counting timed out; generation was not started.', 504, true));
+          }, Math.min(policy.timeoutMs, 5_000));
+        }),
+      ]);
+    } finally {
+      if (countTimer) clearTimeout(countTimer);
+      reqSignal.removeEventListener('abort', abortCount);
+      countController.abort();
+    }
+    if (reqSignal.aborted) {
+      throw reqSignal.reason instanceof AppApiError
+        ? reqSignal.reason
+        : new AppApiError('CANCELLED', 'The request was cancelled before generation.', 499, false);
+    }
+    const providerInputTokens = countRes?.totalTokens;
+    if (typeof providerInputTokens !== 'number' || !Number.isSafeInteger(providerInputTokens) || providerInputTokens < 0) {
+      throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; generation was not started.', 503, false);
     }
 
     const budget = evaluateOperationBudget({
@@ -147,6 +166,7 @@ async function runBudgetedJsonOperation<T>(params: {
             abortSignal: reqSignal,
             thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
             responseMimeType: 'application/json',
+            maxOutputTokens: policy.maxOutputTokens,
           },
         }),
       { maxAttempts: 2, signal: reqSignal }

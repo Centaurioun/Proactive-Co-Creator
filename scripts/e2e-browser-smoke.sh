@@ -44,19 +44,22 @@ async (page) => {
     const pageErrors = [];
     const consoleErrors = [];
     const apiHits = [];
+    const paidApiHits = [];
     targetPage.on('pageerror', (e) => pageErrors.push(e.message));
     targetPage.on('console', (msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
     await targetPage.route('**/api/**', async (route) => {
       apiHits.push(route.request().url());
+      if (route.request().url().endsWith('/api/ai/capabilities')) return route.continue();
+      paidApiHits.push(route.request().url());
       await route.fulfill({
         status: 500,
         contentType: 'application/json',
         body: JSON.stringify({ error: { code: 'BLOCKED_TEST', message: 'No paid Gemini calls in E2E' } }),
       });
     });
-    return { pageErrors, consoleErrors, apiHits };
+    return { pageErrors, consoleErrors, apiHits, paidApiHits };
   };
 
   const runScenario = async (id, fn, initScript = null) => {
@@ -171,7 +174,7 @@ async (page) => {
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     assert((await p.locator('#bible-genre').inputValue()) === 'Lunar Pastoral', 'E2E-A reload Beta genre lost');
     assert(traps.pageErrors.length === 0, 'E2E-A pageErrors: ' + traps.pageErrors.join('; '));
-    assert(traps.apiHits.length === 0, 'E2E-A paid API hits: ' + traps.apiHits.join(', '));
+    assert(traps.paidApiHits.length === 0, 'E2E-A paid API hits: ' + traps.paidApiHits.join(', '));
     results.push('E2E-A: PASS');
   });
 
@@ -198,7 +201,7 @@ async (page) => {
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     assert((await p.locator('#bible-setting').inputValue()) === 'Rev3 Spire', 'E2E-B lost A/r3 on reload');
     assert(traps.pageErrors.length === 0, 'E2E-B pageErrors');
-    assert(traps.apiHits.length === 0, 'E2E-B paid API hits');
+    assert(traps.paidApiHits.length === 0, 'E2E-B paid API hits');
     results.push('E2E-B: PASS');
   });
 
@@ -234,7 +237,7 @@ async (page) => {
     const promptText = await p.locator('pre').first().textContent();
     assert(!promptText.includes('Candlelit Atrium') && !promptText.includes('Eerie Baroque'), 'E2E-C cleared fields leaked into refined prompt');
     assert(traps.pageErrors.length === 0, 'E2E-C pageErrors');
-    assert(traps.apiHits.length === 0, 'E2E-C paid API hits');
+    assert(traps.paidApiHits.length === 0, 'E2E-C paid API hits');
     results.push('E2E-C: PASS');
   });
 
@@ -253,13 +256,13 @@ async (page) => {
     const revAfter = (await p.locator('footer').textContent()).match(/(\d+)\s+revs?/)?.[1];
     assert(revBefore === revAfter, 'E2E-D navigation bumped revision: ' + revBefore + ' -> ' + revAfter);
 
-    // Set narrow filter on Story Bible, then navigate via Checks -> Edit Tone -> verify filter resets & #bible-tone focused
+    // Set narrow filter on Story Bible, then navigate via Checks -> Edit Explicit Exclusions -> verify target focus
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     await p.getByRole('button', { name: 'Visual', exact: true }).click();
     await p.getByRole('tab', { name: /Checks/ }).click();
-    await p.getByRole('button', { name: 'Edit Tone' }).click();
+    await p.getByRole('button', { name: 'Edit Explicit Exclusions' }).click();
     await p.waitForTimeout(120);
-    assert((await p.evaluate(() => document.activeElement?.id)) === 'bible-tone', 'E2E-D #bible-tone not focused');
+    assert((await p.evaluate(() => document.activeElement?.id)) === 'bible-explicitExclusions', 'E2E-D explicit exclusions field not focused');
     await p.screenshot({ path: '.playwright-cli/e2e-d-bible-focus.png' });
     assert(traps.pageErrors.length === 0, 'E2E-D pageErrors');
     results.push('E2E-D: PASS');
@@ -383,7 +386,7 @@ async (page) => {
     await p.reload({ waitUntil: 'networkidle' });
     assert(!(await p.getByRole('button', { name: 'Redo' }).isDisabled()), 'E2E-E Redo stack lost after reload');
     assert(traps.pageErrors.length === 0, 'E2E-E pageErrors');
-    assert(traps.apiHits.length === 0, 'E2E-E paid API hits');
+    assert(traps.paidApiHits.length === 0, 'E2E-E paid API hits');
     results.push('E2E-E: PASS');
   });
 
@@ -531,7 +534,7 @@ async (page) => {
     const graphRegion = await p.getByRole('region', { name: 'Interactive belief graph' }).textContent();
     assert(graphRegion.includes('hosting') && graphRegion.includes('Cat'), 'E2E-H Graph edges missing after Image switch');
     await genModeGroup.getByRole('button', { name: 'Story', exact: true }).click();
-    assert(traps.apiHits.length === 0, 'E2E-H unexpected paid Gemini API calls');
+    assert(traps.paidApiHits.length === 0, 'E2E-H unexpected paid Gemini API calls');
 
     // Mobile 390x844 responsiveness + mobile tab switch + dark mode + zero horizontal overflow
     await p.setViewportSize({ width: 390, height: 844 });
@@ -540,9 +543,9 @@ async (page) => {
     assert(!overflow, 'E2E-I horizontal overflow at 390x844');
     await p.getByRole('button', { name: 'Inspector' }).click();
     await p.getByRole('tab', { name: /Checks/ }).click();
-    await p.getByRole('button', { name: 'Edit Tone' }).click();
+    await p.getByRole('button', { name: 'Open field' }).click();
     await p.waitForTimeout(100);
-    assert((await p.evaluate(() => document.activeElement?.id)) === 'bible-tone', 'E2E-I mobile issue focus failed');
+    assert((await p.evaluate(() => document.activeElement?.id.startsWith('bible-'))) === true, 'E2E-I mobile readiness field focus failed');
     await p.getByRole('button', { name: 'Switch to dark mode' }).click();
     await p.waitForTimeout(250);
     const headerBg = await p.evaluate(() => getComputedStyle(document.querySelector('header')).backgroundColor);

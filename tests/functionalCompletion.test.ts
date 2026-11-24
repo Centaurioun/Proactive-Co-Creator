@@ -235,6 +235,13 @@ describe('Package A — Storage conflict root-cause fix, CAS preconditions, and 
     );
     assert.equal(replay.ok, true);
     assert.equal(replay.idempotentHit, true);
+
+    const reusedId = saveProjectToLocalStorage(
+      { ...project, revision: project.revision + 1, snapshot: { ...project.snapshot, refinedPrompt: 'different operation content' } },
+      { expectedPersistedRevision: project.revision, intentId }
+    );
+    assert.equal(reusedId.ok, false);
+    assert.equal(reusedId.conflictDetected, true);
   });
 });
 
@@ -783,6 +790,12 @@ describe('Package G — DOCX Export round-trip and Verified All-Projects ZIP Arc
       () => parseAndVerifyAllProjectsArchive(traversalZip, new Set()),
       /unsafe path/i
     );
+  });
+
+  it('rejects an oversized project entry before retaining expanded archive contents', async () => {
+    const oversized = new Uint8Array(49 * 1024 * 1024);
+    const archive = zipSync({ 'projects/oversized.json': oversized });
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(archive, new Set()), /expands beyond|maximum safe size/i);
   });
 });
 

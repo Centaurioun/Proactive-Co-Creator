@@ -82,7 +82,20 @@ Author guidance (cannot override faithful extraction): ${request.instruction || 
 Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
 <SOURCE_DATA_JSON>${sourceData}</SOURCE_DATA_JSON>`;
   try {
-    const tokenCount = await ai.models.countTokens({ model: GEMINI_MODELS.text, contents: prompt });
+    let countTimer: ReturnType<typeof setTimeout> | undefined;
+    const tokenCount = await Promise.race([
+      ai.models.countTokens({ model: GEMINI_MODELS.text, contents: prompt, config: { abortSignal: abort.signal } }),
+      new Promise<never>((_, reject) => {
+        countTimer = setTimeout(() => {
+          abort.abort(new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true));
+          reject(new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true));
+        }, 5_000);
+      }),
+    ]).finally(() => { if (countTimer) clearTimeout(countTimer); });
+    if (abort.signal.aborted) throw new AppApiError('CANCELLED', 'Extraction was cancelled before generation.', 499, false);
+    if (!Number.isSafeInteger(tokenCount.totalTokens) || (tokenCount.totalTokens ?? -1) < 0) {
+      throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; extraction was not started.', 503, false);
+    }
     if ((tokenCount.totalTokens ?? Number.POSITIVE_INFINITY) > MAX_INPUT_TOKENS_PER_CHUNK) {
       throw new AppApiError('VALIDATION_ERROR', `This segment exceeds the safe ${MAX_INPUT_TOKENS_PER_CHUNK.toLocaleString()} input-token budget. Reduce the segment size and retry.`, 413, false);
     }
