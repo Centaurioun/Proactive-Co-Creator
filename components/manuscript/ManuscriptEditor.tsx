@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ArtifactAnchor, ManuscriptSection } from '../../shared/narrativeTypes';
 import type { CreativeProject } from '../../shared/types';
 import { applyManuscriptOperation, manuscriptSections, narrativeBase, type NarrativeBase } from '../../lib/narrative/manuscriptModel';
+import { filterManuscriptSections } from '../../lib/narrative/manuscriptNavigation';
 import AdoptArtifactDialog from './AdoptArtifactDialog';
 
 export const workspaceButton = 'rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800 disabled:opacity-45';
@@ -29,11 +30,20 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const [focus, setFocus] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [chapterFilter, setChapterFilter] = useState('');
+  const [chronologyFilter, setChronologyFilter] = useState('');
   const [adopting, setAdopting] = useState(Boolean(initialArtifactId));
   const [confirming, setConfirming] = useState<'delete' | 'merge' | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
   const sections = draft?.sections ?? manuscriptSections(project);
+  const visibleSections = filterManuscriptSections(sections, {
+    query: search,
+    chapterId: chapterFilter && chapterFilter !== '__unchaptered' ? chapterFilter : undefined,
+    chronology: chronologyFilter,
+  }).filter(section => chapterFilter !== '__unchaptered' || (section.kind === 'scene' && !section.chapterId));
+  const chapters = sections.filter(section => section.kind === 'chapter');
+  const chronologyMarkers = [...new Set(sections.map(section => section.chronology?.trim()).filter((value): value is string => Boolean(value)))];
   const selected = sections.find(({ id }) => id === selectedId) ?? sections[0];
   const index = selected ? sections.indexOf(selected) : -1;
   const words = sections.reduce((total, section) => total + (section.text.match(/\S+/gu)?.length ?? 0), 0);
@@ -112,20 +122,37 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
               Find in manuscript
               <input className={field} value={search} onChange={event => setSearch(event.target.value)} />
             </label>
+            <label className="mt-3 block text-sm">
+              Chapter
+              <select className={field} value={chapterFilter} onChange={event => setChapterFilter(event.target.value)}>
+                <option value="">All sections</option>
+                {chapters.map((chapter, position) => <option key={chapter.id} value={chapter.id}>{chapter.title || `Chapter ${position + 1}`}</option>)}
+                <option value="__unchaptered">Unchaptered scenes</option>
+              </select>
+            </label>
+            <label className="mt-3 block text-sm">
+              Story chronology
+              <select className={field} value={chronologyFilter} onChange={event => setChronologyFilter(event.target.value)}>
+                <option value="">All chronology markers</option>
+                {chronologyMarkers.map(marker => <option key={marker} value={marker}>{marker}</option>)}
+              </select>
+            </label>
             <ol className="mt-3 space-y-1">
-              {sections.map((section, position) => {
-                if (search && !`${section.title}\n${section.text}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())) return null;
+              {visibleSections.map(section => {
                 return (
                   <li key={section.id} className={section.chapterId ? 'pl-3' : ''}>
                     <button type="button" disabled={adopting} onClick={() => { setSelectedId(section.id); setConfirming(null); }}
                       aria-current={section.id === selected?.id ? 'true' : undefined}
                       className="w-full rounded px-2 py-1.5 text-left break-words aria-[current=true]:bg-amber-100 dark:aria-[current=true]:bg-amber-950">
-                      {section.title || `${section.kind === 'chapter' ? 'Chapter' : 'Scene'} ${position + 1}`}
+                      {section.title || `${section.kind === 'chapter' ? 'Chapter' : 'Scene'} ${sections.indexOf(section) + 1}`}
+                      {section.kind === 'scene' && !section.chapterId ? <span className="ml-2 text-xs text-gray-500">Unchaptered</span> : null}
+                      {section.kind === 'scene' && section.chapterId && !chapters.some(chapter => chapter.id === section.chapterId) ? <span className="ml-2 text-xs text-amber-700">Orphaned chapter link</span> : null}
                     </button>
                   </li>
                 );
               })}
             </ol>
+            {visibleSections.length === 0 && <p className="mt-2 text-sm text-gray-600">No sections match these filters.</p>}
           </aside>
         )}
         <article className="min-w-0 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900 sm:p-6">
