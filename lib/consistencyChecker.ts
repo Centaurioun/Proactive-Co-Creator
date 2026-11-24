@@ -80,6 +80,37 @@ export function resolveConsistencyIssueTarget(
  */
 export function evaluateProjectConsistency(snapshot: ProjectSnapshot): ConsistencyIssue[] {
   const issues: ConsistencyIssue[] = [];
+  const entityIds = new Set(snapshot.entities.flatMap((entity) => entity.id ? [entity.id] : []));
+
+  // Structural check only: never infer an endpoint from a relationship's display name.
+  // Pending, rejected, or legacy name-only relationships remain outside this assertion.
+  for (const relationship of snapshot.relationships) {
+    if (relationship.status !== 'confirmed' || !relationship.id) continue;
+    const missingEndpoints = [
+      relationship.sourceId && !entityIds.has(relationship.sourceId) ? `source ID "${relationship.sourceId}"` : undefined,
+      relationship.targetId && !entityIds.has(relationship.targetId) ? `target ID "${relationship.targetId}"` : undefined,
+    ].filter((endpoint): endpoint is string => Boolean(endpoint));
+    if (missingEndpoints.length === 0) continue;
+
+    const validEndpointIds = [relationship.sourceId, relationship.targetId]
+      .filter((id): id is string => Boolean(id && entityIds.has(id)));
+    issues.push({
+      id: `issue_relationship_missing_endpoint_${relationship.id}`,
+      severity: 'error',
+      category: 'relationship_conflict',
+      title: 'Confirmed relationship points to an unavailable entity',
+      description: `The confirmed relationship "${relationship.label}" references unavailable ${missingEndpoints.join(' and ')}.`,
+      affectedEntityIds: validEndpointIds,
+      relationshipId: relationship.id,
+      targets: [{
+        id: `target_relationship_${relationship.id}`,
+        kind: 'relationship',
+        label: `Inspect ${relationship.source} → ${relationship.target}`,
+        relationshipId: relationship.id,
+      }],
+      suggestedFix: 'Review the relationship endpoints and select existing entities before confirming it.',
+    });
+  }
 
   // 1. Check for violated explicit exclusions
   const manualExclusions = snapshot.storyBible.explicitExclusions.value
