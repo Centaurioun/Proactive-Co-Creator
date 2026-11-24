@@ -2,29 +2,50 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import test from 'node:test';
 import { strToU8, zipSync, type Zippable } from 'fflate';
-import { createEpubZipReader, withEpubWorkerErrorBridge } from '../lib/narrative/import/epubZipReader.ts';
+import { createEpubZipReader, type EpubZipReaderOptions } from '../lib/narrative/import/epubZipReader.ts';
+import { parseNarrativeSource } from '../lib/narrative/import/sourceParser.ts';
 
 function archive(files: Zippable, level: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 0): Uint8Array {
   return zipSync(files, { level });
 }
 
-test('browser Worker initialization errors are forwarded to fflate and the listener is removed', () => {
-  const listeners = new Map<string, (event: Event) => void>();
-  let delivered: unknown;
-  const worker = {
-    onmessage: (event: MessageEvent) => { delivered = event.data; },
-    addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => listeners.set(type, listener as (event: Event) => void),
-    removeEventListener: (type: string) => { listeners.delete(type); },
-  } as unknown as Worker;
-  const cleanup = withEpubWorkerErrorBridge(worker);
-  const preventDefault = () => { /* marks this expected worker failure as handled */ };
-  listeners.get('error')?.({ message: 'P5 synthetic worker initialization failure', error: new Error('worker boot failed'), preventDefault } as unknown as Event);
-  assert.equal((delivered as { $e$: unknown[] }).$e$[0], 'P5 synthetic worker initialization failure');
-  assert.equal((delivered as { $e$: unknown[] }).$e$[1], 'Error');
-  assert.match(String((delivered as { $e$: unknown[] }).$e$[2]), /worker boot failed/);
-  cleanup();
-  assert.equal(listeners.has('error'), false);
-});
+
+interface FakeWorkerOptions { failFirst?: boolean; holdOutput?: boolean; noReady?: boolean; throwOnStart?: boolean; messageError?: boolean; lateAfterError?: boolean }
+
+function fakeWorkerFactory(outputs: Uint8Array[], options: FakeWorkerOptions = {}) {
+  let created = 0;
+  const terminated: boolean[] = [];
+  const factory: NonNullable<EpubZipReaderOptions['workerFactory']> = () => {
+    const index = created++;
+    const worker = {
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      onerror: null as ((event: ErrorEvent) => void) | null,
+      onmessageerror: null as ((event: MessageEvent) => void) | null,
+      terminate() { terminated[index] = true; },
+      postMessage(message: { type: string; sequence?: number; final?: boolean }, _transfer?: Transferable[]) {
+        if (message.type === 'start') { if (options.throwOnStart) throw new Error('synthetic postMessage failure'); return; }
+        if (message.type !== 'chunk') return;
+        queueMicrotask(() => {
+          if (options.messageError && index === 0) { worker.onmessageerror?.({ data: null } as MessageEvent); return; }
+          if (options.holdOutput) return;
+          if (options.failFirst && index === 0) {
+            const lateHandler = worker.onmessage;
+            worker.onmessage?.({ data: { type: 'error', message: 'P5 synthetic worker initialization failure' } } as MessageEvent);
+            if (options.lateAfterError) setTimeout(() => lateHandler?.({ data: { type: 'data', bytes: outputs[0].slice().buffer } } as MessageEvent), 0);
+            return;
+          }
+          const output = outputs[Math.min(index, outputs.length - 1)];
+          worker.onmessage?.({ data: { type: 'data', bytes: output.slice().buffer } } as MessageEvent);
+          if (message.final) worker.onmessage?.({ data: { type: 'done', outputBytes: output.length } } as MessageEvent);
+          worker.onmessage?.({ data: { type: 'ack', sequence: message.sequence } } as MessageEvent);
+        });
+      },
+    };
+    if (!options.noReady) queueMicrotask(() => worker.onmessage?.({ data: { type: 'ready' } } as MessageEvent));
+    return worker as unknown as Worker;
+  };
+  return { factory, terminated, get created() { return created; } };
+}
 
 function centralOffset(bytes: Uint8Array, filename: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -75,6 +96,11 @@ test('ZIP reader reports physical local-header order and reads bounded stored me
   assert.equal(new TextDecoder().decode(await reader.readEntry('OEBPS/a.xhtml', 100)), '<p>safe</p>');
 });
 
+test('product source parser rejects EPUB and cannot dispatch to the isolated ZIP reader', async () => {
+  const bytes = archive({ mimetype: strToU8('application/epub+zip'), 'OEBPS/chapter.xhtml': strToU8('<p>not enabled</p>') });
+  await assert.rejects(() => parseNarrativeSource(bytes, 'book.epub'), /Supported sources are pasted text/i);
+});
+
 test('ZIP reader rejects mimetype that is not the first physical local header', () => {
   const bytes = archive({ 'OEBPS/a.xhtml': strToU8('x'), mimetype: strToU8('application/epub+zip') });
   assert.throws(() => createEpubZipReader(bytes), /mimetype.*first/i);
@@ -122,7 +148,7 @@ test('ZIP reader rejects traversal names before exposing entries', () => {
 });
 
 test('ZIP reader rejects absolute, backslash, drive, and dot-segment names', () => {
-  for (const unsafe of ['../ab', '/abcd', 'a\\bc', 'C:/ab', 'a/../b']) {
+  for (const unsafe of ['../ab', '/abcd', 'a\\bc', 'C:/ab', 'a/../b', 'bad\u0001name']) {
     assert.throws(() => createEpubZipReader(archive({ mimetype: strToU8('application/epub+zip'), [unsafe]: strToU8('x') })), /unsafe.*path/i, unsafe);
   }
 });
@@ -169,7 +195,8 @@ test('ZIP reader enforces actual decompressed output when both headers understat
   const local = localOffset(bytes, 'a');
   new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(central + 24, 8, true);
   new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(local + 22, 8, true);
-  const reader = createEpubZipReader(bytes);
+  const workers = fakeWorkerFactory([payload]);
+  const reader = createEpubZipReader(bytes, { workerFactory: workers.factory });
   await assert.rejects(() => reader.readEntry('a', 8), /actual member|output size/i);
 });
 
@@ -177,10 +204,98 @@ test('ZIP reader honors cancellation before a member read and during asynchronou
   const data = randomBytes(400_000);
   const bytes = archive({ mimetype: [strToU8('application/epub+zip'), { level: 0 }], 'OEBPS/large.xhtml': [data, { level: 6 }] });
   const controller = new AbortController();
-  const reader = createEpubZipReader(bytes, { signal: controller.signal });
+  const workers = fakeWorkerFactory([data], { holdOutput: true });
+  const reader = createEpubZipReader(bytes, { signal: controller.signal, workerFactory: workers.factory });
   const pending = reader.readEntry('OEBPS/large.xhtml', data.length);
   setTimeout(() => controller.abort(), 0);
   await assert.rejects(() => pending, /abort|cancel/i);
+  assert.deepEqual(workers.terminated, [true]);
+});
+
+test('ZIP reader handles small DEFLATE members through the injected isolated worker', async () => {
+  const payload = strToU8('Small Turkish EPUB chapter: Kıyıdaki saat beşi vurdu.');
+  const bytes = archive({ mimetype: strToU8('application/epub+zip'), 'OEBPS/small.xhtml': [payload, { level: 6 }] });
+  const workers = fakeWorkerFactory([payload]);
+  const reader = createEpubZipReader(bytes, { workerFactory: workers.factory });
+  assert.deepEqual(await reader.readEntry('OEBPS/small.xhtml', payload.length), payload);
+  assert.equal(workers.created, 1);
+  assert.deepEqual(workers.terminated, [true]);
+});
+
+test('worker initialization failure rejects and releases the queue for the next member read', async () => {
+  const payload = strToU8('A successful queued chapter after an initialization failure.');
+  const bytes = archive({ mimetype: strToU8('application/epub+zip'), 'OEBPS/first.xhtml': [payload, { level: 6 }], 'OEBPS/second.xhtml': [payload, { level: 6 }] });
+  const workers = fakeWorkerFactory([payload], { failFirst: true, lateAfterError: true });
+  const reader = createEpubZipReader(bytes, { workerFactory: workers.factory });
+  let firstSettlements = 0;
+  const first = reader.readEntry('OEBPS/first.xhtml', payload.length).then(
+    value => { firstSettlements += 1; return value; },
+    error => { firstSettlements += 1; throw error; },
+  );
+  const second = reader.readEntry('OEBPS/second.xhtml', payload.length);
+  await assert.rejects(first, /initialization failure/i);
+  assert.deepEqual(await second, payload);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(firstSettlements, 1);
+  assert.equal(workers.created, 2);
+  assert.deepEqual(workers.terminated, [true, true]);
+});
+
+test('Worker readiness timeout and messageerror terminate and release the queue', async () => {
+  const payload = strToU8('bounded queued test');
+  const bytes = archive({ mimetype: strToU8('application/epub+zip'), first: [payload, { level: 6 }], second: [payload, { level: 6 }] });
+  const timeoutWorkers = fakeWorkerFactory([payload], { noReady: true });
+  const timeoutReader = createEpubZipReader(bytes, { workerFactory: timeoutWorkers.factory, limits: { workerInitTimeoutMs: 5 } });
+  await assert.rejects(() => timeoutReader.readEntry('first', payload.length), /readiness timed out/i);
+  assert.deepEqual(timeoutWorkers.terminated, [true]);
+
+  const errorWorkers = fakeWorkerFactory([payload], { messageError: true });
+  const errorReader = createEpubZipReader(bytes, { workerFactory: errorWorkers.factory });
+  const first = errorReader.readEntry('first', payload.length);
+  const second = errorReader.readEntry('second', payload.length);
+  await assert.rejects(first, /message could not be decoded/i);
+  assert.deepEqual(await second, payload);
+  assert.deepEqual(errorWorkers.terminated, [true, true]);
+});
+
+test('Worker postMessage failure rejects and terminates the allocated Worker', async () => {
+  const payload = strToU8('bounded dispatch failure test');
+  const bytes = archive({ mimetype: strToU8('application/epub+zip'), a: [payload, { level: 6 }] });
+  const workers = fakeWorkerFactory([payload], { throwOnStart: true });
+  const reader = createEpubZipReader(bytes, { workerFactory: workers.factory });
+  await assert.rejects(() => reader.readEntry('a', payload.length), /initialization failed/i);
+  assert.deepEqual(workers.terminated, [true]);
+});
+
+test('Worker constructor failure rejects and releases the next queued read', async () => {
+  const payload = strToU8('bounded constructor failure test');
+  const bytes = archive({ mimetype: strToU8('application/epub+zip'), first: [payload, { level: 6 }], second: [payload, { level: 6 }] });
+  let attempts = 0;
+  const reader = createEpubZipReader(bytes, {
+    workerFactory: () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('synthetic Worker constructor failure');
+      return fakeWorkerFactory([payload]).factory();
+    },
+  });
+  await assert.rejects(() => reader.readEntry('first', payload.length), /could not start/i);
+  assert.deepEqual(await reader.readEntry('second', payload.length), payload);
+  assert.equal(attempts, 2);
+});
+
+test('ZIP reader bounds the serialized read queue', async () => {
+  const payload = strToU8('bounded queue');
+  const bytes = archive({ mimetype: strToU8('application/epub+zip'), a: [payload, { level: 6 }] });
+  const workers = fakeWorkerFactory([payload], { noReady: true });
+  const reader = createEpubZipReader(bytes, { workerFactory: workers.factory, limits: { maxQueuedReads: 1, workerInitTimeoutMs: 100 } });
+  const activeAbort = new AbortController();
+  const active = reader.readEntry('a', payload.length, activeAbort.signal);
+  await assert.rejects(() => reader.readEntry('a', payload.length), /queue is full/i);
+  activeAbort.abort();
+  await assert.rejects(active, /abort|cancel/i);
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  await assert.rejects(() => reader.readEntry('a', payload.length, alreadyAborted.signal), /abort|cancel/i);
 });
 
 test('ZIP reader rejects a member read when its signal is already aborted', async () => {
@@ -200,10 +315,13 @@ test('ZIP reader honors cancellation between bounded chunks of a stored member',
   await assert.rejects(() => pending, /abort|cancel/i);
 });
 
-test('ZIP reader prevents concurrent reads from multiplying bounded extraction memory', async () => {
+test('ZIP reader queues concurrent stored reads and preserves request order', async () => {
   const bytes = archive({ mimetype: strToU8('application/epub+zip'), large: strToU8('s'.repeat(200_000)), second: strToU8('second') });
   const reader = createEpubZipReader(bytes);
-  const first = reader.readEntry('large', 200_000);
-  await assert.rejects(() => reader.readEntry('second', 100), /another .*member read is active/i);
+  const order: string[] = [];
+  const first = reader.readEntry('large', 200_000).then(value => { order.push('large'); return value; });
+  const second = reader.readEntry('second', 100).then(value => { order.push('second'); return value; });
   assert.equal((await first).byteLength, 200_000);
+  assert.equal(new TextDecoder().decode(await second), 'second');
+  assert.deepEqual(order, ['large', 'second']);
 });
