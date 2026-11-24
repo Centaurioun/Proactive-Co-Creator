@@ -624,6 +624,28 @@ describe('Release Qualification & Final Data Safety Suite', () => {
       workflow.includes('.playwright-cli/e2e-results.json') && workflow.includes('.playwright-cli/*.zip'),
       'CI artifact upload must include per-scenario results JSON and failure traces'
     );
+    assert.ok(
+      workflow.includes('include-hidden-files: true') && workflow.includes('if-no-files-found: error'),
+      'CI artifact upload must include hidden .playwright-cli files and fail if evidence is missing'
+    );
+    assert.ok(
+      workflow.includes('.playwright-cli/browser-environment.txt') &&
+        workflow.includes('.playwright-cli/browser-logs.json') &&
+        workflow.includes('.playwright-cli/controlled-failure-results.json'),
+      'CI artifacts must include runtime metadata, sanitized browser logs, and controlled-failure results'
+    );
+    assert.ok(
+      smokeScript.includes('E2E_ARTIFACT_DIAGNOSTIC') &&
+        smokeScript.includes('CONTROLLED-ARTIFACT-FAILURE'),
+      'The browser runner must expose a controlled failure path to verify screenshot and trace capture'
+    );
+    assert.ok(
+      smokeScript.includes('cycle < 5') &&
+        smokeScript.includes("p.keyboard.press('Shift+Tab')") &&
+        smokeScript.includes("p.keyboard.press('Tab')") &&
+        smokeScript.includes('e2e-e-mobile-modal.png'),
+      'E2E-E must repeat focus trapping/restoration five times and cover the mobile modal'
+    );
 
     assert.ok(
       smokeScript.includes('/api/health'),
@@ -632,6 +654,10 @@ describe('Release Qualification & Final Data Safety Suite', () => {
     assert.ok(
       smokeScript.includes('e2e-results.json'),
       'scripts/e2e-browser-smoke.sh must emit structured per-scenario results to .playwright-cli/e2e-results.json'
+    );
+    assert.ok(
+      smokeScript.includes('await p.waitForFunction(') && smokeScript.includes("document.activeElement?.textContent?.trim() === 'Review Plan & Prompt'"),
+      'E2E-E must wait for requestAnimationFrame-based Escape focus restoration before asserting it'
     );
     assert.ok(
       smokeScript.includes('playwright-cli install-browser chromium'),
