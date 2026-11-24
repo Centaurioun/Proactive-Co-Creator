@@ -28,10 +28,11 @@ function request(overrides: Partial<AiBudgetRequest> = {}): AiBudgetRequest {
     model: 'fixture-text-model',
     operation: 'analyze',
     modalities: ['text'],
-    contents,
-    systemInstruction,
-    schema,
-    transportPayload: { contents, systemInstruction, generationConfig: { responseSchema: schema } },
+    transportPayload: {
+      contents,
+      systemInstruction,
+      generationConfig: { responseSchema: schema, maxOutputTokens: 4 },
+    },
     ...overrides,
   };
 }
@@ -93,9 +94,12 @@ describe('network-free shared AI budget contract', () => {
     const contents = { parts: [{ text: largeText }] };
     const systemInstruction = { parts: [{ text: 'Only analyze supplied details.' }] };
     const schema = { type: 'OBJECT', properties: { result: { type: 'STRING' } } };
-    const transportPayload = { contents, systemInstruction, generationConfig: { responseSchema: schema } };
-    const input = request({ contents, transportPayload });
+    const transportPayload = {
+      contents, systemInstruction, generationConfig: { responseSchema: schema, maxOutputTokens: 4 },
+    };
+    const input = request({ transportPayload });
     let counted: unknown;
+    let countedSystem: unknown;
     const decision = await evaluateAiBudget({
       request: input,
       policy: policy({ limits: {
@@ -105,15 +109,100 @@ describe('network-free shared AI budget contract', () => {
       } }),
       countTokens: async (args) => {
         counted = args.contents;
+        countedSystem = args.systemInstruction;
         return providerCount(10);
       },
     });
 
     assert.equal(decision.kind, 'allowed');
-    assert.deepEqual(counted, input.contents);
+    assert.deepEqual(counted, (decision.kind === 'allowed' ? decision.transportPayload : undefined)?.contents);
+    assert.deepEqual(countedSystem, (decision.kind === 'allowed' ? decision.transportPayload : undefined)?.systemInstruction);
     assert.equal((counted as { parts: Array<{ text: string }> }).parts[0].text, largeText);
-    assert.equal(decision.requestBytes, Buffer.byteLength(JSON.stringify(input.transportPayload), 'utf8'));
+    assert.equal(decision.requestBytes, Buffer.byteLength(decision.kind === 'allowed' ? decision.serializedPayload : '', 'utf8'));
+    assert.equal(decision.kind === 'allowed' ? JSON.stringify(decision.transportPayload) : '', decision.kind === 'allowed' ? decision.serializedPayload : '');
     assert.equal(measureJsonBytes({ text: 'İpek 🦉' }), Buffer.byteLength(JSON.stringify({ text: 'İpek 🦉' }), 'utf8'));
+  });
+
+  it('counts and reserves only the immutable snapshot that is returned for sending', async () => {
+    const payload = {
+      contents: { parts: [{ text: 'count this payload' }] },
+      systemInstruction: { parts: [{ text: 'count this system instruction' }] },
+      generationConfig: {
+        responseSchema: { type: 'OBJECT', properties: { result: { type: 'STRING' } } },
+        maxOutputTokens: 4,
+      },
+    };
+    const input = request({ transportPayload: payload });
+    // Extra split fields from an untyped/legacy caller must not affect accounting.
+    Object.assign(input, {
+      contents: { parts: [{ text: 'smaller uncounted decoy' }] },
+      systemInstruction: undefined,
+      schema: undefined,
+    });
+    let countInput: { model: string; contents: unknown; systemInstruction?: unknown } | undefined;
+    let beginCounting!: () => void;
+    let finishCounting!: (value: TokenMeasurement) => void;
+    const countingStarted = new Promise<void>((resolve) => { beginCounting = resolve; });
+    const countResult = new Promise<TokenMeasurement>((resolve) => { finishCounting = resolve; });
+    const expectedSerialized = JSON.stringify(payload);
+    const pending = evaluateAiBudget({
+      request: input,
+      policy: policy({ limits: { ...policy().limits, maxContextTokens: 100 } }),
+      countTokens: async (value) => {
+        countInput = value;
+        beginCounting();
+        return countResult;
+      },
+    });
+
+    // (The evaluator snapshots synchronously before awaiting the injected counter.)
+
+    await countingStarted;
+    payload.contents.parts[0].text = 'mutated after preflight began';
+    finishCounting(providerCount(2));
+    const result = await pending;
+
+    assert.equal(result.kind, 'allowed');
+    assert.deepEqual(countInput?.contents, result.kind === 'allowed' ? result.transportPayload.contents : undefined);
+    assert.deepEqual(countInput?.systemInstruction, (result.kind === 'allowed' ? result.transportPayload : undefined)?.systemInstruction);
+    if (result.kind === 'allowed') {
+      assert.equal(result.requestBytes, Buffer.byteLength(result.serializedPayload, 'utf8'));
+      assert.equal(result.requestBytes, measureJsonBytes(result.transportPayload));
+      assert.equal(result.serializedPayload, expectedSerialized);
+      // A sender consuming the returned immutable snapshot emits the checked bytes.
+      assert.equal(JSON.stringify(result.transportPayload), result.serializedPayload);
+      const snapContents = result.transportPayload.contents as { parts: Array<{ text: string }> };
+      assert.notEqual(snapContents.parts[0].text, payload.contents.parts[0].text);
+      assert.equal(Object.isFrozen(result.transportPayload), true);
+      assert.equal(Object.isFrozen(result.transportPayload.generationConfig), true);
+    }
+  });
+
+  it('requires and enforces the exact outgoing output-token cap', async () => {
+    const missing = request({ transportPayload: {
+      contents: { parts: [{ text }] }, generationConfig: { responseSchema: { type: 'OBJECT' } },
+    } as AiBudgetRequest['transportPayload'] });
+    const exact = request({ transportPayload: {
+      contents: { parts: [{ text }] }, generationConfig: { maxOutputTokens: 4, responseSchema: { type: 'OBJECT' } },
+    } });
+    const over = request({ transportPayload: {
+      contents: { parts: [{ text }] }, generationConfig: { maxOutputTokens: 5, responseSchema: { type: 'OBJECT' } },
+    } });
+    let countCalls = 0;
+    const countTokens = async () => { countCalls += 1; return providerCount(1); };
+
+    assert.equal(reasonOf(await evaluateAiBudget({ request: missing, policy: policy(), countTokens })), 'INVALID_REQUEST');
+    assert.equal(reasonOf(await evaluateAiBudget({ request: exact, policy: policy(), countTokens })), undefined);
+    assert.equal(reasonOf(await evaluateAiBudget({ request: over, policy: policy(), countTokens })), 'BUDGET_EXCEEDED');
+    assert.equal(countCalls, 1);
+  });
+
+  it('requires a schema reserve when the exact outgoing payload contains a response schema', async () => {
+    const noSchemaReserve = policy({ reserves: { reasoning: { tokens: 1, evidenceRef: 'fixture reasoning' } } });
+    const decision = await evaluateAiBudget({
+      request: request(), policy: noSchemaReserve, countTokens: async () => providerCount(1),
+    });
+    assert.equal(reasonOf(decision), 'MISSING_RESERVE');
   });
 
   it('accepts exact serialized request bytes and rejects one byte under the requirement', async () => {

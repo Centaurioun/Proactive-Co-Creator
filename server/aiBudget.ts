@@ -54,14 +54,22 @@ export interface AiBudgetPolicy {
   limits: AiBudgetLimits;
 }
 
+export interface AiTransportPayload {
+  contents: unknown;
+  systemInstruction?: unknown;
+  generationConfig: {
+    maxOutputTokens: number;
+    responseSchema?: unknown;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export interface AiBudgetRequest {
   model: string;
   operation: AiOperation;
   modalities: readonly AiModality[];
-  contents: unknown;
-  systemInstruction?: unknown;
-  schema?: unknown;
-  transportPayload: unknown;
+  transportPayload: AiTransportPayload;
   legacyGuard?: { id: string; accepted: true };
 }
 
@@ -95,8 +103,20 @@ export type AiBudgetRejectionReason =
   | 'BUDGET_EXCEEDED';
 
 export type AiBudgetDecision =
-  | { kind: 'allowed'; requestBytes: number; inputTokens: number; contextTokens: number }
-  | { kind: 'legacy-allowed'; requestBytes: number }
+  | {
+      kind: 'allowed';
+      requestBytes: number;
+      inputTokens: number;
+      contextTokens: number;
+      transportPayload: Readonly<AiTransportPayload>;
+      serializedPayload: string;
+    }
+  | {
+      kind: 'legacy-allowed';
+      requestBytes: number;
+      transportPayload: Readonly<AiTransportPayload>;
+      serializedPayload: string;
+    }
   | { kind: 'rejected'; reason: AiBudgetRejectionReason };
 
 export interface AggregateUsage {
@@ -209,17 +229,49 @@ function classifyCapability(
 }
 
 function validReserves(
-  request: AiBudgetRequest,
+  payload: AiTransportPayload,
   reserves: AiBudgetReserves,
   covered: ReadonlySet<'contents' | 'systemInstruction'>
 ): boolean {
   if (!isEvidenceBackedReserve(reserves.reasoning)) return false;
-  if (request.schema !== undefined && !isEvidenceBackedReserve(reserves.schema)) return false;
-  if (request.contents !== undefined && !covered.has('contents') &&
+  if (payload.generationConfig.responseSchema !== undefined && !isEvidenceBackedReserve(reserves.schema)) return false;
+  if (payload.contents !== undefined && !covered.has('contents') &&
       !isEvidenceBackedReserve(reserves.contents)) return false;
-  if (request.systemInstruction !== undefined && !covered.has('systemInstruction') &&
+  if (payload.systemInstruction !== undefined && !covered.has('systemInstruction') &&
       !isEvidenceBackedReserve(reserves.systemInstruction)) return false;
   return true;
+}
+
+function freezeJson(value: unknown): void {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const nested of Object.values(value)) freezeJson(nested);
+}
+
+function snapshotTransportPayload(value: unknown): {
+  payload: Readonly<AiTransportPayload>;
+  serialized: string;
+  bytes: number;
+} | undefined {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) return undefined;
+    const snapshot: unknown = JSON.parse(serialized);
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
+    const candidate = snapshot as Partial<AiTransportPayload>;
+    if (!Object.prototype.hasOwnProperty.call(candidate, 'contents') ||
+        !candidate.generationConfig || typeof candidate.generationConfig !== 'object' ||
+        Array.isArray(candidate.generationConfig) ||
+        !isFiniteNonNegativeInteger(candidate.generationConfig.maxOutputTokens)) return undefined;
+    freezeJson(snapshot);
+    return {
+      payload: snapshot as Readonly<AiTransportPayload>,
+      serialized,
+      bytes: Buffer.byteLength(serialized, 'utf8'),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function countWithDeadline(
@@ -283,30 +335,34 @@ export async function evaluateAiBudget(args: {
   const capabilityResult = classifyCapability(request, policy);
   if (capabilityResult && capabilityResult !== 'LEGACY_ALLOWED') return rejected(capabilityResult);
 
-  let requestBytes: number;
-  try {
-    requestBytes = measureJsonBytes(request.transportPayload);
-  } catch {
-    return rejected('INVALID_REQUEST');
-  }
+  const snapshot = snapshotTransportPayload(request.transportPayload);
+  if (!snapshot) return rejected('INVALID_REQUEST');
+  const { payload, serialized, bytes: requestBytes } = snapshot;
 
+  if (requestBytes > policy.limits.maxRequestBytes ||
+      payload.generationConfig.maxOutputTokens > policy.limits.maxOutputTokens) {
+    return rejected('BUDGET_EXCEEDED');
+  }
   if (capabilityResult === 'LEGACY_ALLOWED') {
-    return { kind: 'legacy-allowed', requestBytes };
+    return { kind: 'legacy-allowed', requestBytes, transportPayload: payload, serializedPayload: serialized };
   }
 
   const { reserves } = policy;
   if (!reserves || !isEvidenceBackedReserve(reserves.reasoning) ||
-      (request.schema !== undefined && !isEvidenceBackedReserve(reserves.schema))) {
+      (payload.generationConfig.responseSchema !== undefined && !isEvidenceBackedReserve(reserves.schema))) {
     return rejected('MISSING_RESERVE');
   }
-  if (requestBytes > policy.limits.maxRequestBytes) return rejected('BUDGET_EXCEEDED');
   if (signal?.aborted) return rejected('CANCELLED');
 
   let measurement: TokenMeasurement;
   try {
     measurement = await countWithDeadline(
       countTokens,
-      { model: request.model, contents: request.contents, systemInstruction: request.systemInstruction },
+      {
+        model: request.model,
+        contents: payload.contents,
+        ...(payload.systemInstruction !== undefined ? { systemInstruction: payload.systemInstruction } : {}),
+      },
       signal,
       policy.limits.countTimeoutMs
     );
@@ -325,17 +381,17 @@ export async function evaluateAiBudget(args: {
   if ([...covered].some((part) => part !== 'contents' && part !== 'systemInstruction')) {
     return rejected('COUNT_UNAVAILABLE');
   }
-  if (!validReserves(request, reserves, covered)) return rejected('MISSING_RESERVE');
+  if (!validReserves(payload, reserves, covered)) return rejected('MISSING_RESERVE');
   const inputTokens = measurement.inputTokens +
     (covered.has('contents') ? 0 : reserves.contents!.tokens) +
-    (request.systemInstruction === undefined || covered.has('systemInstruction') ? 0 : reserves.systemInstruction!.tokens);
-  const schemaTokens = request.schema === undefined ? 0 : reserves.schema!.tokens;
-  const contextTokens = inputTokens + schemaTokens + reserves.reasoning!.tokens + policy.limits.maxOutputTokens;
+    (payload.systemInstruction === undefined || covered.has('systemInstruction') ? 0 : reserves.systemInstruction!.tokens);
+  const schemaTokens = payload.generationConfig.responseSchema === undefined ? 0 : reserves.schema!.tokens;
+  const contextTokens = inputTokens + schemaTokens + reserves.reasoning!.tokens + payload.generationConfig.maxOutputTokens;
 
   if (inputTokens > policy.limits.maxInputTokens || contextTokens > policy.limits.maxContextTokens) {
     return rejected('BUDGET_EXCEEDED');
   }
-  return { kind: 'allowed', requestBytes, inputTokens, contextTokens };
+  return { kind: 'allowed', requestBytes, inputTokens, contextTokens, transportPayload: payload, serializedPayload: serialized };
 }
 
 export function evaluateAggregateBudget(
