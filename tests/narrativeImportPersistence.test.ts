@@ -148,9 +148,17 @@ test('schema-4 import keeps original bytes, verified evidence, partial coverage,
   const legacyRestored = await verifyBackup(legacyBackup);
   assert.equal(legacyRestored.snapshot.refinedPrompt, legacyUnknown.snapshot.refinedPrompt);
   assert.equal(resolveProviderPrompt(legacyRestored, 'image').ok, false, 'unknown context remains blocked after backup restore');
+  const historicalSourceClaim = structuredClone(legacyRestored.narrative!.claims.find(claim => claim.id === 'legacy-source-claim')!);
   const editedLegacySnapshot = setEntityAttribute(legacyRestored.snapshot, 'legacy-entity', 'secret', 'Reviewed PALER COMET');
   const editedLegacyProject = appendAuthoredAttributeClaims(legacyRestored, editedLegacySnapshot);
   assert.equal(resolveProviderPrompt({ ...legacyRestored, snapshot: editedLegacySnapshot }, 'image').ok, true, 'explicit local edit unlocks only the reviewed value');
-  assert.equal(editedLegacyProject.narrative!.claims.find(claim => claim.id === 'legacy-source-claim')?.anchors[0].excerpt, text);
-  assert.equal(editedLegacyProject.narrative!.claims.find(claim => claim.epistemicKind === 'user-authored')?.authoredText, 'Reviewed PALER COMET');
+  assert.deepEqual(editedLegacyProject.narrative!.claims.find(claim => claim.id === historicalSourceClaim.id), historicalSourceClaim,
+    'editing an unknown legacy attribute must leave its historical claim and evidence byte-for-byte equivalent');
+  const authoredClaim = editedLegacyProject.narrative!.claims.find(claim => claim.epistemicKind === 'user-authored' && claim.targetId === 'legacy-attribute');
+  assert.ok(authoredClaim, 'a distinct user-authored claim is created for the edited value');
+  assert.notEqual(authoredClaim.id, historicalSourceClaim.id);
+  assert.equal(authoredClaim.authoredText, 'Reviewed PALER COMET');
+  assert.equal(authoredClaim.supersedesClaimId, historicalSourceClaim.id);
+  assert.equal(authoredClaim.anchors[0].excerpt, historicalSourceClaim.anchors[0].excerpt, 'the new claim may point to retained evidence without reclassifying it');
+  assert.equal(historicalSourceClaim.epistemicKind, undefined, 'legacy unknown evidence remains epistemically unknown');
 });
