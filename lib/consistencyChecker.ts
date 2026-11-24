@@ -130,9 +130,7 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
 
     if (
       isMarkedPresent &&
-      manualExclusions.some(
-        (ex) => ex === entity.name.toLowerCase() || entity.name.toLowerCase().includes(ex)
-      )
+      manualExclusions.includes(entity.name.toLowerCase())
     ) {
       const targets: ConsistencyIssueTarget[] = [];
       if (entity.id) {
