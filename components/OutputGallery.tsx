@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type {
   AiPolishProposal,
   GenerationArtifact,
@@ -71,15 +71,43 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
     mode === 'image' ? (activeArtifact?.images ?? images) : images;
   const displayedOutdated = activeArtifact ? activeArtifact.isOutdated : isOutdated;
 
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const lightboxDialogRef = useRef<HTMLDivElement | null>(null);
+  const lightboxCloseRef = useRef<HTMLButtonElement | null>(null);
+
   useEffect(() => {
     if (!selectedImage) return;
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    lightboxCloseRef.current?.focus();
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault();
         setSelectedImage(null);
+        return;
+      }
+      if (event.key === 'Tab' && lightboxDialogRef.current) {
+        const focusables = lightboxDialogRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      previousFocusRef.current?.focus();
+    };
   }, [selectedImage]);
 
   const downloadStory = () => {
@@ -432,6 +460,7 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
           aria-label="Image full preview"
         >
           <div
+            ref={lightboxDialogRef}
             className="min-h-full w-full flex flex-col items-center justify-center py-8"
             onClick={(e) => e.stopPropagation()}
           >
@@ -445,14 +474,15 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
               <a
                 href={selectedImage}
                 download="generated-image.png"
-                className="bg-white text-gray-900 px-4 py-2 rounded-lg font-semibold hover:bg-gray-100 text-xs"
+                className="bg-white text-gray-900 px-4 py-2 rounded-lg font-semibold hover:bg-gray-100 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               >
                 Download Image
               </a>
               <button
+                ref={lightboxCloseRef}
                 type="button"
                 onClick={() => setSelectedImage(null)}
-                className="bg-gray-800 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs"
+                className="bg-gray-800 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               >
                 Close Preview
               </button>

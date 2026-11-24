@@ -596,4 +596,46 @@ describe('Release Qualification & Final Data Safety Suite', () => {
       'CI e2e-browser job must remain strictly non-billable without GEMINI_API_KEY'
     );
   });
+
+  it('Task 3c (S0.1): CI installs full Chromium for playwright-cli (not --only-shell), runs health preflight, and uploads structured failure artifacts', () => {
+    const workflowPath = path.resolve(process.cwd(), '.github/workflows/ci.yml');
+    const workflow = fs.readFileSync(workflowPath, 'utf8');
+    const smokeScriptPath = path.resolve(process.cwd(), 'scripts/e2e-browser-smoke.sh');
+    const smokeScript = fs.readFileSync(smokeScriptPath, 'utf8');
+
+    assert.equal(
+      workflow.includes('--only-shell'),
+      false,
+      'CI must not pass --only-shell because @playwright/cli@0.1.22 open --browser=chromium launches chrome-for-testing'
+    );
+    assert.ok(
+      workflow.includes('playwright-cli install-browser chromium --with-deps'),
+      'CI must install full chromium (chrome-for-testing + headless shell) with system deps'
+    );
+    assert.ok(
+      workflow.includes('/api/health'),
+      'CI e2e-browser job must verify /api/health before launching browser smoke tests'
+    );
+    assert.ok(
+      workflow.includes('retention-days:'),
+      'CI artifact upload must declare bounded retention-days'
+    );
+    assert.ok(
+      workflow.includes('.playwright-cli/e2e-results.json') && workflow.includes('.playwright-cli/*.zip'),
+      'CI artifact upload must include per-scenario results JSON and failure traces'
+    );
+
+    assert.ok(
+      smokeScript.includes('/api/health'),
+      'scripts/e2e-browser-smoke.sh must preflight /api/health before running E2E-A through E2E-I'
+    );
+    assert.ok(
+      smokeScript.includes('e2e-results.json'),
+      'scripts/e2e-browser-smoke.sh must emit structured per-scenario results to .playwright-cli/e2e-results.json'
+    );
+    assert.ok(
+      smokeScript.includes('playwright-cli install-browser chromium'),
+      'scripts/e2e-browser-smoke.sh must print actionable browser installation guidance if browser launch fails'
+    );
+  });
 });

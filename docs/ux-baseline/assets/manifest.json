@@ -1,0 +1,460 @@
+{
+  "capturedAt": "2026-11-23T23:22:01.987Z",
+  "count": 16,
+  "captures": [
+    {
+      "id": "SC-01",
+      "fixture": "FX-EMPTY",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "First launch / empty workspace idea entry",
+      "actions": [
+        "seed FX-EMPTY",
+        "load workspace"
+      ],
+      "path": "docs/ux-baseline/assets/SC-01.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BODY",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "ideaTextareaVisible=true",
+      "fileBytes": 114277,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-02",
+      "fixture": "FX-SIMPLE",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Decision Inbox showing pending AI inferences vs confirmed items",
+      "actions": [
+        "seed FX-SIMPLE",
+        "inspect left Decision Inbox"
+      ],
+      "path": "docs/ux-baseline/assets/SC-02.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BODY",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "pendingMentioned=true",
+      "fileBytes": 187694,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-03",
+      "fixture": "FX-SIMPLE",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Belief Graph with Fox selected and Contextual Inspector visible",
+      "actions": [
+        "seed FX-SIMPLE",
+        "click entity Fox in graph"
+      ],
+      "path": "docs/ux-baseline/assets/SC-03.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BODY",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "inspectorShowsFox=true",
+      "fileBytes": 185216,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-04",
+      "fixture": "FX-BUSY",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Busy Belief Graph with 12+ entities, parallel edges, and search/category filters",
+      "actions": [
+        "seed FX-BUSY",
+        "click Fit belief graph to view"
+      ],
+      "path": "docs/ux-baseline/assets/SC-04.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "Fit belief graph to view",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "renderedEntityNodes=14",
+      "fileBytes": 207580,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-05",
+      "fixture": "FX-BUSY",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Story Bible structured editing with inline control-character validation alert",
+      "actions": [
+        "seed FX-BUSY",
+        "click Story Bible tab",
+        "inject control char into #bible-genre"
+      ],
+      "path": "docs/ux-baseline/assets/SC-05.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "inlineValidationVisible=true",
+      "fileBytes": 213233,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-06",
+      "fixture": "FX-BUSY",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Consistency Checks showing excluded-entity conflict and Inspect/Edit target actions",
+      "actions": [
+        "seed FX-BUSY",
+        "click Checks tab"
+      ],
+      "path": "docs/ux-baseline/assets/SC-06.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "inspectFoxVisible=true",
+      "fileBytes": 203460,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-07",
+      "fixture": "FX-BUSY",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Natural-language batch preview staged with Review Plan & Prompt Before/After modal open",
+      "actions": [
+        "seed FX-BUSY",
+        "fill #nl-batch-input",
+        "click Preview",
+        "click Review Plan & Prompt"
+      ],
+      "path": "docs/ux-baseline/assets/SC-07.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "reviewModalOpen=true,diffRows=19",
+      "fileBytes": 239441,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-08",
+      "fixture": "FX-OUT",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Output gallery showing generated story, current/outdated badges, and artifact history",
+      "actions": [
+        "seed FX-OUT",
+        "open Output tab / inspect story & outdated artifact"
+      ],
+      "path": "docs/ux-baseline/assets/SC-08.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BODY",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "hasStory=true,hasOutdated=true",
+      "fileBytes": 197737,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-09",
+      "fixture": "FX-OUT",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Image mode gallery with 4 placeholder outputs and fullscreen lightbox preview open",
+      "actions": [
+        "seed FX-OUT",
+        "switch mode to Image",
+        "click Preview generated image 1"
+      ],
+      "path": "docs/ux-baseline/assets/SC-09.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "Preview generated image 1",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "imageLightboxOpen=true",
+      "fileBytes": 129420,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-10",
+      "fixture": "FX-BUSY",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "light",
+      "state": "History tab showing project management, JSON/MD export, and revision restore controls",
+      "actions": [
+        "seed FX-BUSY",
+        "click History tab"
+      ],
+      "path": "docs/ux-baseline/assets/SC-10.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "restoreButtonVisible=true",
+      "fileBytes": 205781,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-11",
+      "fixture": "FX-SIMPLE",
+      "viewport": "390x844",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Mobile 390x844 workspace showing mobile panel switcher and belief graph",
+      "actions": [
+        "seed FX-SIMPLE",
+        "viewport 390x844"
+      ],
+      "path": "docs/ux-baseline/assets/SC-11.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BODY",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 390,
+        "innerWidth": 390
+      },
+      "domAnchor": "mobileNavVisible=true",
+      "fileBytes": 54956,
+      "imageResolution": "390x844",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-12",
+      "fixture": "FX-OUT",
+      "viewport": "390x844",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Mobile 390x844 Story Output view with bottom generation/review bar",
+      "actions": [
+        "seed FX-OUT",
+        "viewport 390x844",
+        "click Output mobile panel button"
+      ],
+      "path": "docs/ux-baseline/assets/SC-12.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 390,
+        "innerWidth": 390
+      },
+      "domAnchor": "mobileStoryVisible=true",
+      "fileBytes": 57486,
+      "imageResolution": "390x844",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-13",
+      "fixture": "FX-BUSY",
+      "viewport": "1280x800",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Cramped laptop 1280x800 full 3-column workspace under busy world load",
+      "actions": [
+        "seed FX-BUSY",
+        "viewport 1280x800"
+      ],
+      "path": "docs/ux-baseline/assets/SC-13.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BODY",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 1280,
+        "innerWidth": 1280
+      },
+      "domAnchor": "laptopOverflow=false",
+      "fileBytes": 184742,
+      "imageResolution": "1280x800",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-14",
+      "fixture": "FX-SIMPLE",
+      "viewport": "768x1024",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Tablet 768x1024 navigation with Story Bible active",
+      "actions": [
+        "seed FX-SIMPLE",
+        "viewport 768x1024",
+        "open Inspector -> Story Bible"
+      ],
+      "path": "docs/ux-baseline/assets/SC-14.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 768,
+        "innerWidth": 768
+      },
+      "domAnchor": "tabletStoryBibleVisible=true",
+      "fileBytes": 95575,
+      "imageResolution": "768x1024",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-15",
+      "fixture": "FX-SIMPLE",
+      "viewport": "390x844",
+      "dpr": 1,
+      "theme": "light",
+      "state": "Mobile 390x844 IndexedDB read_error recovery banner with Retry Storage Read CTA",
+      "actions": [
+        "seed FX-SIMPLE with simulated IDB read_error",
+        "viewport 390x844"
+      ],
+      "path": "docs/ux-baseline/assets/SC-15.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BODY",
+        "id": "",
+        "ariaLabel": "",
+        "scrollOverflow": false,
+        "scrollWidth": 390,
+        "innerWidth": 390
+      },
+      "domAnchor": "retryStorageReadVisible=true",
+      "fileBytes": 66450,
+      "imageResolution": "390x844",
+      "sanityCheck": "PASS"
+    },
+    {
+      "id": "SC-16",
+      "fixture": "FX-SIMPLE",
+      "viewport": "1440x900",
+      "dpr": 1,
+      "theme": "dark",
+      "state": "Desktop 1440x900 dark theme workspace",
+      "actions": [
+        "seed FX-SIMPLE",
+        "click Switch to dark mode button"
+      ],
+      "path": "docs/ux-baseline/assets/SC-16.png",
+      "unmockedApiHits": 0,
+      "pageErrors": [],
+      "consoleErrors": [],
+      "focusAndOverflow": {
+        "tag": "BUTTON",
+        "id": "",
+        "ariaLabel": "Switch to light mode",
+        "scrollOverflow": false,
+        "scrollWidth": 1440,
+        "innerWidth": 1440
+      },
+      "domAnchor": "darkHeaderBg=oklch(0.21 0.034 264.665)",
+      "fileBytes": 188454,
+      "imageResolution": "1440x900",
+      "sanityCheck": "PASS"
+    }
+  ]
+}

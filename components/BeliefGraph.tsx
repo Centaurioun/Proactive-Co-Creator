@@ -548,11 +548,21 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                   return (
                     <tr
                       key={ent.id ?? ent.name}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Inspect entity ${ent.name}${ent.excluded ? ' (Excluded)' : ''}`}
                       onClick={() => {
                         onSelectEntity(ent);
                         onSelectRelationship?.(null);
                       }}
-                      className={`cursor-pointer transition-colors ${
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onSelectEntity(ent);
+                          onSelectRelationship?.(null);
+                        }
+                      }}
+                      className={`cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 ${
                         isSelected
                           ? 'bg-blue-50/70 dark:bg-blue-950/40'
                           : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
@@ -604,10 +614,19 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                   return (
                     <tr
                       key={rel.id ?? `tbl_rel_${idx}`}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Inspect directed relationship ${rel.source} ${rel.label} ${rel.target}`}
                       onClick={() => {
                         onSelectRelationship?.(rel);
                       }}
-                      className={`cursor-pointer transition-colors ${
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onSelectRelationship?.(rel);
+                        }
+                      }}
+                      className={`cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 ${
                         isSelected
                           ? 'bg-amber-50/70 dark:bg-amber-950/40'
                           : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'

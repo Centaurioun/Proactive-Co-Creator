@@ -11,12 +11,33 @@ fi
 trap 'playwright-cli close >/dev/null 2>&1 || true' EXIT
 mkdir -p .playwright-cli
 
+# Preflight server health before launching Chromium
+if ! HEALTH_PAYLOAD="$(curl -sf "$BASE_URL/api/health")"; then
+  echo "E2E_PREFLIGHT_FAIL: Server health check failed at $BASE_URL/api/health" >&2
+  exit 1
+fi
+echo "E2E_PREFLIGHT_OK: $HEALTH_PAYLOAD"
+
+# Startup browser launch smoke check against /api/health with actionable diagnostic
+if ! playwright-cli open --browser=chromium "$BASE_URL/api/health"; then
+  echo "E2E_BROWSER_LAUNCH_FAIL: Could not launch Chromium via playwright-cli." >&2
+  echo "Ensure full Chromium (chrome-for-testing) is installed, not --only-shell:" >&2
+  echo "  playwright-cli install-browser chromium --with-deps" >&2
+  exit 1
+fi
+
 read -r -d '' PLAYWRIGHT_FN <<'EOF' || true
 async (page) => {
   const BASE = "__BASE_URL__";
   const browser = page.context().browser();
   const assert = (cond, msg) => { if (!cond) throw new Error('ASSERT FAILED: ' + msg); };
   const results = [];
+  const structured = {
+    baseUrl: BASE,
+    startedAt: new Date().toISOString(),
+    passed: false,
+    scenarios: [],
+  };
 
   const setupApiTrap = async (targetPage) => {
     const pageErrors = [];
@@ -37,258 +58,245 @@ async (page) => {
     return { pageErrors, consoleErrors, apiHits };
   };
 
-  // E2E-A: Rapid A -> edit -> B (<250ms) -> edit -> A -> fresh browser reload
-  {
+  const runScenario = async (id, fn, initScript = null) => {
+    const t0 = Date.now();
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    if (initScript) {
+      await ctx.addInitScript(initScript);
+    }
+    await ctx.tracing.start({ screenshots: true, snapshots: true });
     const p = await ctx.newPage();
     const traps = await setupApiTrap(p);
+    let passed = false;
     try {
-      await p.goto(BASE, { waitUntil: 'networkidle' });
-      await p.getByRole('tab', { name: 'History' }).click();
-      await p.getByLabel('New project title').fill('Alpha Rapid');
-      await p.getByLabel('New project initial prompt').fill('Alpha seed idea');
-      await p.getByRole('button', { name: 'Create Project' }).click();
-
-      await p.getByLabel('New project title').fill('Beta Rapid');
-      await p.getByLabel('New project initial prompt').fill('Beta seed idea');
-      await p.getByRole('button', { name: 'Create Project' }).click();
-
-      await p.getByRole('button', { name: /^Alpha Rapid/ }).click();
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.locator('#bible-genre').fill('Clockwork Noir');
-      await p.getByRole('tab', { name: 'History' }).click();
-      await p.getByRole('button', { name: /^Beta Rapid/ }).click();
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.locator('#bible-genre').fill('Lunar Pastoral');
-      await p.getByRole('tab', { name: 'History' }).click();
-      await p.getByRole('button', { name: /^Alpha Rapid/ }).click();
-
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      assert((await p.locator('#bible-genre').inputValue()) === 'Clockwork Noir', 'E2E-A immediate Alpha genre lost');
-
-      await p.waitForTimeout(700);
-      await p.reload({ waitUntil: 'networkidle' });
-
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      assert((await p.locator('#bible-genre').inputValue()) === 'Clockwork Noir', 'E2E-A reload Alpha genre lost');
-      const undoTitle = await p.getByRole('button', { name: 'Undo' }).getAttribute('title');
-      assert(undoTitle && undoTitle.includes('genre'), 'E2E-A Undo label missing after reload: ' + undoTitle);
-
-      await p.getByRole('tab', { name: 'History' }).click();
-      await p.getByRole('button', { name: /^Beta Rapid/ }).click();
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      assert((await p.locator('#bible-genre').inputValue()) === 'Lunar Pastoral', 'E2E-A reload Beta genre lost');
-      assert(traps.pageErrors.length === 0, 'E2E-A pageErrors: ' + traps.pageErrors.join('; '));
-      assert(traps.apiHits.length === 0, 'E2E-A paid API hits: ' + traps.apiHits.join(', '));
-      results.push('E2E-A: PASS');
+      await fn(p, traps);
+      passed = true;
+      structured.scenarios.push({
+        id,
+        status: 'PASS',
+        durationMs: Date.now() - t0,
+        apiHits: traps.apiHits.length,
+        pageErrors: traps.pageErrors.length,
+        consoleErrors: traps.consoleErrors.length,
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const safeId = id.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      try {
+        await p.screenshot({ path: `.playwright-cli/fail-${safeId}.png`, fullPage: true });
+      } catch { /* ignore screenshot error on crashed page */ }
+      try {
+        await ctx.tracing.stop({ path: `.playwright-cli/trace-fail-${safeId}.zip` });
+      } catch { /* ignore trace stop error */ }
+      structured.scenarios.push({
+        id,
+        status: 'FAIL',
+        durationMs: Date.now() - t0,
+        error: errorMessage,
+        apiHits: traps.apiHits.length,
+        pageErrors: traps.pageErrors,
+        consoleErrors: traps.consoleErrors,
+      });
+      throw err;
     } finally {
+      if (passed) {
+        try { await ctx.tracing.stop(); } catch { /* ignore */ }
+      }
       await ctx.close();
     }
-  }
+  };
+
+  try {
+
+  // E2E-A: Rapid A -> edit -> B (<250ms) -> edit -> A -> fresh browser reload
+  await runScenario('E2E-A', async (p, traps) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('tab', { name: 'History' }).click();
+    await p.getByLabel('New project title').fill('Alpha Rapid');
+    await p.getByLabel('New project initial prompt').fill('Alpha seed idea');
+    await p.getByRole('button', { name: 'Create Project' }).click();
+
+    await p.getByLabel('New project title').fill('Beta Rapid');
+    await p.getByLabel('New project initial prompt').fill('Beta seed idea');
+    await p.getByRole('button', { name: 'Create Project' }).click();
+
+    await p.getByRole('button', { name: /^Alpha Rapid/ }).click();
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.locator('#bible-genre').fill('Clockwork Noir');
+    await p.getByRole('tab', { name: 'History' }).click();
+    await p.getByRole('button', { name: /^Beta Rapid/ }).click();
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.locator('#bible-genre').fill('Lunar Pastoral');
+    await p.getByRole('tab', { name: 'History' }).click();
+    await p.getByRole('button', { name: /^Alpha Rapid/ }).click();
+
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    assert((await p.locator('#bible-genre').inputValue()) === 'Clockwork Noir', 'E2E-A immediate Alpha genre lost');
+
+    await p.waitForTimeout(700);
+    await p.reload({ waitUntil: 'networkidle' });
+
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    assert((await p.locator('#bible-genre').inputValue()) === 'Clockwork Noir', 'E2E-A reload Alpha genre lost');
+    const undoTitle = await p.getByRole('button', { name: 'Undo' }).getAttribute('title');
+    assert(undoTitle && undoTitle.includes('genre'), 'E2E-A Undo label missing after reload: ' + undoTitle);
+
+    await p.getByRole('tab', { name: 'History' }).click();
+    await p.getByRole('button', { name: /^Beta Rapid/ }).click();
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    assert((await p.locator('#bible-genre').inputValue()) === 'Lunar Pastoral', 'E2E-A reload Beta genre lost');
+    assert(traps.pageErrors.length === 0, 'E2E-A pageErrors: ' + traps.pageErrors.join('; '));
+    assert(traps.apiHits.length === 0, 'E2E-A paid API hits: ' + traps.apiHits.join(', '));
+    results.push('E2E-A: PASS');
+  });
 
   // E2E-B: Save ACK race regression check during A/r2 -> A/r3 -> switch B -> A -> reload
-  {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const p = await ctx.newPage();
-    const traps = await setupApiTrap(p);
-    try {
-      await p.goto(BASE, { waitUntil: 'networkidle' });
-      await p.getByRole('tab', { name: 'History' }).click();
-      await p.getByLabel('New project title').fill('Race Omega');
-      await p.getByLabel('New project initial prompt').fill('Race idea');
-      await p.getByRole('button', { name: 'Create Project' }).click();
+  await runScenario('E2E-B', async (p, traps) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('tab', { name: 'History' }).click();
+    await p.getByLabel('New project title').fill('Race Omega');
+    await p.getByLabel('New project initial prompt').fill('Race idea');
+    await p.getByRole('button', { name: 'Create Project' }).click();
 
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.locator('#bible-genre').fill('Rev2 Genre');
-      await p.waitForTimeout(180);
-      await p.locator('#bible-setting').fill('Rev3 Spire');
-      await p.getByRole('tab', { name: 'History' }).click();
-      await p.getByRole('button', { name: /^Cat’s Woodland Dinner Party/ }).click();
-      await p.waitForTimeout(700);
-      await p.getByRole('button', { name: /^Race Omega/ }).click();
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      assert((await p.locator('#bible-setting').inputValue()) === 'Rev3 Spire', 'E2E-B regressed A/r3 in memory');
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.locator('#bible-genre').fill('Rev2 Genre');
+    await p.waitForTimeout(180);
+    await p.locator('#bible-setting').fill('Rev3 Spire');
+    await p.getByRole('tab', { name: 'History' }).click();
+    await p.getByRole('button', { name: /^Cat’s Woodland Dinner Party/ }).click();
+    await p.waitForTimeout(700);
+    await p.getByRole('button', { name: /^Race Omega/ }).click();
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    assert((await p.locator('#bible-setting').inputValue()) === 'Rev3 Spire', 'E2E-B regressed A/r3 in memory');
 
-      await p.reload({ waitUntil: 'networkidle' });
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      assert((await p.locator('#bible-setting').inputValue()) === 'Rev3 Spire', 'E2E-B lost A/r3 on reload');
-      assert(traps.pageErrors.length === 0, 'E2E-B pageErrors');
-      assert(traps.apiHits.length === 0, 'E2E-B paid API hits');
-      results.push('E2E-B: PASS');
-    } finally {
-      await ctx.close();
-    }
-  }
+    await p.reload({ waitUntil: 'networkidle' });
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    assert((await p.locator('#bible-setting').inputValue()) === 'Rev3 Spire', 'E2E-B lost A/r3 on reload');
+    assert(traps.pageErrors.length === 0, 'E2E-B pageErrors');
+    assert(traps.apiHits.length === 0, 'E2E-B paid API hits');
+    results.push('E2E-B: PASS');
+  });
 
   // E2E-C: Story Bible clear authority, inline control-char error & reload persistence
-  {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const p = await ctx.newPage();
-    const traps = await setupApiTrap(p);
-    try {
-      await p.goto(BASE, { waitUntil: 'networkidle' });
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.locator('#bible-setting').fill('Candlelit Atrium');
-      await p.locator('#bible-tone').fill('Eerie Baroque');
-      await p.locator('button[title="Clear Primary Setting"]').click();
-      await p.locator('button[title="Clear Tone"]').click();
-      assert((await p.locator('#bible-setting').inputValue()) === '', 'E2E-C setting not cleared');
-      assert((await p.locator('#bible-tone').inputValue()) === '', 'E2E-C tone not cleared');
+  await runScenario('E2E-C', async (p, traps) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.locator('#bible-setting').fill('Candlelit Atrium');
+    await p.locator('#bible-tone').fill('Eerie Baroque');
+    await p.locator('button[title="Clear Primary Setting"]').click();
+    await p.locator('button[title="Clear Tone"]').click();
+    assert((await p.locator('#bible-setting').inputValue()) === '', 'E2E-C setting not cleared');
+    assert((await p.locator('#bible-tone').inputValue()) === '', 'E2E-C tone not cleared');
 
-      // Simulate control-character input -> accessible error banner on field without mutating canonical value
-      await p.locator('#bible-genre').evaluate((el) => {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(el, 'Noir\x00Bad');
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      await p.waitForTimeout(50);
-      assert((await p.locator('#bible-genre').getAttribute('aria-invalid')) === 'true', 'E2E-C aria-invalid not true');
-      assert(await p.locator('#bible-error-genre').isVisible(), 'E2E-C inline error alert missing');
-      await p.locator('#bible-genre').fill('Cozy Anthropomorphic Fable');
+    // Simulate control-character input -> accessible error banner on field without mutating canonical value
+    await p.locator('#bible-genre').evaluate((el) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(el, 'Noir\x00Bad');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await p.waitForTimeout(50);
+    assert((await p.locator('#bible-genre').getAttribute('aria-invalid')) === 'true', 'E2E-C aria-invalid not true');
+    assert(await p.locator('#bible-error-genre').isVisible(), 'E2E-C inline error alert missing');
+    await p.locator('#bible-genre').fill('Cozy Anthropomorphic Fable');
 
-      await p.waitForTimeout(650);
-      await p.reload({ waitUntil: 'networkidle' });
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      assert((await p.locator('#bible-setting').inputValue()) === '', 'E2E-C cleared setting reappeared on reload');
-      assert((await p.locator('#bible-tone').inputValue()) === '', 'E2E-C cleared tone reappeared on reload');
+    await p.waitForTimeout(650);
+    await p.reload({ waitUntil: 'networkidle' });
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    assert((await p.locator('#bible-setting').inputValue()) === '', 'E2E-C cleared setting reappeared on reload');
+    assert((await p.locator('#bible-tone').inputValue()) === '', 'E2E-C cleared tone reappeared on reload');
 
-      await p.getByRole('tab', { name: 'Refined Prompt & Notes' }).click();
-      const promptText = await p.locator('pre').first().textContent();
-      assert(!promptText.includes('Candlelit Atrium') && !promptText.includes('Eerie Baroque'), 'E2E-C cleared fields leaked into refined prompt');
-      assert(traps.pageErrors.length === 0, 'E2E-C pageErrors');
-      assert(traps.apiHits.length === 0, 'E2E-C paid API hits');
-      results.push('E2E-C: PASS');
-    } finally {
-      await ctx.close();
-    }
-  }
+    await p.getByRole('tab', { name: 'Refined Prompt & Notes' }).click();
+    const promptText = await p.locator('pre').first().textContent();
+    assert(!promptText.includes('Candlelit Atrium') && !promptText.includes('Eerie Baroque'), 'E2E-C cleared fields leaked into refined prompt');
+    assert(traps.pageErrors.length === 0, 'E2E-C pageErrors');
+    assert(traps.apiHits.length === 0, 'E2E-C paid API hits');
+    results.push('E2E-C: PASS');
+  });
 
   // E2E-D: Consistency issue navigation -> inspector & Story Bible focus (filter reset + 0 revision bump)
-  {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const p = await ctx.newPage();
-    const traps = await setupApiTrap(p);
-    try {
-      await p.goto(BASE, { waitUntil: 'networkidle' });
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.locator('#bible-explicitExclusions').fill('Fox');
-      const revBefore = (await p.locator('footer').textContent()).match(/(\d+)\s+revs?/)?.[1];
+  await runScenario('E2E-D', async (p, traps) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.locator('#bible-explicitExclusions').fill('Fox');
+    const revBefore = (await p.locator('footer').textContent()).match(/(\d+)\s+revs?/)?.[1];
 
-      await p.getByRole('tab', { name: /Checks/ }).click();
-      await p.getByRole('button', { name: 'Inspect Fox' }).click();
-      assert((await p.getByRole('tab', { name: 'Inspector' }).getAttribute('aria-selected')) === 'true', 'E2E-D Inspector tab not active');
-      assert((await p.getByLabel('Contextual Inspector and Story Bible').textContent()).includes('Fox'), 'E2E-D Fox not selected');
+    await p.getByRole('tab', { name: /Checks/ }).click();
+    await p.getByRole('button', { name: 'Inspect Fox' }).click();
+    assert((await p.getByRole('tab', { name: 'Inspector' }).getAttribute('aria-selected')) === 'true', 'E2E-D Inspector tab not active');
+    assert((await p.getByLabel('Contextual Inspector and Story Bible').textContent()).includes('Fox'), 'E2E-D Fox not selected');
 
-      const revAfter = (await p.locator('footer').textContent()).match(/(\d+)\s+revs?/)?.[1];
-      assert(revBefore === revAfter, 'E2E-D navigation bumped revision: ' + revBefore + ' -> ' + revAfter);
+    const revAfter = (await p.locator('footer').textContent()).match(/(\d+)\s+revs?/)?.[1];
+    assert(revBefore === revAfter, 'E2E-D navigation bumped revision: ' + revBefore + ' -> ' + revAfter);
 
-      // Set narrow filter on Story Bible, then navigate via Checks -> Edit Tone -> verify filter resets & #bible-tone focused
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.getByRole('button', { name: 'Visual', exact: true }).click();
-      await p.getByRole('tab', { name: /Checks/ }).click();
-      await p.getByRole('button', { name: 'Edit Tone' }).click();
-      await p.waitForTimeout(120);
-      assert((await p.evaluate(() => document.activeElement?.id)) === 'bible-tone', 'E2E-D #bible-tone not focused');
-      await p.screenshot({ path: '.playwright-cli/e2e-d-bible-focus.png' });
-      assert(traps.pageErrors.length === 0, 'E2E-D pageErrors');
-      results.push('E2E-D: PASS');
-    } finally {
-      await ctx.close();
-    }
-  }
+    // Set narrow filter on Story Bible, then navigate via Checks -> Edit Tone -> verify filter resets & #bible-tone focused
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.getByRole('button', { name: 'Visual', exact: true }).click();
+    await p.getByRole('tab', { name: /Checks/ }).click();
+    await p.getByRole('button', { name: 'Edit Tone' }).click();
+    await p.waitForTimeout(120);
+    assert((await p.evaluate(() => document.activeElement?.id)) === 'bible-tone', 'E2E-D #bible-tone not focused');
+    await p.screenshot({ path: '.playwright-cli/e2e-d-bible-focus.png' });
+    assert(traps.pageErrors.length === 0, 'E2E-D pageErrors');
+    results.push('E2E-D: PASS');
+  });
 
   // E2E-E: NL batch deselect -> Review Modal Before/After -> stale apply blocked -> re-preview -> apply -> Undo -> reload
-  {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const p = await ctx.newPage();
-    const traps = await setupApiTrap(p);
-    try {
-      await p.goto(BASE, { waitUntil: 'networkidle' });
-      await p.locator('#nl-batch-input').fill('Make Rabbit elderly. Make Fox elderly. The party should be mysterious.');
-      await p.getByRole('button', { name: 'Preview', exact: true }).click();
-      await p.getByText('Proposed Batch Operations (3/3)').waitFor({ state: 'visible' });
+  await runScenario('E2E-E', async (p, traps) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.locator('#nl-batch-input').fill('Make Rabbit elderly. Make Fox elderly. The party should be mysterious.');
+    await p.getByRole('button', { name: 'Preview', exact: true }).click();
+    await p.getByText('Proposed Batch Operations (3/3)').waitFor({ state: 'visible' });
 
-      // Deselect the Fox op explicitly
-      await p.locator('[aria-label="Batch edit preview"] label', { hasText: /Fox/i }).locator('input[type="checkbox"]').uncheck();
-      await p.getByText('Proposed Batch Operations (2/3)').waitFor({ state: 'visible' });
+    // Deselect the Fox op explicitly
+    await p.locator('[aria-label="Batch edit preview"] label', { hasText: /Fox/i }).locator('input[type="checkbox"]').uncheck();
+    await p.getByText('Proposed Batch Operations (2/3)').waitFor({ state: 'visible' });
 
-      // Open Review Modal and inspect Before/After & Projected Prompt
-      await p.getByRole('button', { name: 'Review Plan & Prompt' }).click();
-      const batchDiffText = (
-        await p.locator('[data-testid="review-diff-list"] [data-diff-source="batch-preview"]').allTextContents()
-      ).join(' | ');
-      assert(
-        batchDiffText.includes('Rabbit') && batchDiffText.includes('tone') && !batchDiffText.includes('Fox'),
-        'E2E-E Review Diff mismatch on staged batch ops: ' + batchDiffText
-      );
-      const projPrompt = await p.locator('[data-testid="review-projected-prompt"]').textContent();
-      assert(projPrompt.includes('mysterious'), 'E2E-E projected prompt missing mysterious');
-      await p.screenshot({ path: '.playwright-cli/e2e-e-review-modal.png' });
+    // Open Review Modal and inspect Before/After & Projected Prompt
+    await p.getByRole('button', { name: 'Review Plan & Prompt' }).click();
+    const batchDiffText = (
+      await p.locator('[data-testid="review-diff-list"] [data-diff-source="batch-preview"]').allTextContents()
+    ).join(' | ');
+    assert(
+      batchDiffText.includes('Rabbit') && batchDiffText.includes('tone') && !batchDiffText.includes('Fox'),
+      'E2E-E Review Diff mismatch on staged batch ops: ' + batchDiffText
+    );
+    const projPrompt = await p.locator('[data-testid="review-projected-prompt"]').textContent();
+    assert(projPrompt.includes('mysterious'), 'E2E-E projected prompt missing mysterious');
+    await p.screenshot({ path: '.playwright-cli/e2e-e-review-modal.png' });
 
-      // Close Review Modal via Escape and assert focus returns to Review button
-      await p.keyboard.press('Escape');
-      assert((await p.evaluate(() => document.activeElement?.textContent?.trim())) === 'Review Plan & Prompt', 'E2E-E Escape did not return focus');
+    // Close Review Modal via Escape and assert focus returns to Review button
+    await p.keyboard.press('Escape');
+    assert((await p.evaluate(() => document.activeElement?.textContent?.trim())) === 'Review Plan & Prompt', 'E2E-E Escape did not return focus');
 
-      // Advance revision -> preview becomes visibly stale & Apply button disabled
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.locator('#bible-setting').fill('Obsidian Conservatory');
-      await p.getByText(/This preview was generated for an older project or revision/).waitFor({ state: 'visible' });
-      const applyBtnDisabled = await p.getByRole('button', { name: /Apply Approved Batch/ }).isDisabled();
-      assert(applyBtnDisabled, 'E2E-E stale Apply button must be disabled');
+    // Advance revision -> preview becomes visibly stale & Apply button disabled
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.locator('#bible-setting').fill('Obsidian Conservatory');
+    await p.getByText(/This preview was generated for an older project or revision/).waitFor({ state: 'visible' });
+    const applyBtnDisabled = await p.getByRole('button', { name: /Apply Approved Batch/ }).isDisabled();
+    assert(applyBtnDisabled, 'E2E-E stale Apply button must be disabled');
 
-      // Re-preview & apply
-      await p.getByRole('button', { name: 'Re-preview for Current Project' }).click();
-      await p.getByText('Proposed Batch Operations (3/3)').waitFor({ state: 'visible' });
-      await p.getByRole('button', { name: /Apply Approved Batch/ }).click();
+    // Re-preview & apply
+    await p.getByRole('button', { name: 'Re-preview for Current Project' }).click();
+    await p.getByText('Proposed Batch Operations (3/3)').waitFor({ state: 'visible' });
+    await p.getByRole('button', { name: /Apply Approved Batch/ }).click();
 
-      assert((await p.locator('#bible-tone').inputValue()) === 'mysterious', 'E2E-E batch tone not applied');
-      await p.getByRole('button', { name: 'Undo' }).click();
-      assert((await p.locator('#bible-tone').inputValue()) !== 'mysterious', 'E2E-E Undo did not revert batch');
-      assert(!(await p.getByRole('button', { name: 'Redo' }).isDisabled()), 'E2E-E Redo should be enabled after Undo');
+    assert((await p.locator('#bible-tone').inputValue()) === 'mysterious', 'E2E-E batch tone not applied');
+    await p.getByRole('button', { name: 'Undo' }).click();
+    assert((await p.locator('#bible-tone').inputValue()) !== 'mysterious', 'E2E-E Undo did not revert batch');
+    assert(!(await p.getByRole('button', { name: 'Redo' }).isDisabled()), 'E2E-E Redo should be enabled after Undo');
 
-      await p.waitForTimeout(700);
-      await p.reload({ waitUntil: 'networkidle' });
-      assert(!(await p.getByRole('button', { name: 'Redo' }).isDisabled()), 'E2E-E Redo stack lost after reload');
-      assert(traps.pageErrors.length === 0, 'E2E-E pageErrors');
-      assert(traps.apiHits.length === 0, 'E2E-E paid API hits');
-      results.push('E2E-E: PASS');
-    } finally {
-      await ctx.close();
-    }
-  }
+    await p.waitForTimeout(700);
+    await p.reload({ waitUntil: 'networkidle' });
+    assert(!(await p.getByRole('button', { name: 'Redo' }).isDisabled()), 'E2E-E Redo stack lost after reload');
+    assert(traps.pageErrors.length === 0, 'E2E-E pageErrors');
+    assert(traps.apiHits.length === 0, 'E2E-E paid API hits');
+    results.push('E2E-E: PASS');
+  });
 
   // E2E-F: IndexedDB read_error on mount -> 0 unsolicited IDB puts -> offline edit kept -> retry recovers IDB data
-  {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    await ctx.addInitScript(() => {
-      window.__idbPutCalls = [];
-      const origPut = IDBObjectStore.prototype.put;
-      IDBObjectStore.prototype.put = function (...args) {
-        window.__idbPutCalls.push({ id: args[0]?.id, rev: args[0]?.revision });
-        return origPut.apply(this, args);
-      };
-      const origGetAll = IDBObjectStore.prototype.getAll;
-      IDBObjectStore.prototype.getAll = function (...args) {
-        if (localStorage.getItem('__e2e_fail_idb_read') === '1') {
-          const fakeReq = {
-            result: undefined,
-            error: new DOMException('Simulated IDB read_error', 'UnknownError'),
-            onsuccess: null,
-            onerror: null,
-          };
-          setTimeout(() => {
-            if (typeof fakeReq.onerror === 'function') {
-              fakeReq.onerror(new Event('error'));
-            }
-          }, 0);
-          return fakeReq;
-        }
-        return origGetAll.apply(this, args);
-      };
-    });
-    const p = await ctx.newPage();
-    const traps = await setupApiTrap(p);
-    try {
+  await runScenario(
+    'E2E-F',
+    async (p, traps) => {
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await p.getByRole('tab', { name: 'Story Bible' }).click();
       await p.locator('#bible-genre').fill('Vaulted Silver Noir');
@@ -324,30 +332,39 @@ async (page) => {
       assert((await p.locator('#bible-genre').inputValue()) === 'Vaulted Silver Noir', 'E2E-F failed to recover Vaulted Silver Noir from IDB');
       assert(traps.pageErrors.length === 0, 'E2E-F pageErrors');
       results.push('E2E-F: PASS');
-    } finally {
-      await ctx.close();
+    },
+    () => {
+      window.__idbPutCalls = [];
+      const origPut = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...args) {
+        window.__idbPutCalls.push({ id: args[0]?.id, rev: args[0]?.revision });
+        return origPut.apply(this, args);
+      };
+      const origGetAll = IDBObjectStore.prototype.getAll;
+      IDBObjectStore.prototype.getAll = function (...args) {
+        if (localStorage.getItem('__e2e_fail_idb_read') === '1') {
+          const fakeReq = {
+            result: undefined,
+            error: new DOMException('Simulated IDB read_error', 'UnknownError'),
+            onsuccess: null,
+            onerror: null,
+          };
+          setTimeout(() => {
+            if (typeof fakeReq.onerror === 'function') {
+              fakeReq.onerror(new Event('error'));
+            }
+          }, 0);
+          return fakeReq;
+        }
+        return origGetAll.apply(this, args);
+      };
     }
-  }
+  );
 
   // E2E-G: Quota + mismatched artifact content during project deletion preserves local artifact & backup
-  {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    await ctx.addInitScript(() => {
-      const origSetItem = Storage.prototype.setItem;
-      Storage.prototype.setItem = function (k) {
-        if (
-          this === window.localStorage &&
-          localStorage.getItem('__e2e_tight_quota') === '1' &&
-          k === 'proactive_co_creator_deleted_ids_v2'
-        ) {
-          throw new DOMException('QuotaExceededError: Tombstone quota limit reached', 'QuotaExceededError');
-        }
-        return origSetItem.apply(this, arguments);
-      };
-    });
-    const p = await ctx.newPage();
-    const traps = await setupApiTrap(p);
-    try {
+  await runScenario(
+    'E2E-G',
+    async (p, traps) => {
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await p.getByRole('tab', { name: 'History' }).click();
       await p.getByLabel('New project title').fill('Doomed Project');
@@ -392,60 +409,105 @@ async (page) => {
       assert(keeper && keeper.artifacts?.[0]?.id === 'art_local_unique_id', 'E2E-G local-only artifact stripped!');
       assert(traps.pageErrors.length === 0, 'E2E-G pageErrors');
       results.push('E2E-G: PASS');
-    } finally {
-      await ctx.close();
+    },
+    () => {
+      const origSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k) {
+        if (
+          this === window.localStorage &&
+          localStorage.getItem('__e2e_tight_quota') === '1' &&
+          k === 'proactive_co_creator_deleted_ids_v2'
+        ) {
+          throw new DOMException('QuotaExceededError: Tombstone quota limit reached', 'QuotaExceededError');
+        }
+        return origSetItem.apply(this, arguments);
+      };
     }
-  }
+  );
 
   // E2E-H & E2E-I: Story <-> Image mode switching, zero paid Gemini calls, keyboard Tab/Escape, mobile 390x844
-  {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const p = await ctx.newPage();
-    const traps = await setupApiTrap(p);
-    try {
-      await p.goto(BASE, { waitUntil: 'networkidle' });
-      await p.getByRole('tab', { name: 'Story Bible' }).click();
-      await p.locator('#bible-visualStyle').fill('Ink Wash & Brass Lanterns');
-      const genModeGroup = p.getByRole('group', { name: 'Generation mode' });
-      await genModeGroup.getByRole('button', { name: 'Image', exact: true }).click();
-      assert((await genModeGroup.getByRole('button', { name: 'Image', exact: true }).getAttribute('aria-pressed')) === 'true', 'E2E-H Image mode not active');
-      assert((await p.locator('#bible-visualStyle').inputValue()) === 'Ink Wash & Brass Lanterns', 'E2E-H Story Bible lost on mode switch');
-      const graphRegion = await p.getByRole('region', { name: 'Interactive belief graph' }).textContent();
-      assert(graphRegion.includes('hosting') && graphRegion.includes('Cat'), 'E2E-H Graph edges missing after Image switch');
-      await genModeGroup.getByRole('button', { name: 'Story', exact: true }).click();
-      assert(traps.apiHits.length === 0, 'E2E-H unexpected paid Gemini API calls');
+  await runScenario('E2E-H+I', async (p, traps) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('tab', { name: 'Story Bible' }).click();
+    await p.locator('#bible-visualStyle').fill('Ink Wash & Brass Lanterns');
+    const genModeGroup = p.getByRole('group', { name: 'Generation mode' });
+    await genModeGroup.getByRole('button', { name: 'Image', exact: true }).click();
+    assert((await genModeGroup.getByRole('button', { name: 'Image', exact: true }).getAttribute('aria-pressed')) === 'true', 'E2E-H Image mode not active');
+    assert((await p.locator('#bible-visualStyle').inputValue()) === 'Ink Wash & Brass Lanterns', 'E2E-H Story Bible lost on mode switch');
+    const graphRegion = await p.getByRole('region', { name: 'Interactive belief graph' }).textContent();
+    assert(graphRegion.includes('hosting') && graphRegion.includes('Cat'), 'E2E-H Graph edges missing after Image switch');
+    await genModeGroup.getByRole('button', { name: 'Story', exact: true }).click();
+    assert(traps.apiHits.length === 0, 'E2E-H unexpected paid Gemini API calls');
 
-      // Mobile 390x844 responsiveness + mobile tab switch + dark mode + zero horizontal overflow
-      await p.setViewportSize({ width: 390, height: 844 });
-      await p.waitForTimeout(100);
-      const overflow = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
-      assert(!overflow, 'E2E-I horizontal overflow at 390x844');
-      await p.getByRole('button', { name: 'Inspector' }).click();
-      await p.getByRole('tab', { name: /Checks/ }).click();
-      await p.getByRole('button', { name: 'Edit Tone' }).click();
-      await p.waitForTimeout(100);
-      assert((await p.evaluate(() => document.activeElement?.id)) === 'bible-tone', 'E2E-I mobile issue focus failed');
-      await p.getByRole('button', { name: 'Switch to dark mode' }).click();
-      await p.waitForTimeout(250);
-      const headerBg = await p.evaluate(() => getComputedStyle(document.querySelector('header')).backgroundColor);
-      assert(headerBg !== 'rgb(255, 255, 255)', 'E2E-I dark header background did not transition: ' + headerBg);
-      await p.screenshot({ path: '.playwright-cli/e2e-i-mobile-dark.png' });
+    // Mobile 390x844 responsiveness + mobile tab switch + dark mode + zero horizontal overflow
+    await p.setViewportSize({ width: 390, height: 844 });
+    await p.waitForTimeout(100);
+    const overflow = await p.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+    assert(!overflow, 'E2E-I horizontal overflow at 390x844');
+    await p.getByRole('button', { name: 'Inspector' }).click();
+    await p.getByRole('tab', { name: /Checks/ }).click();
+    await p.getByRole('button', { name: 'Edit Tone' }).click();
+    await p.waitForTimeout(100);
+    assert((await p.evaluate(() => document.activeElement?.id)) === 'bible-tone', 'E2E-I mobile issue focus failed');
+    await p.getByRole('button', { name: 'Switch to dark mode' }).click();
+    await p.waitForTimeout(250);
+    const headerBg = await p.evaluate(() => getComputedStyle(document.querySelector('header')).backgroundColor);
+    assert(headerBg !== 'rgb(255, 255, 255)', 'E2E-I dark header background did not transition: ' + headerBg);
+    await p.screenshot({ path: '.playwright-cli/e2e-i-mobile-dark.png' });
 
-      assert(traps.pageErrors.length === 0, 'E2E-H/I pageErrors: ' + traps.pageErrors.join('; '));
-      assert(traps.consoleErrors.length === 0, 'E2E-H/I consoleErrors: ' + traps.consoleErrors.join('; '));
-      results.push('E2E-H: PASS', 'E2E-I: PASS');
-    } finally {
-      await ctx.close();
-    }
-  }
+    assert(traps.pageErrors.length === 0, 'E2E-H/I pageErrors: ' + traps.pageErrors.join('; '));
+    assert(traps.consoleErrors.length === 0, 'E2E-H/I consoleErrors: ' + traps.consoleErrors.join('; '));
+    results.push('E2E-H: PASS', 'E2E-I: PASS');
+  });
 
   assert(results.length === 9, 'Expected 9 E2E results, got ' + results.length + ': ' + results.join(', '));
-  return results.join(' | ');
+  structured.finishedAt = new Date().toISOString();
+  structured.passed = true;
+  structured.summary = results;
+  } catch (err) {
+    structured.finishedAt = new Date().toISOString();
+    structured.passed = false;
+    structured.summary = results;
+    structured.fatalError = err instanceof Error ? err.message : String(err);
+  }
+  return 'E2E_JSON_BEGIN' + JSON.stringify(structured) + 'E2E_JSON_END';
 }
 EOF
 
 PLAYWRIGHT_FN="${PLAYWRIGHT_FN//__BASE_URL__/$BASE_URL}"
 
-playwright-cli open --browser=chromium "$BASE_URL"
-playwright-cli run-code "$PLAYWRIGHT_FN"
+RUN_OUT="$(playwright-cli run-code "$PLAYWRIGHT_FN" 2>&1)" || {
+  echo "$RUN_OUT" >&2
+  exit 1
+}
+echo "$RUN_OUT"
+
+E2E_RAW_OUT="$RUN_OUT" node -e '
+const fs = require("node:fs");
+const raw = process.env.E2E_RAW_OUT || "";
+if (raw.includes("### Error")) {
+  console.error("E2E_SMOKE_FAIL: playwright-cli run-code reported an uncaught error.");
+  process.exit(1);
+}
+const resultIdx = raw.indexOf("### Result");
+const resultSection = resultIdx === -1 ? raw : raw.slice(resultIdx);
+const start = resultSection.indexOf("E2E_JSON_BEGIN");
+const end = start === -1 ? -1 : resultSection.indexOf("E2E_JSON_END", start);
+if (start === -1 || end === -1 || end <= start) {
+  console.error("E2E_SMOKE_FAIL: Missing structured E2E_JSON payload in playwright-cli result section.");
+  process.exit(1);
+}
+let payloadStr = resultSection.slice(start + "E2E_JSON_BEGIN".length, end);
+if (payloadStr.startsWith("\\\"") || resultSection.slice(start - 1, start) === "\"") {
+  payloadStr = JSON.parse("\"" + payloadStr + "\"");
+}
+const data = JSON.parse(payloadStr);
+fs.writeFileSync(".playwright-cli/e2e-results.json", JSON.stringify(data, null, 2));
+if (!data.passed || !Array.isArray(data.summary) || data.summary.length !== 9) {
+  console.error("E2E_SMOKE_FAIL:", data.fatalError || "Not all 9 E2E scenarios passed", JSON.stringify(data.scenarios));
+  process.exit(1);
+}
+console.log("E2E_RESULTS_VERIFIED:", data.summary.join(" | "));
+'
+
 echo "E2E_SMOKE_PASS: E2E-A through E2E-I verified on Chromium ($BASE_URL)"
