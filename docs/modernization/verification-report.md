@@ -1,5 +1,7 @@
 # Proactive Co-Creator 2.0 — Stability, Consistency & UX Master Plan Verification Report
 
+> **Evidence chronology:** The gate matrix below is an earlier verification snapshot and is not the current final gate. On 2026-11-24, GitHub Actions run [45300419119](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45300419119) passed `Verify (Node 22.x)` and failed `Browser E2E Smoke (Chromium)` at E2E-E's immediate Escape-focus assertion; the artifact upload step found no files. The same assertion failed locally before correction, then the corrected suite passed 9/9 on macOS Chromium. The run predates the current working-tree fixes. Current local evidence and remaining gates are in [`2026-11-24-stage-0-final-qualification.md`](./2026-11-24-stage-0-final-qualification.md).
+
 ## 1. Executive Summary & Verification Gate Matrix
 
 | Gate | Command / Method | Status | Evidence & Notes |
