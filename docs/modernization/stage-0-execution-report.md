@@ -5,6 +5,8 @@
 **Rapor Tarihi:** `2026-11-23`  
 **Kapsam Sınırı:** Yalnızca **Stage 0** (UI yeniden tasarımı yok, Figma dosyası üretimi yok, yeni özellik yok, Schema v3 değişikliği yok, ücretli Gemini API çağrısı yok).
 
+> **Güncel nitelendirme durumu (2026-11-24):** Bu belgenin aşağıdaki bölümleri 2026-11-23'teki tarihsel baseline raporudur. Bugünkü bağımsız doğrulama ve açık kapılar [`2026-11-24-stage-0-final-qualification.md`](./2026-11-24-stage-0-final-qualification.md) içinde kayıtlıdır. Güncel başlangıç HEAD'i `3526c24fec45c60878937a331e487fc387e28d0b` (`main` ve fetch edilmiş `origin/main` aynı SHA). GitHub Actions #45300419119'da Node doğrulama işi geçti; Chromium işi E2E-E zamanlama assertion'ında kaldı ve gizli `.playwright-cli` dosyaları upload filtresine takıldığı için artifact üretmedi. macOS yerel E2E-A–I 9/9 ve J01–J12 12/12 geçti; uzak düzeltme henüz çalıştırılmadı. **Stage 1 uygulama kararı: NO-GO** — uzak iki CI işi güncel commit'te yeşil olana kadar.
+
 ---
 
 ## 1. Yönetici Özeti (Executive Outcome)
@@ -12,15 +14,15 @@
 ### Ne Tamamlandı?
 - **CI Tarayıcı Kurulum Kök Nedeni Onarıldı (S0.1 — Yerel Olarak Doğrulandı):** `.github/workflows/ci.yml` içindeki `--only-shell` uyumsuzluğu kaldırıldı (`playwright-cli install-browser chromium --with-deps`), `/api/health` (`"configured":false`) ön kontrolü, hata ekran görüntüsü/trace kaydı ve fail-closed JSON doğrulaması (`e2e-results.json`) eklendi. Mevcut 9 senaryo (`E2E-A`–`E2E-I`) gerçek headless Chromium üzerinde anahtarsız production sunucusuna karşı **9/9 PASS** (`0` ücretli/mocksuz API isteği) ile doğrulandı.
 - **Deterministik Görsel Taban ve 16 Ekran Görüntüsü Üretildi (S0.2):** Schema v3 üreten deterministik fikstürler (`FX-EMPTY`, `FX-SIMPLE`, `FX-BUSY`, `FX-OUT`, `FX-STRESS-10/30/100/250`) ve tek komutluk yakalama hattı (`scripts/capture-ux-baseline.sh`) oluşturuldu. **`SC-01.png`–`SC-16.png`** üretildi, IHDR/boyut kontrolünden geçti ve görsel olarak tek tek incelendi.
-- **Gerçek Tarayıcıda 12 Kullanıcı Yolculuğu (J01–J12) Çalıştırıldı (S0.3):** Tüm 12 yolculuk gerçek Chromium üzerinde tamamlandı (`12/12 PASS`, `0` mocksuz API isteği). Ekran envanteri, yolculuk haritası ve kanıta dayalı bulgu kaydı (`F-01`–`F-15`) dokümante edildi.
+- **Gerçek Tarayıcıda 12 Kullanıcı Yolculuğu (J01–J12) Çalıştırıldı (S0.3):** Tüm 12 yolculuk gerçek Chromium üzerinde tamamlandı (`12/12 PASS`, `0` mocksuz API isteği). Ekran envanteri ve yol haritası oluşturuldu; önceki raporun `F-01`–`F-15` sayımı eksikti. Güncel ve yetkili register `findings.md` içinde `F-01`–`F-17` olarak tanımlıdır.
 - **Erişilebilirlik, Responsive ve Performans Ölçüldü (S0.4 & S0.5):** 6 kırılım noktasında (`1440×900`, `1280×800`, `768×1024`, `390×844`, `320×568`, `720×450`) gerçek DOM/kontrast/odak ölçümleri, Vite bundle profili, Node.js `computeForceLayout` (`10`/`30`/`100`/`250` düğüm) ve `8.000+` karakter prompt sınırı ile Chromium render/bellek ölçümleri alındı.
 - **Doğrulanmış 2 Kritik P1 Erişilebilirlik Hatası RED → GREEN → REFACTOR ile Onarıldı (S0.7):**
   1. `F-02` (`components/BeliefGraph.tsx`): Tablo Görünümü satırları klavye ile erişilebilir hale getirildi (`0/28` → **`28/28`** odaklanabilir satır).
   2. `F-03` (`components/OutputGallery.tsx` & `components/InfoModal.tsx`): Tam ekran görsel Lightbox ve Hakkında modalına odak girişi, `Tab`/`Shift+Tab` odak tuzağı ve `Escape` sonrası tetikleyiciye odak iadesi eklendi.
 - **Eksiksiz Figma Handoff Paketi Hazırlandı (S0.6):** `docs/ux-baseline/figma-handoff.md` (korunan yetenekler matrisi, "icat etme" sınırları, veri akışı, tasarım token'ları, 3 aday yön analizi, ilk 5 test edilebilir UX hipotezi) ve `docs/ux-baseline/quality-gates.md` yazıldı.
 
-### Ne Tamamlanamadı? (Şeffaf BLOKLU Durum)
-- **Uzak GitHub Push ve Canlı GitHub Actions Çalıştırması (`G8`):** Çalıştırma sandbox'ında `.git` deposu ve GitHub push kimlik bilgileri bulunmadığı için değişiklikler uzak `main` dalına push edilemedi ve yeni bir uzak GitHub Actions koşusu tetiklenemedi. Bu nedenle **`G8` açıkça `BLOCKED`** olarak işaretlenmiştir (sahte `PASS` verilmemiştir).
+### 2026-11-23 tarihli raporun o tarihte açık kalan kapısı (`G8`)
+- **Tarihsel durum:** Bu rapor hazırlanırken `.git` deposu/push erişimi olmadığı belirtilmiş ve `G8` BLOCKED bırakılmıştı. Bu ifade 2026-11-24 çalışma ortamının durumu değildir: mevcut çalışma alanında `.git` vardır ve remote HEAD `3526c24fec45c60878937a331e487fc387e28d0b` olarak fetch edilmiştir. Ancak bugünkü düzeltmeler henüz commit/push edilmedi ve bunlar için GitHub Actions çalışmadı; güncel engel ve sonuçlar yeni qualification raporundadır.
 
 ### Figma Tasarım Aşaması İçin Karar (Go / No-Go)
 - **Figma Keşfi İçin Karar: KOŞULLU GO (Conditional GO)**
@@ -33,11 +35,12 @@
 
 | Alan | Gerçek Gözlemlenen Değer |
 | :--- | :--- |
-| **Başlangıç Uzak `main` SHA** | `03e9fda79f00fc9d27984142dcb188f099f28fde` (`2026-11-23T22:07:36Z` — plandaki tarihsel `faf580e` SHA'sından 1 commit ileride) |
+| **Önceki raporun tarihsel başlangıç SHA'sı** | `03e9fda79f00fc9d27984142dcb188f099f28fde` (`2026-11-23`; bu qualification'ın başlangıcı değil) |
 | **Yerel Kontrol Noktası (Checkpoint)** | `/tmp/stage0-checkpoint-03e9fda` (SHA-256: `6ca96f21fae03cb356984f6b70e6160bbbdbc4bcfbcbf9274357c7585ad02266`) |
-| **Final Yerel Git SHA** | `YOK` (sandbox çalışma alanında `.git` dizini mevcut değil; yerel dosyalar doğrulandı) |
-| **Final Uzak `main` SHA** | `03e9fda79f00fc9d27984142dcb188f099f28fde` (**değişmedi** — uzak push yapılmadı) |
-| **Dal / Push Durumu** | `BLOCKED` (git deposu/kimlik bilgisi eksikliği; force-push kesinlikle yapılmadı) |
+| **2026-11-24 qualification başlangıç HEAD** | `3526c24fec45c60878937a331e487fc387e28d0b` (`main` ve `origin/main`) |
+| **Qualification sonu yerel HEAD** | `3526c24fec45c60878937a331e487fc387e28d0b` (yeni commit oluşturulmadı; dosya değişiklikleri working tree'de) |
+| **Qualification sonu uzak `main` SHA** | `3526c24fec45c60878937a331e487fc387e28d0b` (fetch edilen; bugünkü değişiklikler henüz push edilmedi) |
+| **Dal / Push Durumu** | Yerel `main`; commit/push yapılmadı; force-push yok. Ayrıntı yeni qualification raporundadır. |
 
 ### Değiştirilen ve Eklenen Dosya Envanteri (`diff -rq` vs `/tmp/stage0-checkpoint-03e9fda`)
 
@@ -165,22 +168,28 @@ Tüm 16 görüntü `bash scripts/capture-ux-baseline.sh` ile gerçek production 
 
 ---
 
-## 7. Erişilebilirlik & Responsive Bulgular (`F-01`–`F-15`)
+## 7. Erişilebilirlik & Responsive Bulgular (tarihsel özet; canonical register `F-01`–`F-17`)
 
 ### Stage 0 İçinde Onarılan P1 Bulgular
 - **`F-01` (P1 — CI Engelleyici):** `--only-shell` tarayıcı kurulum hatası → **ONARILDI (Yerel PASS / Uzak CI BLOCKED)**.
 - **`F-02` (P1 — Erişilebilirlik):** `BeliefGraph` Tablo Görünümü satırları klavyeyle seçilemiyordu (`0/28`) → **ONARILDI (`28/28` satır `tabIndex={0}`, `Enter`/`Space`, `focus-visible`)**.
 - **`F-03` (P1 — Erişilebilirlik):** `OutputGallery` Lightbox ve `InfoModal` açıldığında odak içeri taşınmıyor, `Tab` tuzağı yoktu ve `Escape` sonrası odak tetikleyiciye dönmüyordu → **ONARILDI (her ikisi de canlı Chromium'da doğrulandı)**.
 
-### Stage 1 / Figma'ya Ertelenen Doğrulanmış Bulgular (P2)
-- **`F-04` (P2):** `Header.tsx` aktif sekme durumu yanlış (`Story Bible` tıklansa bile `"Workspace"` mavi altı çizili kalıyor; `App.tsx` `activeSection` prop'unu geçirmiyor).
-- **`F-05` (P2):** Mobil `390×844` ve `320×568` ekranlarında `WorkspaceBottomBar` 4 satıra sarılarak **`189px` / `187px`** (ekranın `%22.4–%32.9`'u) kaplıyor (`SC-11`, `SC-12`).
-- **`F-06` (P2):** `overflow-hidden` kapsayıcılar nedeniyle sağ kenar kırpılmaları: `768×1024`'te `Reset Sample Plan` (`910px`) ve `Dark Theme` (`1012px`), `390×844`'te karakter sayacı (`450px`), `320×568`'de `Dark Theme` (`330px`) + sayaç (`450px`), masaüstünde Inbox kategori filtreleri (`SC-02`, `SC-14`).
-- **`F-07` (P2):** Hikâye çıktı alanı grafın altında dar bir kutuya sıkışıyor (`SC-08`, ~5 satır görünür).
-- **`F-08` (P2):** Sayfada hiç **`<h1>`** yok (başlık hiyerarşisi `<h2> Decision Inbox` ile başlıyor); ayrıca masaüstünde `53/231` kontrol `<24px` (WCAG 2.2 SC 2.5.8 alt sınırı — ör. üst menü `20px`, `Select All` `16px`).
-- **`F-09` (P2):** Aynı anda **3 farklı `Generate Story` butonu** görünerek odak karmaşası yaratıyor (`SC-13`).
-- **`F-10` / `F-15` (P2):** `15+` varlıkta Fit sonrası SVG düğüm yazıları `<8px` oluyor; `100`/`250` varlıkta ilk kamera konumu düğümleri sağ Inspector arkasına itiyor.
-- **`F-11`–`F-14` (P2):** Boş projede `"Untitled creative project"` ön-dolumu (`SC-01`), projelerin `History` sekmesine gömülü olması (`SC-10`), `Export Refined Prompt (.txt)` etiketinin `.md` indirmesi (`J09`), ve `250` varlıkta promptun `8.000` karakter sunucu sınırını aşması (`17.814` karakter).
+### Stage 1 / Figma'ya Ertelenen Doğrulanmış Bulgular (canonical `findings.md` IDs)
+- **`F-04` (P2):** Mobil `WorkspaceBottomBar` `390×844` ve `320×568` ekranlarında 4 satıra sarılarak `189px` / `187px` kaplıyor (`SC-11`, `SC-12`).
+- **`F-05` (P2):** Responsive sağ kenar kırpılmaları; tablet başlık eylemleri ve mobil sayaç/tema kontrolleri farklı genişliklerde görünür alan dışına taşıyor (`SC-02`, `SC-11`, `SC-14`).
+- **`F-06` (P2):** Hikâye çıktı alanı grafın altında dar bir kutuya sıkışıyor (`SC-08`, ~5 satır görünür).
+- **`F-07` (P2):** Aynı anda 3 `Generate Story` CTA'sı görünüyor (`SC-13`).
+- **`F-08` (P2):** `Header.tsx` aktif sekme durumu yanlış; `Workspace` mavi altı çizili kalıyor.
+- **`F-09` (P2):** Decision Inbox kategori filtresi ve Story Bible alanlarında kesilme/truncation gözleniyor (`SC-02`, `SC-05`, `SC-13`).
+- **`F-10` (P2):** Proje oluşturma/değiştirme, Import/Export ve revision geçmişi sağ `History` sekmesinin içinde gömülü.
+- **`F-11` (P2):** 53 desktop ve 2 mobile visible control ölçümü `24px` WCAG 2.2 SC 2.5.8 minimumunun altında; bu otomatik ölçüm tek başına WCAG uyumluluk kararı değildir.
+- **`F-12` (P2):** Sayfada `<h1>` yok; başlık hiyerarşisi `<h2>` ile başlıyor.
+- **`F-13` (P2):** Boş projede `"Untitled creative project"` ön-dolumu ve başlangıç yönlendirmesi eksik (`SC-01`).
+- **`F-14` (P2):** `Export Refined Prompt (.txt)` etiketi `.md` dosyası indirdiği için yanıltıcıdır (`J09`).
+- **`F-15` (P2):** Büyük grafiklerde düğüm okunabilirliği/ilk görünüm ve 8.000 karakter prompt sınırı riskleri; 250 varlıkta prompt 17.814 karakter ölçüldü.
+- **`F-16` (P2):** Bundle boyutu Vite'ın 500 kB uyarı sınırını aşıyor; App.tsx yüksek sorumluluk yoğunluğuna sahip.
+- **`F-17` (P1 koşullu):** Ortak Gemini anahtarıyla herkese açık dağıtımda hesap başına harcama sınırı yok; dağıtım öncesi risk.
 
 ### Kontrast ve WCAG Sınırı (Zorunlu Uyarı)
 - Örneklenen 5 temel kontrol grubunda hesaplanan kontrast oranları Light (`4.84:1`–`7.56:1`) ve Dark (`5.25:1`–`12.05:1`) modlarda `4.5:1` AA normal metin eşiğinin üzerindedir; `prefers-reduced-motion: reduce` kuralı `/index.css` içinde mevcuttur.

@@ -2,6 +2,8 @@
 
 This document defines the reproducible non-billable verification suite established in Stage 0 and the mandatory regression gates for any future Figma-to-Code (Stage 1+) implementation.
 
+> **2026-11-24 qualification status:** QG-01 passed locally (106/106 tests, typecheck and lint); QG-02/QG-03 were exercised by the passing non-billable E2E and Stage 0 journeys; QG-04 passed locally on Chromium (9/9) but is **remote-pending**. GitHub run [45300419119](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45300419119) passed Node verification but failed the browser job at an E2E-E timing assertion; its artifact action found no files because `.playwright-cli` is hidden. The workflow fix is in the working tree, not yet verified on GitHub. See the [qualification report](../modernization/2026-11-24-stage-0-final-qualification.md). The contract rows below define required gates; they are not evidence that each gate currently passes.
+
 ---
 
 ## 1. Reproducible Non-Billable Verification Commands

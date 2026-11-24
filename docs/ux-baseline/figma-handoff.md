@@ -4,6 +4,8 @@
 **Target Audience:** Product Designer / Figma Designer (no repository access required)  
 **Scope Boundary:** This document specifies **what currently exists**, **what must be preserved**, **what must NOT be invented**, and **candidate redesign hypotheses** for Figma exploration. **No UI redesign has been implemented in Stage 0.**
 
+> **Issue ID reconciliation (2026-11-24):** `docs/ux-baseline/findings.md` is the sole canonical register (`F-01`–`F-17`). Older handoff references used earlier numbering and pointed several IDs at different issues. References in this document now use the current register; the Stage 0 execution report's `F-01`–`F-15` heading is a historical omission, not a second numbering scheme.
+
 ---
 
 ## 1. Product Purpose & User Jobs (Hypotheses — No User Research Telemetry Yet)
@@ -103,10 +105,10 @@ Designers **MUST NOT** draw mockups implying the following unbuilt features exis
 ## 6. Reference Baseline Screenshots (`docs/ux-baseline/assets/`)
 
 All 16 captures were generated deterministically from real production code and visually inspected:
-- **Empty & Onboarding:** `SC-01.png` (`1440×900`, `FX-EMPTY`) — shows `"Untitled creative project"` pre-fill & blank canvas without CTA (`F-11`).
+- **Empty & Onboarding:** `SC-01.png` (`1440×900`, `FX-EMPTY`) — shows `"Untitled creative project"` pre-fill & blank canvas without CTA (`F-13`).
 - **Core Desktop 3-Column Flows:** `SC-02.png` (Decision Inbox), `SC-03.png` (Graph + Inspector), `SC-04.png` (15-entity Graph + Filters), `SC-05.png` (Story Bible), `SC-06.png` (Consistency Checks), `SC-07.png` (NL Batch Preview + Review Modal).
-- **Outputs & History:** `SC-08.png` (Generated Story + Outdated badge — note cramped ~5-line reader height, `F-07`), `SC-09.png` (Image Gallery + Fullscreen Lightbox), `SC-10.png` (History, Projects & Export).
-- **Responsive Breakpoints & Error/Theme States:** `SC-11.png` (`390×844` Mobile workspace + `189px` footer, `F-05`), `SC-12.png` (`390×844` Mobile Story output), `SC-13.png` (`1280×800` Cramped Laptop — shows 3 simultaneous Generate CTAs, `F-09`), `SC-14.png` (`768×1024` Tablet + clipped header actions, `F-06`), `SC-15.png` (`390×844` IndexedDB `read_error` banner), `SC-16.png` (`1440×900` Dark Theme).
+- **Outputs & History:** `SC-08.png` (Generated Story + Outdated badge — note cramped ~5-line reader height, `F-06`), `SC-09.png` (Image Gallery + Fullscreen Lightbox), `SC-10.png` (History, Projects & Export).
+- **Responsive Breakpoints & Error/Theme States:** `SC-11.png` (`390×844` Mobile workspace + `189px` footer, `F-04`), `SC-12.png` (`390×844` Mobile Story output), `SC-13.png` (`1280×800` Cramped Laptop — shows 3 simultaneous Generate CTAs, `F-07`), `SC-14.png` (`768×1024` Tablet + clipped header actions, `F-05`), `SC-15.png` (`390×844` IndexedDB `read_error` banner), `SC-16.png` (`1440×900` Dark Theme).
 
 ---
 
@@ -115,7 +117,7 @@ All 16 captures were generated deterministically from real production code and v
 ### Option A: Workflow-First Creative Studio (**RECOMMENDED**)
 - **Concept:** Replace the permanent 3-column desktop crowd (`SC-13`) with a **focused primary stage + collapsible contextual drawer**, anchored by a truthful top-level workspace stepper/navigation (`Plan & Inbox` → `World Graph` → `Story Bible & Checks` → `Generate & Output`) plus a persistent top-level **Project Switcher** and compact single-row action bar.
 - **Strengths against `J01`–`J12`:**
-  - Directly resolves **`F-07`** (full-height story reading & image gallery without competing with SVG canvas), **`F-09`** (single clear primary Generate CTA instead of 3 competing buttons), **`F-04`** (truthful top-level navigation state), **`F-05`** (clean mobile bottom sheet/action bar instead of 4-row `189px` wrap), and **`F-12`** (top-level Project Switcher instead of burying projects inside History).
+  - Directly addresses **`F-06`** (full-height story reading & image gallery without competing with SVG canvas), **`F-07`** (single clear primary Generate CTA instead of 3 competing buttons), **`F-08`** (truthful top-level navigation state), **`F-04`** (clean mobile bottom sheet/action bar instead of 4-row `189px` wrap), and **`F-10`** (top-level Project Switcher instead of burying projects inside History).
   - Preserves side-by-side Graph + Inspector when in the World Graph view, and keeps Decision Inbox accessible as a toggleable side rail or primary queue.
 - **Disconfirming Evidence / Trade-offs:**
   - Power users who want to watch the Belief Graph mutate *simultaneously* while clicking Accept in the Decision Inbox (`J02`) lose the always-visible 3-column simultaneous view unless an optional "Split View" toggle is provided on wide desktops (`≥1440px`).
@@ -124,7 +126,7 @@ All 16 captures were generated deterministically from real production code and v
 ### Option B: Graph-First Visual Canvas (Spatial Whiteboard)
 - **Concept:** Full-bleed infinite Belief Graph canvas (`100%` viewport) with floating translucent HUD panels for Decision Inbox, Inspector, Story Bible, and Output drawer (Figma/Miro spatial metaphor).
 - **Strengths against `J01`–`J12`:**
-  - Maximizes breathing room for dense graphs (`SC-04`, `15–100+` nodes), mitigating `F-10` (tiny zoomed-out node labels) and `F-15` (initial viewport clipping).
+  - Maximizes breathing room for dense graphs (`SC-04`, `15–100+` nodes), mitigating `F-15` (tiny zoomed-out node labels, initial viewport clipping, and prompt-budget pressure at large entity counts).
   - Visually reinforces the Belief Graph as the app's signature differentiator.
 - **Disconfirming Evidence / Trade-offs:**
   - **Poor fit for Story reading (`J07`), Story Bible forms (`J04`), and Mobile (`SC-11`/`SC-12`)**: floating panels obscure the canvas, feel awkward for multi-paragraph prose, and collapse poorly on `390px` screens.
@@ -147,18 +149,18 @@ All 16 captures were generated deterministically from real production code and v
 
 | ID | Hypothesis Statement | Target Findings | Validation Signal in Prototype Testing |
 | :--- | :--- | :---: | :--- |
-| **H1** | Replacing the 3 simultaneous `Generate Story` buttons (`SC-13`) with one contextual primary CTA + clear readiness badge reduces user hesitation before first generation. | `F-09`, `F-11` | Users identify what to click first on `FX-EMPTY` (`SC-01`) and trigger Generate on `FX-SIMPLE` without scanning 3 panels. |
-| **H2** | Moving Story/Image Output to a full-height dedicated view/drawer (`≥65%` viewport height) improves story reading comprehension and outdated-state recovery compared to the current ~5-line bottom deck. | `F-07` | Users read generated story, notice the `Outdated` banner, and navigate back to edit without excessive inner scrolling. |
-| **H3** | Elevating the Project Switcher and Export/Backup actions out of the `History` tab into the top header improves multi-project discoverability and backup confidence. | `F-12`, `F-13` | Users find "New Project" and "Export Backup" in ≤2 clicks without searching Inspector tabs. |
-| **H4** | Collapsing the mobile `WorkspaceBottomBar` from 4 wrapped rows (`189px`) into a single `56px` bar + overflow action sheet makes `390×844` editing and reading viable without horizontal clipping. | `F-05`, `F-06` | Zero right-clipped controls on `320px`/`390px`/`768px`; content area gains `≥130px` vertical height on mobile. |
-| **H5** | Making `AI-Suggested (Pending)` vs `User-Confirmed` visually distinct via consistent semantic iconography + inline provenance chips (plus an explicit `Back to Checks` breadcrumb) increases trust in AI co-creation. | `F-04`, `F-08`, `J02`, `J10` | Users accurately distinguish unconfirmed AI guesses from locked Story Bible facts on first glance. |
+| **H1** | Replacing the 3 simultaneous `Generate Story` buttons (`SC-13`) with one contextual primary CTA + clear readiness badge reduces user hesitation before first generation. | `F-07`, `F-13` | Users identify what to click first on `FX-EMPTY` (`SC-01`) and trigger Generate on `FX-SIMPLE` without scanning 3 panels. |
+| **H2** | Moving Story/Image Output to a full-height dedicated view/drawer (`≥65%` viewport height) improves story reading comprehension and outdated-state recovery compared to the current ~5-line bottom deck. | `F-06` | Users read generated story, notice the `Outdated` banner, and navigate back to edit without excessive inner scrolling. |
+| **H3** | Elevating the Project Switcher and Export/Backup actions out of the `History` tab into the top header improves multi-project discoverability and backup confidence. | `F-10` | Users find "New Project" and "Export Backup" in ≤2 clicks without searching Inspector tabs. |
+| **H4** | Collapsing the mobile `WorkspaceBottomBar` from 4 wrapped rows (`189px`) into a single `56px` bar + overflow action sheet makes `390×844` editing and reading viable without horizontal clipping. | `F-04`, `F-05` | Zero right-clipped controls on `320px`/`390px`/`768px`; content area gains `≥130px` vertical height on mobile. |
+| **H5** | Making `AI-Suggested (Pending)` vs `User-Confirmed` visually distinct via consistent semantic iconography + inline provenance chips (plus an explicit `Back to Checks` breadcrumb) increases trust in AI co-creation. | `J02`, `J10` | Users accurately distinguish unconfirmed AI guesses from locked Story Bible facts on first glance. |
 
 ---
 
 ## 9. Unresolved Product Owner Scope Decisions (Must Be Decided Before Stage 1 Code)
 
 1. **Desktop Split-Pane Default (`1280px` vs `1440px`):** Should `1280×800` laptops default to 2 columns (with a toggleable 3rd pane) instead of cramming 3 fixed columns?
-2. **Large-Graph Threshold Policy (`F-14`, `F-15`):** At `100+` entities, compiled prompts approach/exceed the `8,000`-character server limit (`17,814` chars at `250` entities). Should Stage 1 introduce smart entity prioritization/filtering for prompt compilation, or warn/cap entity count?
+2. **Large-Graph Threshold Policy (`F-15`):** At `100+` entities, compiled prompts approach/exceed the `8,000`-character server limit (`17,814` chars at `250` entities). Should Stage 1 introduce smart entity prioritization/filtering for prompt compilation, or warn/cap entity count?
 3. **NL Batch Placement (`J06`):** Should Natural-Language Batch Editing become a dedicated command bar / modal overlay instead of sitting inside the Decision Inbox scroll pane where it pushes pending cards below the fold?
 4. **Restore Confirmation UX (`J12`):** Should clicking `Restore` on a Revision History entry show a before/after preview modal first, or remain one-click with the existing automatic safety checkpoint + Undo toast?
 5. **Public Deployment Roadmap:** Are user accounts, per-user Gemini quotas, and cloud persistence planned for a later stage, or does the product remain local-first single-user?
@@ -167,5 +169,5 @@ All 16 captures were generated deterministically from real production code and v
 
 ## 10. Separate Deferred Roadmap (Explicitly Out of Stage 0 & Stage 1 Redesign)
 
-- **Stage 1 (Post-Figma Sign-Off):** Implement approved visual shell & responsive navigation, resolve `F-04`–`F-15` (header active state, `<h1>` hierarchy, mobile bottom bar, `24px+` touch targets, `App.tsx` / `ContextualInspector.tsx` modular split, Vite code splitting).
+- **Stage 1 (Post-Figma Sign-Off):** Implement the approved visual shell and responsive navigation against canonical findings `F-04`–`F-15` (responsive layout, navigation, accessibility, discoverability, and micro-bugs); handle bundle splitting under `F-16` in the planned code-health stage unless the approved design makes it necessary earlier. Keep product expansion out of this visual redesign.
 - **Stage 2+ (Future Product Epics — Require New Schema/Backend):** Graph scalability (WebGL/Canvas renderer or clustering for `100–250+` nodes), prompt-budget prioritization UI, authenticated cloud sync & per-user API quota enforcement, optional multi-scene outlining.

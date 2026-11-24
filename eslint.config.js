@@ -7,6 +7,7 @@ export default tseslint.config(
     ignores: [
       'dist/**',
       'node_modules/**',
+      '.venv/**',
       '.next/**',
       '.backup-original/**',
       '.backup-2026-11-16/**',
