@@ -52,7 +52,8 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-export async function extractPdfText(input: Uint8Array): Promise<PdfTextExtraction> {
+export async function extractPdfText(input: Uint8Array, signal?: AbortSignal): Promise<PdfTextExtraction> {
+  if (signal?.aborted) throw abortError();
   if (!input.byteLength) throw new Error('The PDF file is empty.');
   if (input.byteLength > MAX_PDF_INPUT_BYTES) throw new Error('The PDF exceeds the 12 MiB source limit.');
   const header = new TextDecoder('ascii').decode(input.subarray(0, 5));
@@ -75,6 +76,9 @@ export async function extractPdfText(input: Uint8Array): Promise<PdfTextExtracti
   });
   let passwordRequired = false;
   loadingTask.onPassword = () => { passwordRequired = true; void loadingTask.destroy(); };
+  const onAbort = () => { void loadingTask.destroy(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) onAbort();
 
   try {
     const document = await loadingTask.promise;
@@ -85,8 +89,10 @@ export async function extractPdfText(input: Uint8Array): Promise<PdfTextExtracti
     let text = '';
     let utf8Bytes = 0;
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      if (signal?.aborted) throw abortError();
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent({ includeMarkedContent: false });
+      if (signal?.aborted) throw abortError();
       let pageText = '';
       for (const item of content.items) {
         if (!('str' in item) || typeof item.str !== 'string') continue;
@@ -122,10 +128,12 @@ export async function extractPdfText(input: Uint8Array): Promise<PdfTextExtracti
       ],
     };
   } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortException')) throw abortError();
     if (passwordRequired) throw new Error('Password-protected or encrypted PDFs are unsupported. Remove protection and try again.');
     if (error instanceof Error && (error.name === 'AbortError' || /No selectable text|more than 200 pages|8 MiB limit/.test(error.message))) throw error;
     throw pdfError(error);
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     await loadingTask.destroy().catch(() => undefined);
   }
 }

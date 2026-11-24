@@ -222,6 +222,7 @@ export async function parseNarrativeSource(
 ): Promise<ParsedNarrativeSource> {
   const pasted = typeof input === 'string';
   const bytes = pasted ? new TextEncoder().encode(input) : input instanceof Uint8Array ? input : new Uint8Array(await input.arrayBuffer());
+  if (signal?.aborted) { const error = new Error('Source parsing was cancelled.'); error.name = 'AbortError'; throw error; }
   if (pasted && new TextDecoder('utf-8', { fatal: true }).decode(bytes) !== input) {
     throw new Error('Pasted text contains an invalid Unicode surrogate; replace it with a valid character and retry.');
   }
@@ -249,7 +250,7 @@ export async function parseNarrativeSource(
       throw new Error('Supported sources are pasted text, .txt, .md, .docx, and selectable-text .pdf files.');
     }
     const { extractPdfText } = await import('./pdfTextParser');
-    const extracted = await extractPdfText(bytes);
+    const extracted = await extractPdfText(bytes, signal);
     text = extracted.text;
     blocks = extracted.blocks;
     warnings.push(...extracted.warnings);

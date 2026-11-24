@@ -60,11 +60,14 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
   const abortRef = useRef<AbortController | null>(null);
   const epochRef = useRef(0);
   const sourceReadEpochRef = useRef(0);
+  const sourceReadAbortRef = useRef<AbortController | null>(null);
   const inProgressRef = useRef(false);
   const creatingRef = useRef(false);
 
   useEffect(() => () => {
     sourceReadEpochRef.current += 1;
+    sourceReadAbortRef.current?.abort();
+    sourceReadAbortRef.current = null;
     epochRef.current += 1;
     abortRef.current?.abort();
   }, []);
@@ -95,30 +98,37 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
   };
 
   const previewSource = async () => {
+    sourceReadAbortRef.current?.abort();
+    const controller = new AbortController();
     const readEpoch = ++sourceReadEpochRef.current;
+    sourceReadAbortRef.current = controller;
+    abortRef.current = controller;
     setSourceError(''); setRequestError(''); setSource(null); resetAnalysis(); setConfirmExtractedOnly(false);
-    const previewAbort = new AbortController();
-    abortRef.current = previewAbort;
     try {
       let parsed: ParsedNarrativeSource;
       if (file) {
-        parsed = await parseNarrativeSource(file, file.name, retainOriginal, previewAbort.signal);
+        parsed = await parseNarrativeSource(file, file.name, retainOriginal, controller.signal);
       } else {
-        parsed = await parseNarrativeSource(pastedText, 'pasted-narrative.txt', true, previewAbort.signal);
+        parsed = await parseNarrativeSource(pastedText, 'pasted-narrative.txt', true, controller.signal);
       }
       if (readEpoch !== sourceReadEpochRef.current) return;
+      sourceReadAbortRef.current = null;
       setSource(parsed); setSourceId(crypto.randomUUID());
       setProjectName(file ? file.name.replace(/\.[^.]+$/, '').slice(0, 100) : 'Imported narrative');
     } catch (error) {
       if (readEpoch !== sourceReadEpochRef.current) return;
+      sourceReadAbortRef.current = null;
+      if (error instanceof Error && error.name === 'AbortError') return;
       setSourceError(error instanceof Error ? error.message : 'The source could not be previewed.');
     } finally {
-      if (abortRef.current === previewAbort) abortRef.current = null;
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 
   const readFile = (next: File | null) => {
     sourceReadEpochRef.current += 1;
+    sourceReadAbortRef.current?.abort();
+    sourceReadAbortRef.current = null;
     abortRef.current?.abort();
     setFile(next); setSource(null); setSourceError(''); setPastedText('');
     resetAnalysis();
@@ -228,7 +238,7 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div><h1 className="text-2xl font-bold">Import &amp; Analyze Story</h1><p className="text-sm text-gray-600 dark:text-gray-300">Preview locally. Analysis starts only when you choose Analyze source.</p></div>
           <button type="button" className={workspaceButton} disabled={creating}
-            onClick={() => { sourceReadEpochRef.current += 1; epochRef.current += 1; abortRef.current?.abort(); onCancelImport(); }}>Cancel import</button>
+            onClick={() => { sourceReadEpochRef.current += 1; sourceReadAbortRef.current?.abort(); sourceReadAbortRef.current = null; epochRef.current += 1; abortRef.current?.abort(); onCancelImport(); }}>Cancel import</button>
         </header>
 
         <section className="space-y-3 rounded-lg border border-gray-300 p-4 dark:border-gray-700" aria-labelledby="import-source-title">
@@ -237,8 +247,8 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
           <input id="import-file" type="file" accept=".txt,.md,.markdown,.docx,.pdf,.epub,application/pdf,application/epub+zip" onChange={event => readFile(event.currentTarget.files?.[0] ?? null)} />
           <label className="block text-sm" htmlFor="import-pasted-text">Or paste narrative text</label>
           <textarea id="import-pasted-text" className="min-h-36 w-full rounded border p-2 dark:bg-gray-950" value={pastedText}
-            onChange={event => { sourceReadEpochRef.current += 1; setPastedText(event.target.value); if (file) setFile(null); setSource(null); resetAnalysis(); }} placeholder="Paste text to preview locally" />
-          {file && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={retainOriginal} onChange={event => { sourceReadEpochRef.current += 1; setRetainOriginal(event.target.checked); setSource(null); resetAnalysis(); }} />Retain original file bytes in project and portable backup (up to {Math.round(MAX_RETAINED_ORIGINAL_BYTES / 1024 / 1024)} MiB)</label>}
+            onChange={event => { sourceReadEpochRef.current += 1; sourceReadAbortRef.current?.abort(); sourceReadAbortRef.current = null; setPastedText(event.target.value); if (file) setFile(null); setSource(null); resetAnalysis(); }} placeholder="Paste text to preview locally" />
+          {file && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={retainOriginal} onChange={event => { sourceReadEpochRef.current += 1; sourceReadAbortRef.current?.abort(); sourceReadAbortRef.current = null; setRetainOriginal(event.target.checked); setSource(null); resetAnalysis(); }} />Retain original file bytes in project and portable backup (up to {Math.round(MAX_RETAINED_ORIGINAL_BYTES / 1024 / 1024)} MiB)</label>}
           <button type="button" className={workspaceButton} onClick={() => void previewSource()} disabled={(!file && !pastedText.trim()) || busy}>Preview source</button>
           {sourceError && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{sourceError}</p>}
           {source && <div className="space-y-2 rounded bg-gray-50 p-3 dark:bg-gray-900">
