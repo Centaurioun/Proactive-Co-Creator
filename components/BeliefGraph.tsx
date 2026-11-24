@@ -58,6 +58,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
   const [highlightConnections, setHighlightConnections] = useState(true);
   const [collapseGuestGroup, setCollapseGuestGroup] = useState(false);
   const [displayMode, setDisplayMode] = useState<'graph' | 'table'>('graph');
+  const [selectedEntityRelationshipsOnly, setSelectedEntityRelationshipsOnly] = useState(false);
 
   const [hoveredEntity, setHoveredEntity] = useState<string | null>(null);
   const [hoveredRel, setHoveredRel] = useState<Relationship | null>(null);
@@ -209,6 +210,11 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
     }
     return normalized;
   }, [data?.relationships, visibleEntities, showInferred]);
+
+  const tableRelationships = useMemo(() => {
+    if (!selectedEntityRelationshipsOnly || !selectedEntity) return relationships;
+    return relationships.filter(rel => rel.source === selectedEntity.name || rel.target === selectedEntity.name);
+  }, [relationships, selectedEntityRelationshipsOnly, selectedEntity]);
 
   const parallelEdgeOffsets = useMemo(
     () => computeParallelEdgeOffsets(relationships),
@@ -592,9 +598,17 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
           </div>
 
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-              Directed Relationships ({relationships.length})
-            </h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                Directed Relationships ({tableRelationships.length}{selectedEntityRelationshipsOnly && selectedEntity ? ` of ${relationships.length}` : ''})
+              </h3>
+              <button type="button" disabled={!selectedEntity}
+                aria-pressed={selectedEntityRelationshipsOnly}
+                onClick={() => setSelectedEntityRelationshipsOnly(value => !value)}
+                className="rounded border border-gray-300 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">
+                {selectedEntityRelationshipsOnly ? 'Show all relationships' : 'Filter to selected character'}
+              </button>
+            </div>
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-800 text-gray-500 dark:text-gray-400">
@@ -605,7 +619,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {relationships.map((rel, idx) => {
+                {tableRelationships.map((rel, idx) => {
                   const isSelected =
                     selectedRelationship?.id === rel.id ||
                     (selectedRelationship?.source === rel.source &&
@@ -647,6 +661,9 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                     </tr>
                   );
                 })}
+                {tableRelationships.length === 0 && (
+                  <tr><td colSpan={4} className="py-3 px-2.5 text-center text-gray-500">No relationships match this filter.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
