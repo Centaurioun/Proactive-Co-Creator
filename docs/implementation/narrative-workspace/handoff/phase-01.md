@@ -10,7 +10,7 @@ Bu bölüm mevcut çalışma ağacında, Phase 1 yayınından önce yapılan ba�
 - `scripts/e2e-browser-smoke.sh`: Chromium A–I 9/9 PASS; sıfır sayfa/console hatası ve sıfır API çağrısı. Anahtarsız sunucu `/api/health` `configured:false` döndürdü.
 - `scripts/stage0-audit-browser.sh`: J01–J12 PASS. Erişilebilirlik/taşma ölçümleri tüm görünür kontrollerde eşik geçişi anlamına gelmiyor: Plan alt çubuğu 390 px'de 189 px, 320 px'de 187 px; kırpılan kontroller 768/390/320 px ölçülerinde sırasıyla 2/1/2. Bu nedenle responsive kalite kapısı tam PASS değil.
 - `scripts/e2e-narrative-workspace.sh`: PASS. Sentetik legacy JSON kopya geri yükleme, Unicode/IME olayları, sahne sırası, öykü benimseme, yeniden yükleme, undo/redo, yedek kopya ve değiştirme, iki sekme çatışması, IndexedDB yazma hatası ve taslak yeniden kaydı tarayıcıda doğrulandı. 320/390/768/1280/1440 genişliklerinde yazma senaryosu yatay taşma göstermedi.
-- Ölçüm ve sentetik ekran görüntüsü/trace kanıtı `.playwright-cli/` altında yerel ve izlenmeyen dosyalardır. Gerçek Gemini, Google AI Studio'da bu kod ağacı ve uzak GitHub CI bu doğrulamada çalıştırılmadı.
+- Ölçüm ve sentetik ekran görüntüsü/trace kanıtı `.playwright-cli/` altında yerel ve izlenmeyen dosyalardır. Gerçek Gemini ve Google AI Studio'da bu kod ağacı çalıştırılmadı. Phase 1 PR #8 için eşleşen SHA `cc4fd6b4cd657ba4ab8a919ee6a7aeb99ead098f` GitHub Actions run `45370155384` (workflow run #31) `completed / success` oldu: https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45370155384. PR #8 açık/draft, birleştirilmedi.
 
 ## Kalan Phase 2 önkoşulları (tekrar doğrulandı)
 
@@ -23,7 +23,7 @@ Mevcut modelde issue disposition alanı var ancak yaşam döngüsü geçiş API'
 3. **Uygulama:** Bu doğrulama turunda Phase 1 kaynak değişikliği gerekmedi; mevcut 4 yeni Phase 1 test dosyası ve tam 117 test çalıştırıldı.
 4. **Olumsuz durumlar:** Tarayıcıda iki sekme CAS, IndexedDB hata enjeksiyonu, hata sonrası taslak kaydı ve yedek değiştirme öncesi kontrol noktası senaryoları geçti.
 5. **UX/güvenlik:** Anahtarsız API ve sıfır browser API çağrısı doğrulandı. Yazma görünümü beş genişlikte taşmadı; Stage 0 Plan/footer kırpılması açık kaldı. Tarayıcı denetimi erişilebilirlik sertifikası değildir.
-6. **Nihai uzlaştırma:** Yerel komutlar ve sentetik E2E kanıtları bu çalışma ağacı için PASS. Uzak CI ve Studio uyumluluğu PENDING/NOT TESTED; Phase 2 önkoşulları tamamlanmamış durumda.
+6. **Nihai uzlaştırma:** Yerel komutlar, sentetik E2E kanıtları ve Phase 1 PR #8 için SHA eşleşen uzak CI PASS. Studio uyumluluğu NOT TESTED. Phase 2 önkoşulları bu handoff yazılırken tamamlanmamıştı.
 
 24 Kasım 2026. Yazma, sürüm geçmişi, üretilmiş metin aktarımı ve proje kurtarma akışları yerel uygulamada çalışıyor. Faz 1 çalışma ağacının Google AI Studio doğrulaması açık. Faz 2 başlatılmadı.
 
@@ -75,7 +75,8 @@ Yerel macOS arm64, Node 26.12.1, npm 11.20.0. Anahtarsız üretim önizlemesi `h
 | `scripts/e2e-narrative-workspace.sh` | PASS. Eski JSON kopya geri yükleme, sentetik IME olayları, Unicode, iki sahne ve sıralama, öykü aktarımı, yeniden yükleme, geri alma/yineleme, yönetilen yedekten kopya ve kontrollü değiştirme, iki sekmeli kayıt çatışması, IndexedDB hata enjeksiyonu ve taslağı tekrar kaydetme. Write görünümü 320/390/768/1280/1440 px genişliklerde denetlendi. |
 | `npm audit --json`; `npm audit --omit=dev --json` | Tam bağımlılık ağacı 7 orta düzey bulgu, çıkış 1. Üretim bağımlılıkları 0 bulgu, çıkış 0. |
 | Google AI Studio | Mevcut uygulama görünür. Faz 1 kodu yüklü bir Studio örneği doğrulanmadı. |
-| Gerçek işletim sistemi IME girişi, gerçek Gemini, GitHub CI | TEST EDİLMEDİ. |
+| Gerçek işletim sistemi IME girişi, gerçek Gemini, Google AI Studio compatibility | TEST EDİLMEDİ. |
+| Phase 1 PR #8 hosted CI | PASS, run `45370155384`, exact head `cc4fd6b4cd657ba4ab8a919ee6a7aeb99ead098f`; PR remains open/draft and unmerged. |
 
 Yerel kanıtlar: [masaüstü Write](../../../../.playwright-cli/phase-01-write-1440.png), [mobil Write](../../../../.playwright-cli/phase-01-write-390.png), [A–I](../../../../.playwright-cli/e2e-results.json), [J01–12](../../../../.playwright-cli/stage0-journeys.json), [Stage 0 ölçümleri](../../../../.playwright-cli/stage0-audit-metrics.json). Bunlar yerel, izlenmeyen test çıktılarıdır.
 

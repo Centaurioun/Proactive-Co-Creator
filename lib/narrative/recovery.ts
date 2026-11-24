@@ -25,6 +25,23 @@ async function checksum(data: Uint8Array<ArrayBuffer>): Promise<string> {
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+async function verifyRetainedOriginalBytes(project: CreativeProject): Promise<void> {
+  for (const source of project.narrative?.sources ?? []) {
+    if (!source.originalBytesBase64) continue;
+    let bytes: Uint8Array;
+    try {
+      const binary = atob(source.originalBytesBase64);
+      bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    } catch {
+      throw new Error(`Retained source bytes for ${source.filename ?? source.id} are not valid base64.`);
+    }
+    if (bytes.byteLength !== source.byteLength) throw new Error(`Retained source byte length does not match for ${source.filename ?? source.id}.`);
+    if (await checksum(bytes as Uint8Array<ArrayBuffer>) !== source.digest) {
+      throw new Error(`Retained source checksum does not match for ${source.filename ?? source.id}.`);
+    }
+  }
+}
+
 export async function createBackup(project: CreativeProject, label: string): Promise<ProjectBackup> {
   const payload = JSON.stringify(project, null, 2);
   const data = new TextEncoder().encode(payload);
@@ -55,6 +72,7 @@ export async function verifyBackup(backup: ProjectBackup): Promise<CreativeProje
     throw new Error('Backup checksum or size differs from the manifest.');
   }
   const project = migrateProjectPayload(JSON.parse(backup.payload));
+  await verifyRetainedOriginalBytes(project);
   if (project.id !== backup.projectId || project.revision !== backup.revision ||
     project.schemaVersion !== backup.schemaVersion) {
     throw new Error('The backup metadata differs from the stored project.');
@@ -124,9 +142,12 @@ export function prepareBackupCopy(project: CreativeProject): CreativeProject {
 
 export async function parseProjectBackup(rawJson: string): Promise<CreativeProject> {
   const parsed = JSON.parse(rawJson) as unknown;
-  return parsed && typeof parsed === 'object' && 'format' in parsed
+  const project = parsed && typeof parsed === 'object' && 'format' in parsed
     ? verifyBackup(parsed as ProjectBackup)
-    : migrateProjectPayload(parsed);
+    : Promise.resolve(migrateProjectPayload(parsed));
+  const verified = await project;
+  await verifyRetainedOriginalBytes(verified);
+  return verified;
 }
 
 export function prepareBackupReplacement(current: CreativeProject, backup: CreativeProject): CreativeProject {
@@ -149,8 +170,28 @@ export function safeFilename(name: string, suffix: string, extension: 'json' | '
 }
 
 export function registryReport(project: CreativeProject, format: 'json' | 'md'): string {
-  const { claims = [], issues = [], audit = [] } = project.narrative ?? {};
-  const data = { projectId: project.id, revision: project.revision, claims, issues, audit };
+  const { claims = [], issues = [], audit = [], sources = [] } = project.narrative ?? {};
+  const data = {
+    projectId: project.id,
+    revision: project.revision,
+    sources: sources.map(source => ({
+      id: source.id,
+      version: source.version,
+      digest: source.digest,
+      filename: source.filename,
+      mediaType: source.mediaType,
+      byteLength: source.byteLength,
+      retention: source.retention,
+      parserVersion: source.parserVersion,
+      createdAt: source.createdAt,
+      characterCount: source.text.length,
+      blocks: source.blocks,
+      analysisCoverage: source.analysisCoverage,
+    })),
+    claims,
+    issues,
+    audit,
+  };
   const json = JSON.stringify(data, null, 2);
   if (format === 'json') return json;
   let fenceSize = 3;

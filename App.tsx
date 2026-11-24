@@ -6,6 +6,7 @@
 import ManuscriptEditor, { workspaceButton } from './components/manuscript/ManuscriptEditor';
 import ProjectHub from './components/workspace/ProjectHub';
 import NarrativeReview from './components/workspace/NarrativeReview';
+import ImportWorkflow from './components/narrativeImport/ImportWorkflow';
 import { manuscriptSections, manuscriptText, prepareManuscriptChange, type NarrativeBase } from './lib/narrative/manuscriptModel';
 import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplacement, registryReport, safeFilename, saveBackup } from './lib/narrative/recovery';
 import type { ArtifactAnchor, ManuscriptSection } from './shared/narrativeTypes';
@@ -38,6 +39,7 @@ import {
 } from './lib/consistencyChecker';
 import {
   createUndoRedoState,
+  recordProjectRevision,
   restoreProjectRevision,
   serializeUndoHistory,
   type UndoRedoState,
@@ -72,6 +74,7 @@ import {
   type SerializedSaveOptions,
 } from './lib/projectController';
 import { synthesizeRefinedPrompt } from './lib/promptBuilder';
+import { transitionIssue } from './lib/narrative/issueRegistry';
 import {
   deleteProjectCompletely,
   exportProjectToJson,
@@ -170,9 +173,10 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('inspector');
   const [adoptArtifactId, setAdoptArtifactId] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<{ id: string; sequence: number } | null>(null);
-  const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects'>('plan');
+  const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects' | 'import'>('plan');
   const draftDirtyRef = useRef(false);
   const restorePendingRef = useRef(false);
+  const creatingImportedProjectRef = useRef(false);
 
   function allowNavigation(): boolean {
     if (!draftDirtyRef.current && !restorePendingRef.current) return true;
@@ -213,6 +217,12 @@ function App() {
 
   const [hydrationGate, setHydrationGate] = useState<HydrationWriteGate>('pending');
   const hydrationGateRef = useRef<HydrationWriteGate>('pending');
+  const [hydrationSettled, setHydrationSettled] = useState(false);
+  const hydrationSettledRef = useRef(false);
+  const markHydrationSettled = () => {
+    hydrationSettledRef.current = true;
+    setHydrationSettled(true);
+  };
   const updateHydrationGate = useCallback((nextGate: HydrationWriteGate) => {
     hydrationGateRef.current = nextGate;
     setHydrationGate(nextGate);
@@ -348,10 +358,10 @@ function App() {
       .then((idbLoad) => {
         if (cancelled) return;
         const resolvedGate = resolveHydrationWriteGate(idbLoad.status);
-        updateHydrationGate(resolvedGate);
 
         // FIX 1 / T4: Never treat an IndexedDB read error as empty storage or unlock background IDB writes
         if (idbLoad.status === 'read_error') {
+          updateHydrationGate(resolvedGate);
           setStorageAlert({
             type: 'error',
             projectId: activeProjectRef.current.id,
@@ -360,6 +370,8 @@ function App() {
           return;
         }
         if (idbLoad.status === 'unavailable') {
+          updateHydrationGate(resolvedGate);
+          markHydrationSettled();
           return;
         }
         if (idbLoad.corruptRecordCount > 0) {
@@ -375,6 +387,8 @@ function App() {
           void saveProjectToIndexedDb(activeProjectRef.current, {
             expectedPersistedRevision: activeProjectRef.current.persistedRevision,
           });
+          updateHydrationGate(resolvedGate);
+          markHydrationSettled();
           return;
         }
 
@@ -421,6 +435,8 @@ function App() {
             saveProjectToLocalStorage(reconciled.activeProject, { forceOverwrite: true });
           }
         }
+        updateHydrationGate(resolvedGate);
+        markHydrationSettled();
       })
       .catch((err) => {
         if (cancelled) return;
@@ -615,6 +631,94 @@ function App() {
     hasLocalEditsSinceMountRef.current = true;
     setProject(committed);
     setUndoState(prepared.undoState);
+  };
+
+  const handleCreateImportedProject = async (candidate: CreativeProject) => {
+    if (creatingImportedProjectRef.current) throw new Error('Project creation is already in progress.');
+    creatingImportedProjectRef.current = true;
+    try {
+      if (hydrationGateRef.current !== 'ready' || !hydrationSettledRef.current || !window.indexedDB) {
+        throw new Error('The project workspace must finish loading and IndexedDB must be available before import can be saved.');
+      }
+      if (!allowNavigation()) throw new Error('Save or export the open manuscript draft before creating an imported project.');
+      if (savedProjectsRef.current.some(project => project.id === candidate.id) || activeProjectRef.current.id === candidate.id) {
+        throw new Error('This imported project identifier already exists. Reopen the review and retry creation.');
+      }
+
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+      const previous = activeProjectRef.current;
+      const previousSave = await flushProjectDurably(previous, {
+        expectedPersistedRevision: previous.persistedRevision ?? previous.revision,
+      });
+      if (!previousSave.saved) {
+        throw new Error(previousSave.error ?? 'The current project could not be saved before import. Existing projects were not changed.');
+      }
+      if (activeProjectRef.current.id !== previous.id || activeProjectRef.current.revision !== previous.revision) {
+        throw new Error('The current project changed while preparing the import. The reviewed project remains available.');
+      }
+
+      // A new imported ID must be absent; expected revision 0 makes any colliding existing record a CAS conflict.
+      const result = await flushProjectDurably(candidate, { expectedPersistedRevision: 0 });
+      if (!result.saved || result.authoritativeStore !== 'indexeddb') {
+        throw new Error(result.error ?? 'The imported project could not be durably saved. Existing projects were not changed.');
+      }
+      const committed = { ...candidate, persistedRevision: result.persistedRevision ?? candidate.revision };
+      const nextUndo = createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory);
+      const nextSaved = upsertProjectInSavedList(savedProjectsRef.current, committed);
+      savedProjectsRef.current = nextSaved;
+      activeProjectRef.current = committed;
+      undoStateRef.current = nextUndo;
+      hasLocalEditsSinceMountRef.current = true;
+      saveQueueRef.current.resetProject(committed.id);
+      setSavedProjects(nextSaved);
+      setProject(committed);
+      setUndoState(nextUndo);
+      setStorageAlert(null);
+      try {
+        window.localStorage?.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, committed.id);
+      } catch {
+        // The authoritative project is already in IndexedDB; active selection can be recovered from the in-memory workspace.
+      }
+      setWorkspaceMode('write');
+      setStatusNotification(`Imported project "${committed.name}" saved.`);
+    } finally {
+      creatingImportedProjectRef.current = false;
+    }
+  };
+
+  const handleIssueDisposition = (
+    issueId: string,
+    disposition: NonNullable<CreativeProject['narrative']>['issues'][number]['disposition'],
+    reason: string,
+  ) => {
+    const before = activeProjectRef.current;
+    const now = Date.now();
+    const records = transitionIssue(before, issueId, disposition, reason, now, before.revision + 1);
+    if (records === before.narrative) return;
+    const revised = recordProjectRevision(
+      { ...before, narrative: records },
+      `Issue ${disposition}`,
+      reason.trim(),
+      1,
+    );
+    const next: CreativeProject = {
+      ...revised,
+      narrative: {
+        ...records,
+        audit: [...records.audit, {
+          id: crypto.randomUUID(), action: 'issue', time: now,
+          baseRevision: before.revision, resultRevision: revised.revision,
+          reason: reason.trim(), issueId, issueDisposition: disposition,
+        }],
+      },
+    };
+    activeProjectRef.current = next;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(next);
+    setStatusNotification(`Issue marked ${disposition}.`);
   };
 
   // Keyboard shortcuts for Undo / Redo (F-04 / IA-08)
@@ -2017,8 +2121,8 @@ function App() {
       )}
 
       <nav aria-label="Narrative workspace" className="flex flex-wrap gap-1 border-b border-gray-200 bg-white px-2 py-1.5 dark:border-gray-800 dark:bg-gray-900 sm:px-4">
-        {([['write', 'Write'], ['plan', 'Plan'], ['review', 'Review'], ['projects', 'Projects']] as const).map(([mode, label]) => (
-          <button type="button" key={mode} aria-current={workspaceMode === mode ? 'page' : undefined}
+        {([['write', 'Write'], ['plan', 'Plan'], ['review', 'Review'], ['import', 'Import Story'], ['projects', 'Projects']] as const).map(([mode, label]) => (
+          <button type="button" key={mode} aria-current={workspaceMode === mode ? 'page' : undefined} disabled={mode === 'import' && !hydrationSettled}
             className={`${workspaceButton} aria-[current=page]:bg-amber-100 dark:aria-[current=page]:bg-amber-950`}
             onClick={() => { if (allowNavigation()) { setAdoptArtifactId(undefined); setWorkspaceMode(mode); } }}>{label}</button>
         ))}
@@ -2036,8 +2140,10 @@ function App() {
           openChecks={() => openPlan('consistency')} openHistory={() => openPlan('history', 'revision-history')}
           openOutput={() => handleSelectHeaderSection('output')}
           exportReport={format => downloadTextFile(safeFilename(activeProject.name, 'evidence-audit', format),
-            registryReport(activeProject, format), format === 'json' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8')} />
+            registryReport(activeProject, format), format === 'json' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8')}
+          onIssueDisposition={handleIssueDisposition} />
       )}
+      {workspaceMode === 'import' && <ImportWorkflow onCreateProject={handleCreateImportedProject} onCancelImport={() => setWorkspaceMode('plan')} />}
       {workspaceMode === 'projects' && (
         <ProjectHub key={activeProject.id} project={activeProject}
           openProjects={() => openPlan('history', 'project-management')} openExport={() => openPlan('history', 'export-content')}

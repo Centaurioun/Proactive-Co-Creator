@@ -74,4 +74,9 @@ export function validateNarrativeRecords(project: CreativeProject): void {
       if (!source || !verifyTextSpan(source.text, anchor)) throw new Error('Invalid original source evidence.');
     }
   }
+  for (const proposal of records.proposals ?? []) {
+    const source = records.sources.find(({ id, version, digest }) =>
+      id === proposal.evidence.sourceId && version === proposal.evidence.version && digest === proposal.evidence.digest);
+    if (!source || !verifyTextSpan(source.text, proposal.evidence)) throw new Error('Invalid proposal source evidence.');
+  }
 }

@@ -14,6 +14,7 @@ import type {
   GraphUpdate,
   ImageGenerationResult,
 } from '../shared/types';
+import { NarrativeExtractionSchema, type NarrativeExtractionRequest } from '../shared/importSchemas';
 
 export class ClientApiError extends Error {
   readonly code: ApiErrorCode;
@@ -33,6 +34,14 @@ export function isAbortError(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof ClientApiError && error.code === 'CANCELLED') return true;
   return false;
+}
+
+export async function extractNarrativeChunk(
+  request: NarrativeExtractionRequest,
+  signal?: AbortSignal,
+) {
+  const data = await postJson<{ extraction: unknown }>('/api/narrative/import/extract', request, signal);
+  return NarrativeExtractionSchema.parse(data.extraction);
 }
 
 async function postJson<TResponse>(

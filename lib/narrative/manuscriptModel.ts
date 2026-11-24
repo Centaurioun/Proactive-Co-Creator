@@ -5,6 +5,7 @@ import { commitSnapshotTransaction } from '../projectController.ts';
 import { NARRATIVE_SCHEMA_VERSION } from '../storageEngine.ts';
 import { recordNarrativeChange } from './changeAudit.ts';
 import { isTextBoundary, validateNarrativeRecords, verifyTextSpan } from './evidenceRegistry.ts';
+import { invalidateTargetEvidence } from './issueRegistry.ts';
 
 const empty: ManuscriptSection[] = [];
 export function manuscriptSections(project: CreativeProject): ManuscriptSection[] {
@@ -106,6 +107,12 @@ export function prepareManuscriptChange(
   const previousBySectionId = new Map(records.sectionVersions
     .filter(record => previousSectionRefs.has(record.id))
     .map(record => [record.section.id, record]));
+  const previousSections = manuscriptSections(project);
+  const oldSections = new Map(previousSections.map(section => [section.id, JSON.stringify(section)]));
+  const nextSections = new Map(sections.map(section => [section.id, JSON.stringify(section)]));
+  const changedTargets = new Set<string>();
+  for (const [id, value] of oldSections) if (nextSections.get(id) !== value) changedTargets.add(id);
+  for (const id of nextSections.keys()) if (!oldSections.has(id)) changedTargets.add(id);
   const sectionVersions = [...records.sectionVersions];
   const sectionVersionIds = sections.map(section => {
     const previous = previousBySectionId.get(section.id);
@@ -116,7 +123,7 @@ export function prepareManuscriptChange(
   });
   const label = artifact ? 'Adopt generated story' : 'Edit manuscript';
   const result = commitSnapshotTransaction(
-    { ...project, schemaVersion: NARRATIVE_SCHEMA_VERSION, narrative: { ...records, sectionVersions, versions: [...records.versions, { id, sectionVersionIds }] } },
+    { ...project, schemaVersion: NARRATIVE_SCHEMA_VERSION, narrative: { ...invalidateTargetEvidence(records, [...changedTargets]), sectionVersions, versions: [...records.versions, { id, sectionVersionIds }] } },
     undo,
     { ...project.snapshot, manuscriptVersionId: id },
     label,
