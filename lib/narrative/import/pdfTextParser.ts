@@ -38,6 +38,20 @@ function pdfError(error: unknown): Error {
   return new Error('This PDF is malformed or uses an unsupported feature. No text was imported.');
 }
 
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4;
+      index += 1;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
 export async function extractPdfText(input: Uint8Array): Promise<PdfTextExtraction> {
   if (!input.byteLength) throw new Error('The PDF file is empty.');
   if (input.byteLength > MAX_PDF_INPUT_BYTES) throw new Error('The PDF exceeds the 12 MiB source limit.');
@@ -76,10 +90,11 @@ export async function extractPdfText(input: Uint8Array): Promise<PdfTextExtracti
       let pageText = '';
       for (const item of content.items) {
         if (!('str' in item) || typeof item.str !== 'string') continue;
+        utf8Bytes += utf8ByteLength(item.str);
+        if (item.hasEOL) utf8Bytes += 1;
+        if (utf8Bytes > MAX_PDF_TEXT_BYTES) throw new Error('Extracted PDF text exceeds the 8 MiB limit.');
         pageText += item.str;
         if (item.hasEOL) pageText += '\n';
-        utf8Bytes += new TextEncoder().encode(item.str).byteLength + (item.hasEOL ? 1 : 0);
-        if (utf8Bytes > MAX_PDF_TEXT_BYTES) throw new Error('Extracted PDF text exceeds the 8 MiB limit.');
       }
       pageText = pageText.trim();
       if (!pageText) {
