@@ -36,3 +36,6 @@ NI-D10–15 PROPOSED → AGREED; NI-D16 OPEN → AGREED, explicit owner acceptan
 
 ## Round 5 delivery decision (2026-11-24)
 Owner explicitly reaffirms V4, authorizes Google AI Studio-first implementation planning and broad staged prompts, followed by independent review. NI-D19 delivery grouping refined: five substantial phases instead of W1–W6; visible usable preview, safe incomplete NEW functions labeled, hard data integrity and final qualification. Existing V4 delegated defaults remain accepted. See [implementation package](../../implementation/narrative-workspace/README.md). No new implementation or merge performed in this documentation update.
+
+## Round 6 — active baseline override
+Owner round 6: use the current working main with TypeScript 5.8.3 and existing Vite 6, because Google AI Studio pulls main only. PR3/6 deferred until separate authorization after Studio development; PR1/2 unchanged. No dual compiler or dependency modernization prerequisite. Docs-only PR7 integration after main backup. Phase checkpoints published to main only after explicit owner approval. Active execution policy in docs/implementation/narrative-workspace/00-technical-preflight.md supersedes historical integration-first advice.

@@ -6,7 +6,7 @@
 
 **Architecture:** Projections share canonical IDs/issue registry; reuse staged proposals and recovery vault, add capability-aware external destination and deterministic bundles.
 
-**Tech stack:** existing React/TypeScript/Vite/Tailwind, Express/Gemini/Zod, IndexedDB/localStorage, existing Node tests and Chromium harness. Preserve qualified dual compiler after integration.
+**Tech stack:** existing React/TypeScript/Vite/Tailwind, Express/Gemini/Zod, IndexedDB/localStorage, existing Node tests and Chromium harness. Preserve working main toolchain; PR3/6 deferred. Do not upgrade TypeScript or Vite.
 
 **Spec:** [consolidated spec](01-consolidated-product-spec.md), [architecture](02-architecture-and-file-map.md), [common execution protocol](03-execution-protocol.md), [preflight](00-technical-preflight.md). These are required. Each task below: characterize or RED, implement narrow behavior, GREEN, then commit/review if possible. No auto merge.
 

@@ -28,3 +28,6 @@ V3 extends the archive beyond import to ongoing narrative diagnostics, creative 
 
 ## Round 5 — execution handoff
 Owner accepted V4 and requests Google AI Studio first in substantial stages, followed by independent review. [Consolidated implementation package](../../implementation/narrative-workspace/README.md) replaces W1–W6 grouping with five phases, preserving all decisions and prior archive. Technical integration/hosted preflight required. No production code changed in this documentation PR.
+
+## Round 6 — active baseline override
+Owner round 6: use the current working main with TypeScript 5.8.3 and existing Vite 6, because Google AI Studio pulls main only. PR3/6 deferred until separate authorization after Studio development; PR1/2 unchanged. No dual compiler or dependency modernization prerequisite. Docs-only PR7 integration after main backup. Phase checkpoints published to main only after explicit owner approval. Active execution policy in docs/implementation/narrative-workspace/00-technical-preflight.md supersedes historical integration-first advice.

@@ -6,7 +6,7 @@
 
 **Architecture:** Extend existing transaction and storage authority rather than replace it. New manuscript versions and registries are typed, validated and shared; old projects remain usable without manuscript.
 
-**Tech stack:** existing React/TypeScript/Vite/Tailwind, Express/Gemini/Zod, IndexedDB/localStorage, existing Node tests and Chromium harness. Preserve qualified dual compiler after integration.
+**Tech stack:** existing React/TypeScript/Vite/Tailwind, Express/Gemini/Zod, IndexedDB/localStorage, existing Node tests and Chromium harness. Preserve working main toolchain; PR3/6 deferred. Do not upgrade TypeScript or Vite.
 
 **Spec:** [consolidated spec](01-consolidated-product-spec.md), [architecture](02-architecture-and-file-map.md), [common execution protocol](03-execution-protocol.md), [preflight](00-technical-preflight.md). These are required. Each task below: characterize or RED, implement narrow behavior, GREEN, then commit/review if possible. No auto merge.
 
@@ -47,4 +47,4 @@ Create lib/narrative/recovery/{backupManifest,backupCatalog,restorePreview,expor
 - [ ] Evidence viewer and local issue list from real persisted records (empty state honest), source refs for native changes, concise rationale/audit before-after. Persist dispositions and stale state infrastructure; no fabricated semantic detector. 
    
 ## Phase gate and handoff
-Visible working manual Write/Plan/Review, old creation and gallery still accessible, real project safe persistence/restore or isolated disabled preview if blocked, no AI call for new feature. Complete common G0–G3; run both compilers, lint, all tests/build, existing browser cases + P1 demo, synthetic old backup and fault injection. Write handoff/phase-01.md with exact state/contracts/migration proof and screenshot refs, six-cycle review. Do not start Phase2. 
+Visible working manual Write/Plan/Review, old creation and gallery still accessible, real project safe persistence/restore or isolated disabled preview if blocked, no AI call for new feature. Complete common G0–G3; run existing typecheck, lint, all tests/build, existing browser cases + P1 demo, synthetic old backup and fault injection. Write handoff/phase-01.md with exact state/contracts/migration proof and screenshot refs, six-cycle review. Do not start Phase2. 

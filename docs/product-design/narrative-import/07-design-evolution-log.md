@@ -40,3 +40,8 @@ Status transitions reflect owner round 4, not retroactive approval at V3. See 08
 |---|---|---|---|---|
 | EVO-22 | W1–W6 plus Figma-first sequencing | Five substantial AI Studio implementation phases, visible preview and later independent Codex/ChatGPT qualification; optional Figma review | Owner prefers Studio preview/model access; reduce prompts without losing safety | Agreed delivery direction NI-D19 |
 | EVO-23 | Require fully complete feature set each intermediate stage | Hard data integrity/app shell; new incomplete features explicitly labeled, checkpoint and final strict gate | Incremental reliable progress without false readiness | Delegated execution policy NI-D19 |
+
+## Round 6 — baseline choice
+| Change | Earlier idea | Revised direction | Reason | Status |
+|---|---|---|---|---|
+| EVO-24 | Integrate PR3/6 before Phase1 | Preserve working main, defer PR3/6; merge only docs PR7 after backup | Studio main-only access; upgraded hosted runtime unverified | Owner agreed NI-D19 override |
