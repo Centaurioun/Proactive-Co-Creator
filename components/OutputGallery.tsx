@@ -31,6 +31,7 @@ interface OutputDisplayProps {
   error: string | null;
   isOutdated: boolean;
   onGenerate: () => void;
+  onAdoptStory?: (artifactId: string) => void;
 }
 
 const OutputDisplay: React.FC<OutputDisplayProps> = ({
@@ -46,6 +47,7 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   onAcceptPolishProposal,
   onRejectPolishProposal,
   artifacts = [],
+  onAdoptStory,
   images,
   imageWarning,
   story,
@@ -186,6 +188,10 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {activeView === 'output' && mode === 'story' && activeArtifact?.storyText && onAdoptStory && (
+              <button type="button" className="text-xs font-semibold underline"
+                onClick={() => onAdoptStory(activeArtifact.id)}>Adopt in manuscript</button>
+            )}
             {activeView === 'prompt' && (
               <>
                 {onPolishPromptWithAi && (

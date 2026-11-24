@@ -107,6 +107,97 @@ describe('server/routes API contract', () => {
     assert.equal('video' in body.models, false);
   });
 
+  it('validates narrative import extraction requests and returns only the mocked scoped result', async () => {
+    let observedText = '';
+    let observedScope = '';
+    let handlerCalls = 0;
+    const srv = await startTestServer(createStubHandlers({
+      extractNarrativeChunk: async request => {
+        handlerCalls += 1;
+        observedText = request.text;
+        observedScope = request.scope;
+        return { findings: [{ id: 'other-1', title: 'Unclassified', value: 'Kept for review', category: 'other', kind: 'reported', rationale: 'No reporter attributed.', evidence: { sourceId: 's', version: 'v1', digest: 'd', start: 0, end: 1, excerpt: 'A' } }], entities: [], relationships: [], ambiguities: [] } as never;
+      },
+    }));
+    closeServer = srv.close;
+    const bad = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'narrative', scope: 'selective', categories: [] }),
+    });
+    assert.equal(bad.status, 400);
+    for (const invalid of [
+      { sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: '', scope: 'complete', categories: [] },
+      { sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'narrative', scope: 'selective', categories: ['not-a-category'] },
+      { sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'narrative', scope: 'complete', categories: [], unexpected: true },
+      { sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'x'.repeat(36_001), scope: 'complete', categories: [] },
+    ]) {
+      const response = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(invalid),
+      });
+      assert.equal(response.status, 400);
+      const payload = await response.json() as { error?: { code?: string } };
+      assert.equal(payload.error?.code, 'VALIDATION_ERROR');
+    }
+    const good = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [], instruction: 'Keep it faithful.' }),
+    });
+    assert.equal(good.status, 200);
+    assert.equal(observedText, 'Ada enters.');
+    assert.equal(observedScope, 'complete');
+    const result = await good.json() as { extraction: { findings: Array<{ category: string }> } };
+    assert.equal(result.extraction.findings[0].category, 'other', 'complete-scope route returns retained unclassified findings');
+    assert.equal(handlerCalls, 1, 'invalid requests must not reach the extraction handler');
+  });
+
+  it('passes client disconnect cancellation to the narrative extraction handler', async () => {
+    let startedResolve: (() => void) | undefined;
+    let abortedResolve: (() => void) | undefined;
+    const started = new Promise<void>(resolve => { startedResolve = resolve; });
+    const aborted = new Promise<void>(resolve => { abortedResolve = resolve; });
+    const srv = await startTestServer(createStubHandlers({
+      extractNarrativeChunk: async (_request, signal) => {
+        startedResolve?.();
+        return await new Promise(resolve => {
+          const onAbort = () => {
+            abortedResolve?.();
+            resolve({ findings: [], entities: [], relationships: [], ambiguities: [] });
+          };
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener('abort', onAbort, { once: true });
+        });
+      },
+    }));
+    closeServer = srv.close;
+    const controller = new AbortController();
+    const request = fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] }),
+    });
+    await started;
+    controller.abort();
+    await assert.rejects(request, /abort/i);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([aborted, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('server handler did not receive abort')), 1000); })]);
+    if (timeout) clearTimeout(timeout);
+  });
+
+  it('returns a structured safe error when narrative extraction fails', async () => {
+    const srv = await startTestServer(createStubHandlers({
+      extractNarrativeChunk: async () => { throw new Error('provider token do-not-expose-test-secret'); },
+    }));
+    closeServer = srv.close;
+    const response = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] }),
+    });
+    assert.equal(response.status, 500);
+    const payload = await response.json() as { error?: { code?: string; message?: string } };
+    assert.equal(payload.error?.code, 'INTERNAL_ERROR');
+    assert.equal(payload.error?.message, 'An unexpected error occurred while communicating with Gemini.');
+    assert.equal(JSON.stringify(payload).includes('do-not-expose-test-secret'), false);
+  });
+
   it('handles /api/analyze, /api/clarify, /api/refine, and /api/batch-edit validation and success', async () => {
     let observedAbortedSignal: boolean | undefined;
     const srv = await startTestServer(

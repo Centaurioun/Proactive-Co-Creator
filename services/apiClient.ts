@@ -14,6 +14,34 @@ import type {
   GraphUpdate,
   ImageGenerationResult,
 } from '../shared/types';
+import { NarrativeExtractionSchema, type NarrativeExtractionRequest } from '../shared/importSchemas';
+import {
+  AnalyzeRequestSchema,
+  BatchEditRequestSchema,
+  ClarifyRequestSchema,
+  GenerateMediaRequestSchema,
+  RefineRequestSchema,
+} from '../shared/schemas';
+
+type RequestParseResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: { issues: Array<{ message: string }> } };
+
+function enforceOperationRequestBounds<T>(
+  parse: (input: unknown) => RequestParseResult<T>,
+  body: unknown,
+): T {
+  const result = parse(body);
+  if (!result.success) {
+    throw new ClientApiError(
+      'VALIDATION_ERROR',
+      result.error.issues[0]?.message ?? 'This AI request exceeds the supported operation limits.',
+      false,
+      400,
+    );
+  }
+  return result.data;
+}
 
 export class ClientApiError extends Error {
   readonly code: ApiErrorCode;
@@ -33,6 +61,14 @@ export function isAbortError(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof ClientApiError && error.code === 'CANCELLED') return true;
   return false;
+}
+
+export async function extractNarrativeChunk(
+  request: NarrativeExtractionRequest,
+  signal?: AbortSignal,
+) {
+  const data = await postJson<{ extraction: unknown }>('/api/narrative/import/extract', request, signal);
+  return NarrativeExtractionSchema.parse(data.extraction);
 }
 
 async function postJson<TResponse>(
@@ -80,7 +116,8 @@ export async function analyzePromptToBeliefGraph(
   mode: GenerationMode,
   signal?: AbortSignal
 ): Promise<BeliefState> {
-  const data = await postJson<{ graph: BeliefState }>('/api/analyze', { prompt, mode }, signal);
+  const request = enforceOperationRequestBounds(value => AnalyzeRequestSchema.safeParse(value), { prompt, mode });
+  const data = await postJson<{ graph: BeliefState }>('/api/analyze', request, signal);
   return data.graph;
 }
 
@@ -91,9 +128,12 @@ export async function generateClarifications(
   signal?: AbortSignal,
   confirmedFacts: string[] = []
 ): Promise<Clarification[]> {
+  const request = enforceOperationRequestBounds(value => ClarifyRequestSchema.safeParse(value), {
+    prompt, askedQuestions, mode, confirmedFacts,
+  });
   const data = await postJson<{ clarifications: Clarification[] }>(
     '/api/clarify',
-    { prompt, askedQuestions, mode, confirmedFacts },
+    request,
     signal
   );
   return data.clarifications;
@@ -105,9 +145,12 @@ export async function refinePromptWithAllUpdates(
   graphUpdates: GraphUpdate[],
   signal?: AbortSignal
 ): Promise<string> {
+  const request = enforceOperationRequestBounds(value => RefineRequestSchema.safeParse(value), {
+    originalPrompt, clarifications, graphUpdates,
+  });
   const data = await postJson<{ refinedPrompt: string }>(
     '/api/refine',
-    { originalPrompt, clarifications, graphUpdates },
+    request,
     signal
   );
   return data.refinedPrompt;
@@ -128,12 +171,13 @@ export async function requestBatchEditInterpretation(
   },
   signal?: AbortSignal
 ): Promise<BatchEditProposalResult> {
+  const request = enforceOperationRequestBounds(value => BatchEditRequestSchema.safeParse(value), {
+    instruction,
+    ...context,
+  });
   return postJson<BatchEditProposalResult>(
     '/api/batch-edit',
-    {
-      instruction,
-      ...context,
-    },
+    request,
     signal
   );
 }
@@ -142,13 +186,15 @@ export async function generateImagesFromPrompt(
   prompt: string,
   signal?: AbortSignal
 ): Promise<ImageGenerationResult> {
-  return postJson<ImageGenerationResult>('/api/generate/images', { prompt }, signal);
+  const request = enforceOperationRequestBounds(value => GenerateMediaRequestSchema.safeParse(value), { prompt });
+  return postJson<ImageGenerationResult>('/api/generate/images', request, signal);
 }
 
 export async function generateStoryFromPrompt(
   prompt: string,
   signal?: AbortSignal
 ): Promise<string> {
-  const data = await postJson<{ story: string }>('/api/generate/story', { prompt }, signal);
+  const request = enforceOperationRequestBounds(value => GenerateMediaRequestSchema.safeParse(value), { prompt });
+  const data = await postJson<{ story: string }>('/api/generate/story', request, signal);
   return data.story;
 }

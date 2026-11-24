@@ -30,3 +30,15 @@ All 24 previously accepted/delegated IDs retained. Phase allocation is delivery 
 | Additional accepted future scope V4 | P5.1/2 | PDF/EPUB, style profile, timeline P4, optional auto, advanced navigation |
 | Preservation baseline | every phase + P5.3 | existing A–I/J01–12 and unit tests, story/image, data and CI |
 Uncommitted speculative ideas: OCR, more file formats, advanced collaborative editing, other providers, multiple manuscripts/cloud/team, full Word formatting; explicitly future backlog, not silently claimed shipped. 
+
+## Phase 1 observed status — 2026-11-24
+
+| Decisions | Local implementation and evidence |
+|---|---|
+| NI-D01, D08, D14 | Working project navigation, content/backup export, legacy JSON preview, verified internal backups and restore copy/replacement. Hosted and external destinations pending. |
+| NI-D02, D05, D17, D21 | Partial. Persisted registry validation and review, exact text anchors, adoption/undo audit. Original-file bytes, active issue lifecycle and synchronization pending. |
+| NI-D16, D20, D22, D24 | Working manual writing, optional scenes/chapters and outline, UTF-16 selection adoption, reload and undo/redo. OS IME and hosted signoff pending. |
+| NI-D19, D23 | Tested local baseline preservation, schema 3/4 path, exact-base CAS, failure/retry and backup rollback path. Studio branch reconciliation and hosted qualification pending. |
+| Preservation | 117 tests, key-free Chromium A–I and Stage 0 J01–12 passed locally. Existing narrow Plan layout issues remain. |
+
+Implementation details and test boundaries are recorded in the [Phase 1 handoff](handoff/phase-01.md).

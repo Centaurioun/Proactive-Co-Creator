@@ -24,8 +24,10 @@ import type {
   Entity,
   EntityCategory,
   Relationship,
+  ConsistencyIssue,
 } from '../shared/types';
 import RelationshipEditor from './RelationshipEditor';
+import type { RelationshipProjection } from '../lib/narrative/projections/relationshipProjection';
 
 export interface BeliefGraphProps {
   data: BeliefState | null;
@@ -38,6 +40,8 @@ export interface BeliefGraphProps {
   onRelationshipChange: (source: string, target: string, newLabel: string, relationshipId?: string) => void;
   onAttributeChange?: (entityName: string, attributeName: string, newValue: string) => void;
   currentPrompt: string;
+  consistencyIssues?: ConsistencyIssue[];
+  relationshipProjection: RelationshipProjection;
 }
 
 const BeliefGraph: React.FC<BeliefGraphProps> = ({
@@ -49,6 +53,8 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
   onSelectEntity,
   onSelectRelationship,
   onRelationshipChange,
+  consistencyIssues = [],
+  relationshipProjection,
 }) => {
   // Belief Graph 2.0 navigation & filtering state
   const [searchQuery, setSearchQuery] = useState('');
@@ -58,6 +64,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
   const [highlightConnections, setHighlightConnections] = useState(true);
   const [collapseGuestGroup, setCollapseGuestGroup] = useState(false);
   const [displayMode, setDisplayMode] = useState<'graph' | 'table'>('graph');
+  const [selectedEntityRelationshipsOnly, setSelectedEntityRelationshipsOnly] = useState(false);
 
   const [hoveredEntity, setHoveredEntity] = useState<string | null>(null);
   const [hoveredRel, setHoveredRel] = useState<Relationship | null>(null);
@@ -209,6 +216,20 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
     }
     return normalized;
   }, [data?.relationships, visibleEntities, showInferred]);
+
+  const projectedNodesById = useMemo(
+    () => new Map(relationshipProjection.nodes.map(node => [node.id, node])),
+    [relationshipProjection.nodes]
+  );
+  const selectedRelationshipEntityId = selectedEntity?.id;
+  const tableRelationships = useMemo(() => relationshipProjection.edges.flatMap(edge => {
+    if (selectedEntityRelationshipsOnly && selectedRelationshipEntityId &&
+      edge.sourceId !== selectedRelationshipEntityId && edge.targetId !== selectedRelationshipEntityId) return [];
+    const source = projectedNodesById.get(edge.sourceId);
+    const target = projectedNodesById.get(edge.targetId);
+    const relationship = data?.relationships.find(item => item.id === edge.id);
+    return source && target && relationship ? [{ edge, source, target, relationship }] : [];
+  }), [relationshipProjection.edges, projectedNodesById, selectedEntityRelationshipsOnly, selectedRelationshipEntityId, data?.relationships]);
 
   const parallelEdgeOffsets = useMemo(
     () => computeParallelEdgeOffsets(relationships),
@@ -592,31 +613,47 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
           </div>
 
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-              Directed Relationships ({relationships.length})
-            </h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                Directed Relationships ({tableRelationships.length}{selectedEntityRelationshipsOnly && selectedEntity?.id ? ` of ${relationshipProjection.edges.length}` : ''})
+              </h3>
+              <button type="button" disabled={!selectedEntity?.id}
+                aria-pressed={selectedEntityRelationshipsOnly}
+                onClick={() => setSelectedEntityRelationshipsOnly(value => !value)}
+                className="rounded border border-gray-300 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">
+                {selectedEntityRelationshipsOnly ? 'Show all relationships' : 'Filter to selected character'}
+              </button>
+            </div>
+            <p className="mb-2 text-[11px] text-gray-500" id="relationship-checks-help">
+              Checks reflect the current project snapshot and are read-only. They are also listed in the Checks tab.
+            </p>
             <table className="w-full text-left border-collapse text-xs">
+              <caption className="sr-only">Canonical ID directed relationships and current related consistency findings</caption>
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-800 text-gray-500 dark:text-gray-400">
                   <th className="py-2 px-2.5 font-semibold">Source</th>
                   <th className="py-2 px-2.5 font-semibold">Directed Label</th>
                   <th className="py-2 px-2.5 font-semibold">Target</th>
                   <th className="py-2 px-2.5 font-semibold text-right">Status</th>
+                  <th className="py-2 px-2.5 font-semibold">Provenance</th>
+                  <th className="py-2 px-2.5 font-semibold">Current checks</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {relationships.map((rel, idx) => {
-                  const isSelected =
-                    selectedRelationship?.id === rel.id ||
-                    (selectedRelationship?.source === rel.source &&
-                      selectedRelationship?.target === rel.target &&
-                      selectedRelationship?.label === rel.label);
+                {tableRelationships.map(({ edge, source, target, relationship: rel }) => {
+                  const endpointIds = new Set([edge.sourceId, edge.targetId]);
+                  const rowIssues = consistencyIssues.filter(issue =>
+                    issue.relationshipId === edge.id ||
+                    issue.targets?.some(issueTarget => issueTarget.kind === 'relationship' && issueTarget.relationshipId === edge.id) ||
+                    issue.affectedEntityIds.some(id => endpointIds.has(id))
+                  );
+                  const isSelected = selectedRelationship?.id === edge.id;
                   return (
                     <tr
-                      key={rel.id ?? `tbl_rel_${idx}`}
+                      key={edge.id}
                       tabIndex={0}
                       role="button"
-                      aria-label={`Inspect directed relationship ${rel.source} ${rel.label} ${rel.target}`}
+                      aria-label={`Inspect directed relationship ${source.name} ${edge.label} ${target.name}`}
                       onClick={() => {
                         onSelectRelationship?.(rel);
                       }}
@@ -633,22 +670,54 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                       }`}
                     >
                       <td className="py-2 px-2.5 font-semibold text-gray-900 dark:text-gray-100">
-                        {rel.source}
+                        {source.name}
                       </td>
                       <td className="py-2 px-2.5 text-blue-700 dark:text-blue-300 font-medium">
-                        → {rel.label} →
+                        → {edge.label} →
                       </td>
                       <td className="py-2 px-2.5 font-semibold text-gray-900 dark:text-gray-100">
-                        {rel.target}
+                        {target.name}
                       </td>
                       <td className="py-2 px-2.5 text-right capitalize text-gray-600 dark:text-gray-400">
-                        {rel.status ?? 'confirmed'}
+                        {edge.status ?? 'unspecified'}
+                      </td>
+                      <td className="py-2 px-2.5 text-gray-600 dark:text-gray-400">
+                        {edge.provenance ?? 'unspecified'}
+                      </td>
+                      <td className="py-2 px-2.5 text-gray-700 dark:text-gray-300">
+                        {rowIssues.length ? (
+                          <ul aria-label={`Current consistency findings related to ${rel.source} ${rel.label} ${rel.target}`} className="space-y-1">
+                            {rowIssues.map(issue => (
+                              <li key={issue.id} className="rounded border border-amber-300 bg-amber-50 p-1.5 dark:border-amber-800 dark:bg-amber-950/30">
+                                <span className="font-semibold">{issue.severity === 'error' ? 'Error' : 'Warning'} · {issue.category}</span>
+                                <p className="font-medium">{issue.title}</p>
+                                <p>{issue.description}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : <span className="text-gray-500">None</span>}
                       </td>
                     </tr>
                   );
                 })}
+                {tableRelationships.length === 0 && (
+                  <tr><td colSpan={6} className="py-3 px-2.5 text-center text-gray-500">No relationships with valid canonical IDs match this filter.</td></tr>
+                )}
               </tbody>
             </table>
+            {relationshipProjection.omissions.length > 0 && (
+              <details className="mt-2 rounded border border-amber-300 p-2 text-xs dark:border-amber-800">
+                <summary className="cursor-pointer font-semibold">{relationshipProjection.omissions.length} relationship(s) omitted from this table because canonical identity or label checks failed</summary>
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {relationshipProjection.omissions.map((omission, index) => (
+                    <li key={`${omission.relationshipId ?? 'missing'}-${index}`}>
+                      <span>{omission.label || 'Empty label'}</span>
+                      <span className="text-gray-500"> — {omission.reasons.join(', ')}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
         </div>
       ) : (

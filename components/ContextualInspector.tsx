@@ -3,10 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import AttributeEditor from './AttributeEditor';
-import { isSceneEntityName } from '../lib/beliefGraphUtils';
+import { getEffectiveAttributeValue, isSceneEntityName } from '../lib/beliefGraphUtils';
 import { resolveConsistencyIssueTarget } from '../lib/consistencyChecker';
+import { manuscriptSections } from '../lib/narrative/manuscriptModel';
+import OpportunityCenter from './opportunities/OpportunityCenter';
+import type { OpportunityProposalInput, OpportunityProposalStatus } from '../lib/narrative/opportunityProposals';
+import { computePromptDigest } from '../lib/promptBuilder';
 import type {
   ConsistencyIssue,
   ConsistencyIssueTarget,
@@ -17,7 +21,7 @@ import type {
   StoryBibleFields,
 } from '../shared/types';
 
-export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history';
+export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history' | 'timeline' | 'opportunities' | 'mind-map';
 
 interface ContextualInspectorProps {
   activeTab: RightPanelTab;
@@ -53,11 +57,30 @@ interface ContextualInspectorProps {
   onExportJson: () => void;
   onExportStoryBibleMarkdown: () => void;
   onExportPromptText: () => void;
-  onImportProjectJson: (rawJson: string) => { ok: boolean; error?: string };
+  onExportManuscript?: () => void;
+  historyTarget?: { id: string; sequence: number } | null;
+  contentExports: { id: string; label: string }[];
+  onExportContent: (id: string) => void;
+  onExportContentBundle: (ids: string[]) => void;
+  onCreateOpportunity: (input: OpportunityProposalInput, expectedRevision: number) => void;
+  onTransitionOpportunity: (id: string, status: OpportunityProposalStatus, expectedRevision: number) => void;
+  onPreviewProjectJson: (rawJson: string) => Promise<CreativeProject>;
+  onImportProjectJson: (rawJson: string) => Promise<{ ok: boolean; error?: string }>;
   isLoading: boolean;
 }
 
 type StoryBibleDomain = 'core' | 'narrative' | 'constraints' | 'visual';
+
+interface ConsistencyFixPreview {
+  issueId: string;
+  projectId: string;
+  baseRevision: number;
+  baseSnapshotDigest: string;
+  baseSnapshotJson: string;
+  entityId: string;
+  before: string;
+  after: string;
+}
 
 const STORY_BIBLE_DOMAINS: Array<{ id: StoryBibleDomain; label: string; description: string }> = [
   {
@@ -230,9 +253,27 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   onExportStoryBibleMarkdown,
   onExportPromptText,
   onImportProjectJson,
+  onPreviewProjectJson,
+  onExportManuscript,
+  historyTarget,
+  contentExports,
+  onExportContent,
+  onExportContentBundle,
+  onCreateOpportunity,
+  onTransitionOpportunity,
   isLoading,
 }) => {
   const { snapshot } = project;
+  const snapshotJson = useMemo(() => JSON.stringify(snapshot), [snapshot]);
+  const [consistencyFixPreview, setConsistencyFixPreview] = useState<ConsistencyFixPreview | null>(null);
+  const previewIsStale = consistencyFixPreview !== null && (
+    consistencyFixPreview.projectId !== project.id ||
+    consistencyFixPreview.baseRevision !== (project.revision ?? 1) ||
+    consistencyFixPreview.baseSnapshotDigest !== computePromptDigest(snapshotJson, snapshot.mode) ||
+    consistencyFixPreview.baseSnapshotJson !== snapshotJson ||
+    !consistencyIssues.some(issue => issue.id === consistencyFixPreview.issueId) ||
+    !snapshot.entities.some(entity => entity.id === consistencyFixPreview.entityId)
+  );
   const [renameDraft, setRenameDraft] = useState<string>('');
   const [newAttrName, setNewAttrName] = useState('');
   const [newAttrValue, setNewAttrValue] = useState('');
@@ -278,6 +319,16 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
 
   // Import/New project state
   const [importJsonText, setImportJsonText] = useState('');
+  const [selectedExport, setSelectedExport] = useState('');
+  const [selectedBundleExports, setSelectedBundleExports] = useState<string[]>([]);
+  useEffect(() => {
+    if (activeTab !== 'history' || !historyTarget) return;
+    const target = document.getElementById(historyTarget.id);
+    target?.scrollIntoView({ block: 'start' });
+    target?.focus({ preventScroll: true });
+  }, [activeTab, historyTarget]);
+  const [restorePreview, setRestorePreview] = useState<{ raw: string; project: CreativeProject } | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [importMessage, setImportMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [newProjName, setNewProjName] = useState('');
   const [newProjIdea, setNewProjIdea] = useState('');
@@ -296,20 +347,25 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       )
     : [];
 
-  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  async function previewProjectBackup(raw: string) {
+    setRestorePreview(null);
+    setImportMessage(null);
+    setRestoreBusy(true);
+    try {
+      const preview = await onPreviewProjectJson(raw);
+      setRestorePreview({ raw, project: preview });
+    } catch (cause) {
+      setImportMessage({ ok: false, text: cause instanceof Error ? cause.message : 'Invalid backup.' });
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
+
+  const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const content = typeof reader.result === 'string' ? reader.result : '';
-      const res = onImportProjectJson(content);
-      setImportMessage({
-        ok: res.ok,
-        text: res.ok ? 'Project imported successfully.' : (res.error ?? 'Import failed.'),
-      });
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+    event.target.value = '';
+    void file.text().then(previewProjectBackup, () => setImportMessage({ ok: false, text: 'Backup file could not be read.' }));
   };
 
   return (
@@ -321,7 +377,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       <div
         role="tablist"
         aria-label="Inspector views"
-        className="grid grid-cols-4 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
+        className="grid grid-cols-7 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
       >
         {(
           [
@@ -329,6 +385,9 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             ['story-bible', 'Story Bible'],
             ['consistency', `Checks (${consistencyIssues.length})`],
             ['history', 'History'],
+            ['timeline', 'Timeline'],
+            ['opportunities', 'Ideas'],
+            ['mind-map', 'Mind map'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -1360,6 +1419,32 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                       Recommendation: {issue.suggestedFix}
                     </p>
                   )}
+                  {issue.category === 'violated_exclusion' && !issue.id.startsWith('issue_excl_conflict_') &&
+                    issue.targets?.some(target => target.kind === 'entity' && target.entityId && issue.id === `issue_excl_${target.entityId}`) && (
+                    <button
+                      type="button"
+                      className="px-2.5 py-1 text-[11px] font-semibold rounded border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-gray-900 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                      onClick={() => {
+                        const target = issue.targets?.find(item => item.kind === 'entity' && item.entityId && issue.id === `issue_excl_${item.entityId}`);
+                        if (!target?.entityId) return;
+                        const resolved = resolveConsistencyIssueTarget(snapshot, target);
+                        if (!resolved.ok || resolved.kind !== 'entity') return;
+                        const existence = resolved.entity.attributes.find(attribute => attribute.name === 'existence' || attribute.name === 'existence_in_image');
+                        setConsistencyFixPreview({
+                          issueId: issue.id,
+                          projectId: project.id,
+                          baseRevision: project.revision ?? 1,
+                          baseSnapshotDigest: computePromptDigest(snapshotJson, snapshot.mode),
+                          baseSnapshotJson: snapshotJson,
+                          entityId: resolved.entity.id!,
+                          before: existence ? `Present (${getEffectiveAttributeValue(existence)})` : 'Present (implicit; no existence field)',
+                          after: 'Absent (proposed)',
+                        });
+                      }}
+                    >
+                      Preview possible fix
+                    </button>
+                  )}
                   {issue.targets && issue.targets.length > 0 && (
                     <div
                       className="flex flex-wrap items-center gap-1.5 pt-1"
@@ -1397,16 +1482,150 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
               ))}
             </div>
           )}
+          {consistencyFixPreview && (
+            <section aria-labelledby="consistency-fix-preview-heading" className="rounded-md border border-indigo-300 dark:border-indigo-700 p-3 space-y-2 text-xs">
+              <div className="flex items-start justify-between gap-2">
+                <h4 id="consistency-fix-preview-heading" className="font-semibold">Possible change preview</h4>
+                <button type="button" className="underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500" onClick={() => setConsistencyFixPreview(null)}>
+                  Close preview
+                </button>
+              </div>
+              {previewIsStale ? (
+                <p role="status" className="text-amber-800 dark:text-amber-200">
+                  This proposal is unavailable because its project, revision, contents, finding, or target changed. Reopen a current finding to preview again.
+                </p>
+              ) : (
+                <>
+                  <dl className="grid gap-2 sm:grid-cols-2">
+                    <div className="rounded border border-red-300 dark:border-red-800 p-2">
+                      <dt className="font-semibold">Before</dt>
+                      <dd>{consistencyFixPreview.before}</dd>
+                    </div>
+                    <div className="rounded border border-emerald-300 dark:border-emerald-800 p-2">
+                      <dt className="font-semibold">Proposed after</dt>
+                      <dd>{consistencyFixPreview.after}</dd>
+                    </div>
+                  </dl>
+                  <p className="text-gray-600 dark:text-gray-300">Read-only preview · project {consistencyFixPreview.projectId} · revision r{consistencyFixPreview.baseRevision} · base {consistencyFixPreview.baseSnapshotDigest}</p>
+                  <p className="font-medium">No project change has been made.</p>
+                </>
+              )}
+            </section>
+          )}
         </div>
       )}
+
+      {activeTab === 'opportunities' && (
+        <OpportunityCenter
+          projectId={project.id}
+          projectRevision={project.revision}
+          proposals={project.narrative?.opportunities ?? []}
+          onCreate={onCreateOpportunity}
+          onTransition={onTransitionOpportunity}
+        />
+      )}
+
+      {activeTab === 'mind-map' && (() => {
+        const groups: Array<{ title: string; fields: Array<keyof StoryBibleFields>; entities?: boolean }> = [
+          { title: 'Topics & themes', fields: ['themes', 'genre', 'tone'] },
+          { title: 'Plot', fields: ['centralConflict', 'pacing', 'narrativePerspective'] },
+          { title: 'World', fields: ['setting', 'continuityRules', 'explicitExclusions'] },
+          { title: 'Visual style', fields: ['visualStyle', 'cameraAndLighting'] },
+          { title: 'Characters', fields: [], entities: true },
+        ];
+        return (
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+            <header>
+              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Narrative Mind Map</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Groups show topic association only; they do not assert causality. Values are read from the current project and are not edited here.</p>
+            </header>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {groups.map(group => {
+                const bibleEntries = group.fields.flatMap(field => {
+                  const item = project.snapshot.storyBible[field];
+                  return item.value.trim() ? [{ label: field.replace(/[A-Z]/gu, letter => ` ${letter}`).replace(/^./u, letter => letter.toUpperCase()), value: item.value, status: item.status, provenance: item.provenance }] : [];
+                });
+                const characters = group.entities ? project.snapshot.entities.filter(entity => entity.category === 'character') : [];
+                return (
+                  <section key={group.title} aria-label={`${group.title} group`} className="min-h-24 rounded border border-gray-200 p-3 dark:border-gray-700">
+                    <h4 className="mb-2 text-xs font-bold">{group.title}</h4>
+                    {bibleEntries.length === 0 && characters.length === 0 ? <p className="text-xs text-gray-500">No entries recorded.</p> : (
+                      <ul className="space-y-2">
+                        {bibleEntries.map(entry => (
+                          <li key={entry.label} className="rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
+                            <strong>{entry.label}</strong><p>{entry.value}</p>
+                            <span className="text-gray-500">{entry.status} · {entry.provenance}</span>
+                          </li>
+                        ))}
+                        {characters.map(entity => (
+                          <li key={entity.id ?? entity.name} className="rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
+                            <strong>{entity.name}</strong>{entity.description && <p>{entity.description}</p>}
+                            <span className="text-gray-500">{entity.status ?? 'status not recorded'} · {entity.provenance ?? 'provenance not recorded'}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {activeTab === 'timeline' && (() => {
+        const sections = manuscriptSections(project);
+        return (
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+            <div>
+              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Story Timeline</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Rows follow the current manuscript order. Chronology notes are shown as authored; no dates or event order are inferred.
+              </p>
+            </div>
+            {sections.length === 0 ? (
+              <p className="rounded border border-gray-200 p-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
+                No current manuscript sections are available. The timeline is empty.
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
+                <table className="w-full border-collapse text-left text-xs">
+                  <caption className="sr-only">Current manuscript order and authored chronology notes</caption>
+                  <thead className="bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                    <tr>
+                      <th scope="col" className="px-3 py-2">Authored order</th>
+                      <th scope="col" className="px-3 py-2">Section</th>
+                      <th scope="col" className="px-3 py-2">Chronology note</th>
+                      <th scope="col" className="px-3 py-2">Temporal status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                    {sections.map((section, index) => {
+                      const note = section.chronology?.trim();
+                      return (
+                        <tr key={section.id}>
+                          <td className="px-3 py-2 font-mono">{index + 1}</td>
+                          <th scope="row" className="px-3 py-2 font-semibold">{section.title || `Untitled ${section.kind}`}</th>
+                          <td className="px-3 py-2">{note ? `Authored note: ${note}` : 'No chronology note recorded.'}</td>
+                          <td className="px-3 py-2">{note ? 'Authored; not date-verified' : 'Undated / unspecified'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Tab 4: Revision History, Persistence, Export & Import */}
       {activeTab === 'history' && (
         <div className="flex-1 overflow-y-auto p-4 space-y-5 min-h-0">
           {/* Export & Import Section */}
-          <div className="space-y-2.5">
+          <div id="export-content" tabIndex={-1} className="space-y-2.5">
             <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
-              Export &amp; Reuse
+              Export Content
             </h3>
             <div className="grid grid-cols-1 gap-2">
               <button
@@ -1414,7 +1633,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                 onClick={onExportJson}
                 className="w-full text-left px-3 py-2 text-xs font-semibold rounded border border-gray-200 dark:border-gray-700 bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-100 transition-colors"
               >
-                Export Full Project JSON (v3 Schema)
+                Download Project Backup (.json)
               </button>
               <button
                 type="button"
@@ -1432,10 +1651,42 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
               </button>
             </div>
 
+            <div className="flex flex-wrap gap-2 text-xs underline">
+              {onExportManuscript && <button onClick={onExportManuscript}>Download Working Manuscript (.md)</button>}
+            </div>
+            {contentExports.length > 0 && (
+              <div className="flex flex-col gap-2 text-xs">
+                <label className="flex min-w-0 flex-col gap-1">Content to export
+                  <select className="max-w-full rounded border bg-transparent p-1" value={selectedExport}
+                    onChange={event => setSelectedExport(event.target.value)}>
+                    <option value="">Select content</option>
+                    {contentExports.map(entry => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                  </select>
+                </label>
+                <button className="self-end underline disabled:opacity-50"
+                  disabled={!contentExports.some(entry => entry.id === selectedExport)}
+                  onClick={() => onExportContent(selectedExport)}>Download selected content</button>
+                <fieldset className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
+                  <legend className="px-1 font-semibold">Content ZIP bundle</legend>
+                  {contentExports.map(entry => (
+                    <label key={entry.id} className="flex items-start gap-2">
+                      <input type="checkbox" checked={selectedBundleExports.includes(entry.id)}
+                        onChange={event => setSelectedBundleExports(previous => event.target.checked
+                          ? [...previous, entry.id]
+                          : previous.filter(id => id !== entry.id))} />
+                      <span>{entry.label}</span>
+                    </label>
+                  ))}
+                  <p className="text-[11px] text-gray-500">ZIP includes a manifest and selected content. It is not a full project backup.</p>
+                  <button type="button" className="underline disabled:opacity-50" disabled={selectedBundleExports.length === 0}
+                    onClick={() => onExportContentBundle(selectedBundleExports)}>Download selected content ZIP</button>
+                </fieldset>
+              </div>
+            )}
             {/* Import JSON */}
             <div className="pt-2 space-y-2">
               <label className="block text-xs font-semibold text-gray-800 dark:text-gray-200">
-                Import Project JSON File or Paste JSON
+                Restore Project Backup from JSON File or Paste JSON
               </label>
               <input
                 type="file"
@@ -1455,20 +1706,27 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
                 />
                 <button
                   type="button"
-                  disabled={!importJsonText.trim()}
-                  onClick={() => {
-                    const res = onImportProjectJson(importJsonText);
-                    setImportMessage({
-                      ok: res.ok,
-                      text: res.ok ? 'Project imported successfully.' : (res.error ?? 'Invalid JSON.'),
-                    });
-                    if (res.ok) setImportJsonText('');
-                  }}
+                  disabled={restoreBusy || !importJsonText.trim()}
+                  onClick={() => void previewProjectBackup(importJsonText)}
                   className="px-2.5 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded disabled:opacity-40 whitespace-nowrap"
                 >
-                  Import JSON
+                  Preview JSON
                 </button>
               </div>
+              {restorePreview && (
+                <div className="space-y-2 rounded border border-amber-400 p-3 text-xs">
+                  <p className="break-words">{restorePreview.project.name} · Schema {restorePreview.project.schemaVersion} · Revision {restorePreview.project.revision}</p>
+                  <p>A separate project will be created with the included manuscript, plan, artifacts and history.</p>
+                  <button type="button" className="mr-2 underline" disabled={restoreBusy} onClick={async () => {
+                    setRestoreBusy(true);
+                    const result = await onImportProjectJson(restorePreview.raw);
+                    setRestoreBusy(false);
+                    setImportMessage({ ok: result.ok, text: result.ok ? 'Restored project copy saved.' : (result.error ?? 'Restore failed.') });
+                    if (result.ok) { setRestorePreview(null); setImportJsonText(''); }
+                  }}>Restore a copy</button>
+                  <button type="button" className="underline" disabled={restoreBusy} onClick={() => setRestorePreview(null)}>Cancel</button>
+                </div>
+              )}
               {importMessage && (
                 <p
                   role="alert"
@@ -1485,7 +1743,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
           </div>
 
           {/* Saved Local Projects Switcher */}
-          <div className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
+          <div id="project-management" tabIndex={-1} className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
             <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
               Saved Local Projects ({savedProjects.length})
             </h3>
@@ -1569,7 +1827,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
           </div>
 
           {/* Durable Version History */}
-          <div className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
+          <div id="revision-history" tabIndex={-1} className="space-y-2 border-t border-gray-200 dark:border-gray-800 pt-4">
             <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
               Revision History ({project.revisions.length})
             </h3>

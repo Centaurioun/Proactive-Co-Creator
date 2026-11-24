@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { NarrativeRecords } from './narrativeTypes.ts';
 export type GenerationMode = 'story' | 'image';
 
 export type DecisionProvenance =
@@ -12,6 +13,8 @@ export type DecisionProvenance =
   | 'ai-inferred'
   | 'imported'
   | 'derived';
+
+export type EpistemicKind = 'explicit' | 'interpretation' | 'belief' | 'reported' | 'ambiguous' | 'user-authored';
 
 export type ApprovalStatus = 'confirmed' | 'pending' | 'rejected';
 
@@ -30,6 +33,8 @@ export interface Attribute {
   status?: ApprovalStatus;
   provenance?: DecisionProvenance;
   updatedAt?: number;
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface Entity {
@@ -45,6 +50,8 @@ export interface Entity {
   excluded?: boolean;
   groupId?: string;
   aliases?: string[];
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface Relationship {
@@ -59,6 +66,8 @@ export interface Relationship {
   provenance?: DecisionProvenance;
   presence_in_prompt?: boolean;
   evidenceExcerpt?: string;
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface BeliefState {
@@ -112,6 +121,8 @@ export interface StoryBibleField<T = string> {
   status: ApprovalStatus;
   provenance: DecisionProvenance;
   updatedAt: number;
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface StoryBibleFields {
@@ -330,6 +341,7 @@ export interface ProjectRevision {
 }
 
 export interface ProjectSnapshot {
+  manuscriptVersionId?: string;
   originalIdea: string;
   refinedPrompt: string;
   freeformNotes: string;
@@ -354,6 +366,7 @@ export interface PersistedUndoHistory {
 }
 
 export interface CreativeProject {
+  narrative?: NarrativeRecords;
   schemaVersion: number;
   id: string;
   revision: number;

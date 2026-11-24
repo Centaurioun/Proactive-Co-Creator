@@ -85,7 +85,7 @@ const Header: React.FC<HeaderProps> = ({
               : 'hover:underline'
           }`}
         >
-          History &amp; Export
+          Revision History
         </button>
         <button
           type="button"

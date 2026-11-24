@@ -12,6 +12,8 @@ import {
   GenerateMediaRequestSchema,
   RefineRequestSchema,
 } from '../shared/schemas.ts';
+import { NarrativeExtractionRequestSchema } from '../shared/importSchemas.ts';
+import type { NarrativeExtraction, NarrativeExtractionRequest } from '../shared/importSchemas.ts';
 import type {
   BatchEditProposalResult,
   BeliefState,
@@ -32,6 +34,7 @@ import {
 import { AppApiError, classifyGeminiError } from './errors.ts';
 import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
+import { extractNarrativeChunk } from './narrative/extractionService.ts';
 
 export interface AiServiceHandlers {
   analyzeBeliefGraph: (
@@ -70,6 +73,7 @@ export interface AiServiceHandlers {
   generateStoryText: (prompt: string, signal?: AbortSignal) => Promise<string>;
   generateImagesBatch: (prompt: string, signal?: AbortSignal) => Promise<ImageGenerationResult>;
   hasConfiguredGeminiKey: () => boolean;
+  extractNarrativeChunk?: (request: NarrativeExtractionRequest, signal?: AbortSignal) => Promise<NarrativeExtraction>;
 }
 
 const defaultHandlers: AiServiceHandlers = {
@@ -80,6 +84,7 @@ const defaultHandlers: AiServiceHandlers = {
   generateStoryText,
   generateImagesBatch,
   hasConfiguredGeminiKey,
+  extractNarrativeChunk,
 };
 
 function attachRequestAbortSignal(_req: Request, res: Response): AbortController {
@@ -174,6 +179,24 @@ export function createApiRouter(
         controller.signal
       );
       res.json({ graph });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.post('/narrative/import/extract', async (req, res) => {
+    const parsed = NarrativeExtractionRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid narrative import request.', 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const handler = handlers.extractNarrativeChunk;
+      if (!handler) throw new AppApiError('INTERNAL_ERROR', 'Narrative extraction is unavailable.', 503, false);
+      const result = await handler(parsed.data, controller.signal);
+      res.json({ extraction: result });
     } catch (err) {
       sendErrorResponse(res, err);
     }
