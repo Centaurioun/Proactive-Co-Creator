@@ -2,7 +2,7 @@
 
 ## Yönetici özeti
 
-**Stage 0 yerel doğrulaması: PASS. Uzak PR/CI ve artifact incelemesi tamamlanana kadar genel Stage 0: PENDING; merge kararı: NO-GO. Stage 1 ürün/UI uygulaması: NO-GO.** E2E-E artık masaüstünde beş tam modal/odak döngüsü, mobil aç/kapat, Tab ve Shift+Tab sınırları, Escape ve Close yolları, tetikleyiciye odak dönüşü ve revision bütünlüğü ile kontrol ediliyor. CI için kontrollü başarısız senaryo artifact'i ayrıca üretiyor. Bu revizyonda yerel npm test, build ve Chromium smoke suite yeniden geçti; son commit SHA'sında GitHub CI henüz koşmadı.
+**Stage 0 yerel doğrulaması: PASS. Hosted doğrulama: PASS on `9a7082a`; bu sonuç rapor güncellemesinden önceki kod/rapor SHA'sında. Rapor değişikliği yeni bir son SHA oluşturacağından o SHA'nın CI ve artifact kontrolü bekleniyor. PR #4 draft; merge kararı: NO-GO. Stage 1 ürün/UI uygulaması: NO-GO.** E2E-E masaüstünde beş modal/odak döngüsünü, mobil aç/kapatı, Tab ve Shift+Tab sınırlarını, Escape ve Close yollarını, tetikleyiciye odak dönüşünü ve revision bütünlüğünü kontrol ediyor. Hosted kontrollü başarısız senaryo artifact'i de doğrulandı.
 
 Ücretli Gemini çağrısı yapılmadı. Yerel tarayıcı testleri, `/api/health` yanıtında `configured:false` veren production sunucusuna karşı çalıştı. Smoke suite bütün `/api/**` isteklerini engelledi ve sıfır istek kaydetti.
 
@@ -13,13 +13,13 @@
 | Depo / dal | `/Users/yusuf/Repos/Proactive-Co-Creator`; `codex/stage-0-final-qualification` |
 | Başlangıç HEAD'i | `3526c24fec45c60878937a331e487fc387e28d0b` |
 | Fetch edilmiş `origin/main` | Başlangıç HEAD'i ile aynı SHA; daha yeni uzak commit yok |
-| Commit'ler | `d330db6` doğrulama/CI/lockfile; `460592a` Stage 0 raporları; PR takibi için güncelleme commit'i eklenecek |
+| Commit'ler | `d330db6` doğrulama/CI/lockfile; `460592a` Stage 0 raporları; `9a7082a` audit güvenlik durumu; bu rapor güncellemesinin hosted CI'si yeniden çalışacak |
 | Başlangıç çalışma ağacı | `graft/`, `.gitignore` düzenlemesi ve `.ignore` korunuyor; Stage 0 PR'ına alınmayacak |
 | Git ortamı | `GIT_CONFIG_COUNT=10`, fakat `GIT_CONFIG_KEY_0`–`_9` yoktu (değerler yazdırılmadı). `GIT_CONFIG_COUNT=0` yalnızca ilgili Git süreçlerinde kullanıldı; global veya kalıcı config değişmedi. `git fetch origin main` başarılı, başlangıç `HEAD` ve `origin/main` aynı. |
 | İşletim sistemi / mimari | macOS `darwin 27.0.0 arm64` (Apple M5 Pro) |
 | Yerel runtime | Node `v26.12.1`, npm `11.20.0` |
 | Tarayıcı | `@playwright/cli@0.1.22`; Chrome for Testing `155.0.8059.12`, Playwright Chromium build `1247` |
-| Uzak runtime | Önceki `45300419119` koşusu Node `v22.23.5`, npm `10.9.9`, Ubuntu 26.04 kullandı; bu SHA'daki PR CI henüz bekleniyor. |
+| Uzak runtime | GitHub run `45331499583` Node `v22.23.5`, npm `10.9.9`, Ubuntu x86_64 kullandı; Playwright CLI `0.1.22`, Chromium build `1247`. |
 
 `graft` CLI bu oturumun `PATH`'inde kurulu değildi (`zsh: command not found: graft`). Bu nedenle repodaki üretilmiş `graft/INDEX.md` ve ilgili wiring kartları kullanıldı; doğrulama için gerçek kaynak dosyaları da incelendi. Hiçbir graft dosyası Stage 0'a eklenmedi.
 
@@ -76,9 +76,9 @@ Yerel npm 11, mevcut bağımlılık sürümlerinin platforma özel opsiyonel pak
 | Browser smoke | PASS — E2E-A–I 9/9; sıfır API hit, page error veya console error |
 | Stage 0 browser audit | PASS — J01–J12 12/12; sıfır unmocked API hit ve sıfır `pageErrors`. J11'de kasıtlı mock HTTP 503 kurtarma senaryosu nedeniyle bir beklenen console error görüldü. Çıktılar `.playwright-cli/stage0-journeys.json` ve `.playwright-cli/stage0-audit-metrics.json` dosyalarında. |
 | Stage 0 Node perf benchmark | PASS — `.playwright-cli/stage0-node-perf.json` üretildi |
-| Screenshot capture | ÇALIŞTIRILMADI — pipeline değişmedi ve görünür UI farkı yok; mevcut görüntüleri gereksiz yere değiştirmedim |
+| Ayrı görsel inceleme turu | ÇALIŞTIRILMADI — tasarım değişikliği yok; E2E screenshot'ları tanı/kanıt artifact'i olarak üretildi ve hosted ZIP'te bulundu |
 
-Yerel browser kanıtları ignore edilen `.playwright-cli/` dizininde: `e2e-results.json`, ilk başarısız koşudan `fail-e2e-e.png` ekran görüntüsü, `trace-fail-e2e-e.zip` trace'i ve geçen senaryoların görüntüleri. Bunlar GitHub'a yüklenmiş artifact değildir.
+Yerel browser kanıtları ignore edilen `.playwright-cli/` dizininde: başarılı E2E-E trace'i, kontrollü hata screenshot/trace/JSON'u, `browser-logs.json` ve geçen senaryoların görüntüleri. Bunlar bağımsız yerel kanıttır; ayrıca son hosted koşunun artifact'i aşağıdaki gibi incelendi.
 
 ### Erişilebilirlik ve responsive kontroller
 
@@ -91,7 +91,7 @@ Yerel browser kanıtları ignore edilen `.playwright-cli/` dizininde: `e2e-resul
 
 GitHub [45300419119](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45300419119) koşusunda `Verify (Node 22.x)` bağımlılık kurulumunu, typecheck'i, lint'i, 106 testi ve build'i geçti. Browser job'da tarayıcı kurulumu ve server health kontrolleri de geçti; E2E-A–D geçti, E2E-E anlık odak okumasında başarısız oldu ve E2E-F–I çalışmadı. Artifact yüklemesi dosya bulamadı. Bu koşu bugünkü düzenlemelerden önceki başlangıç SHA'sına aittir.
 
-**Uzak CI: BLOCKED / PENDING.** Düzeltilmiş dosyalarla veya final bir commit üzerinde henüz workflow çalışmadı. Yeni kod için GitHub Actions URL'si veya artifact sonucu yok.
+**Önceki hosted SHA doğrulaması: PASS.** [GitHub Actions run 45331499583](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45331499583), head `9a7082a0287b8384fc6cb01b7b08cacfe8361f28`: `Verify (Node 22.x)` ve `Browser E2E Smoke (Chromium)` ikisi de PASS. E2E job kontrollü diagnostic, normal A–I suite'i ve artifact upload adımlarını geçti. Artifact `playwright-e2e-artifacts` (7,736,452 bytes) ZIP içeriği incelendi: `controlled-failure-results.json` (beklenen `FAIL` kaydı, diagnostic PASS), `e2e-results.json` (A–I PASS), `browser-logs.json` (0 page/console error), Node/npm/OS/architecture/browser metadata, server log, 6 PNG ve iki trace ZIP. Workflow health guard `configured:false` kontrolünü geçti. Bu rapor güncellemesi yeni head SHA üreteceğinden final PR SHA'sında workflow tekrar geçmeli; bu yeni koşu rapor commit'inden sonra ayrıca kaydedilecek.
 
 ### Mevcut güvenlik PR'ı ile çakışma kontrolü
 
