@@ -39,7 +39,7 @@ const sourceSchema = z.strictObject({
   retention: z.enum(['original-and-extracted', 'extracted-only']).default('extracted-only'),
   originalBytesBase64: z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/).optional(),
   blocks: z.array(z.strictObject({
-    id, start: offset, end: offset, kind: z.enum(['paragraph', 'heading']), label: z.string().optional(),
+    id, start: offset, end: offset, kind: z.enum(['paragraph', 'heading']), label: z.string().optional(), pageNumber: offset.optional(),
   })).default([]),
   analysisCoverage: z.strictObject({
     complete: z.boolean(), scope: z.enum(['complete', 'selective']), categories: z.array(z.string()),

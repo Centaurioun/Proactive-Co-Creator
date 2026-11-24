@@ -3,6 +3,7 @@ import type { ArtifactAnchor, ManuscriptSection } from '../../shared/narrativeTy
 import type { CreativeProject } from '../../shared/types';
 import { applyManuscriptOperation, manuscriptSections, narrativeBase, type NarrativeBase } from '../../lib/narrative/manuscriptModel';
 import { filterManuscriptSections } from '../../lib/narrative/manuscriptNavigation';
+import { createStyleObservation, createStyleProfile, reviewStyleObservation, selectStyleContext, type StyleProfile, type StyleTrait } from '../../lib/narrative/context/styleProfile';
 import AdoptArtifactDialog from './AdoptArtifactDialog';
 
 export const workspaceButton = 'rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800 disabled:opacity-45';
@@ -33,11 +34,21 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const [chapterFilter, setChapterFilter] = useState('');
   const [chronologyFilter, setChronologyFilter] = useState('');
   const [previewSection, setPreviewSection] = useState(false);
+  const [styleProfile, setStyleProfile] = useState<StyleProfile>(() => createStyleProfile(project.id));
+  const [styleSourceId, setStyleSourceId] = useState('');
+  const [styleTrait, setStyleTrait] = useState<StyleTrait>('voice');
+  const [styleValue, setStyleValue] = useState('');
+  const [styleExcerpt, setStyleExcerpt] = useState('');
+  const [styleInterpretation, setStyleInterpretation] = useState<'observation' | 'interpretation'>('observation');
+  const [styleScope, setStyleScope] = useState<'manuscript' | 'section'>('manuscript');
+  const [styleError, setStyleError] = useState('');
   const [adopting, setAdopting] = useState(Boolean(initialArtifactId));
   const [confirming, setConfirming] = useState<'delete' | 'merge' | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
   const sections = draft?.sections ?? manuscriptSections(project);
+  const styleSources = project.narrative?.sources ?? [];
+  const selectedStyleSource = styleSources.find(source => `${source.id}:${source.version}:${source.digest}` === styleSourceId) ?? styleSources[0];
   const visibleSections = filterManuscriptSections(sections, {
     query: search,
     chapterId: chapterFilter && chapterFilter !== '__unchaptered' ? chapterFilter : undefined,
@@ -49,6 +60,63 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const index = selected ? sections.indexOf(selected) : -1;
   const words = sections.reduce((total, section) => total + (section.text.match(/\S+/gu)?.length ?? 0), 0);
   const storyCount = project.artifacts.filter(artifact => artifact.mode === 'story' && artifact.storyText).length;
+
+  useEffect(() => {
+    setStyleProfile(createStyleProfile(project.id));
+    setStyleSourceId('');
+    setStyleError('');
+  }, [project.id]);
+
+  function resolveStyleSource(ref: { recordId: string; version: string; digest: string }) {
+    const source = styleSources.find(item => item.id === ref.recordId && item.version === ref.version && item.digest === ref.digest);
+    return source ? { digest: source.digest, text: source.text } : undefined;
+  }
+
+  const currentStyleObservations = styleProfile.observations.filter(observation => {
+    const source = resolveStyleSource(observation.evidence);
+    return source !== undefined && source.text.slice(observation.evidence.start, observation.evidence.end) === observation.evidence.excerpt;
+  });
+  const currentStyleProfile = { ...styleProfile, observations: currentStyleObservations };
+  const styleContext = selected
+    ? selectStyleContext(currentStyleProfile, project.id, selected.id)
+    : { guidance: [], conflicts: [] };
+
+  function addStyleObservation() {
+    const value = styleValue.trim();
+    const source = selectedStyleSource;
+    if (!source || !value || !styleExcerpt.trim() || !selected && styleScope === 'section') {
+      setStyleError('Choose a source, add a style note and exact source excerpt, and select a section for section-specific notes.');
+      return;
+    }
+    if (styleValue.length > 240 || styleExcerpt.length > 2000) {
+      setStyleError('Style notes are limited to 240 characters and source excerpts to 2,000 characters.');
+      return;
+    }
+    const start = source.text.indexOf(styleExcerpt);
+    if (start < 0 || source.text.indexOf(styleExcerpt, start + 1) >= 0) {
+      setStyleError('The exact excerpt must appear once in the selected project source.');
+      return;
+    }
+    const observation = createStyleObservation({
+      id: crypto.randomUUID(), trait: styleTrait, value, interpretation: styleInterpretation,
+      scope: styleScope === 'section' && selected ? { kind: 'section', sectionId: selected.id } : { kind: 'manuscript' },
+      evidence: { kind: 'source', recordId: source.id, version: source.version, digest: source.digest,
+        start, end: start + styleExcerpt.length, excerpt: styleExcerpt },
+    });
+    setStyleProfile(profile => ({ ...profile, observations: [...profile.observations, observation] }));
+    setStyleValue('');
+    setStyleExcerpt('');
+    setStyleError('');
+  }
+
+  function reviewStyle(id: string, status: 'confirmed' | 'rejected') {
+    try {
+      setStyleProfile(profile => reviewStyleObservation(profile, id, status, resolveStyleSource));
+      setStyleError('');
+    } catch (cause) {
+      setStyleError(cause instanceof Error ? cause.message : 'This style note could not be reviewed.');
+    }
+  }
 
   function edit(next: ManuscriptSection[]) {
     setDraft({ base: draft?.base ?? narrativeBase(project), sections: next });
@@ -196,6 +264,80 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
               busy={saving} onCancel={() => { setAdopting(false); setDraft(null); setError(''); onDirty(false); }}
               onApply={(next, anchor, base) => void save(base, next, anchor)} />
           )}
+          <details className="mb-4 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+            <summary className="cursor-pointer font-semibold">User-reviewed style profile</summary>
+            <p className="my-2 text-sm text-gray-600 dark:text-gray-300">
+              Notes are temporary for this editor session. They use existing imported sources, are not written to canonical facts, and do not trigger analysis or provider calls.
+            </p>
+            <section aria-label="Confirmed style context" className="mb-3 rounded bg-gray-50 p-3 dark:bg-gray-950">
+              <h3 className="font-medium">Current style context{selected ? ` · ${selected.title || selected.kind}` : ''}</h3>
+              {styleContext.guidance.length ? (
+                <ul className="mt-2 list-disc space-y-2 pl-5 text-sm">
+                  {styleContext.guidance.map(item => (
+                    <li key={item.id}><strong>{item.trait}:</strong> {item.value} <span className="text-gray-600 dark:text-gray-300">({item.interpretation})</span>
+                      <blockquote className="mt-1 border-l-2 border-gray-300 pl-2 text-xs">{item.evidence.excerpt}</blockquote>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">No current confirmed style notes apply here.</p>}
+              {styleContext.conflicts.map(conflict => <p key={conflict.trait} role="status" className="mt-2 text-sm text-amber-800">Conflicting confirmed notes for {conflict.trait} are excluded.</p>)}
+            </section>
+            {styleSources.length ? (
+              <fieldset className="grid gap-3" disabled={!selectedStyleSource}>
+                <legend className="font-medium">Add a note for review</legend>
+                <label className="grid gap-1 text-sm">Source record
+                  <select className={field} value={selectedStyleSource ? `${selectedStyleSource.id}:${selectedStyleSource.version}:${selectedStyleSource.digest}` : ''}
+                    onChange={event => setStyleSourceId(event.target.value)}>
+                    {styleSources.map(source => <option key={`${source.id}:${source.version}:${source.digest}`} value={`${source.id}:${source.version}:${source.digest}`}>
+                      {source.filename || 'Imported source'} · {source.version}
+                    </option>)}
+                  </select>
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1 text-sm">Trait
+                    <select className={field} value={styleTrait} onChange={event => setStyleTrait(event.target.value as StyleTrait)}>
+                      <option value="pov">Point of view</option><option value="voice">Voice</option><option value="tense">Tense</option>
+                      <option value="rhythm">Rhythm</option><option value="dialogue">Dialogue</option><option value="atmosphere">Atmosphere</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-sm">Note type
+                    <select className={field} value={styleInterpretation} onChange={event => setStyleInterpretation(event.target.value as typeof styleInterpretation)}>
+                      <option value="observation">Observation</option><option value="interpretation">Interpretation</option>
+                    </select>
+                  </label>
+                </div>
+                <label className="grid gap-1 text-sm">Style note
+                  <input className={field} maxLength={240} value={styleValue} onChange={event => setStyleValue(event.target.value)} placeholder="Write a short note; nothing is inferred automatically." />
+                </label>
+                <label className="grid gap-1 text-sm">Exact source excerpt (must appear once)
+                  <textarea className={field} maxLength={2000} rows={3} value={styleExcerpt} onChange={event => setStyleExcerpt(event.target.value)} />
+                </label>
+                <label className="grid gap-1 text-sm">Applies to
+                  <select className={field} value={styleScope} onChange={event => setStyleScope(event.target.value as typeof styleScope)}>
+                    <option value="manuscript">Whole manuscript</option><option value="section" disabled={!selected}>Selected section only</option>
+                  </select>
+                </label>
+                <button type="button" className={`${workspaceButton} justify-self-start`} onClick={addStyleObservation}>Add pending note</button>
+              </fieldset>
+            ) : <p className="mt-2 text-sm">No imported source records are available to anchor style notes.</p>}
+            {styleError && <p role="alert" className="mt-2 text-sm text-red-700">{styleError}</p>}
+            {styleProfile.observations.length > 0 && (
+              <section aria-label="Style note review queue" className="mt-4 space-y-2">
+                <h3 className="font-medium">Review queue</h3>
+                {styleProfile.observations.map(item => {
+                  const isCurrent = currentStyleObservations.some(current => current.id === item.id);
+                  return <article key={item.id} className="rounded border border-gray-200 p-3 text-sm dark:border-gray-700">
+                    <p><strong>{item.trait} · {item.interpretation}:</strong> {item.value} <span className="ml-2">Status: {isCurrent ? item.status : 'stale source'}</span></p>
+                    <blockquote className="my-2 border-l-2 border-gray-300 pl-2">{item.evidence.excerpt}</blockquote>
+                    {item.status === 'pending' && <div className="flex flex-wrap gap-2">
+                      <button type="button" className={workspaceButton} disabled={!isCurrent} onClick={() => reviewStyle(item.id, 'confirmed')}>Confirm</button>
+                      <button type="button" className={workspaceButton} onClick={() => reviewStyle(item.id, 'rejected')}>Reject</button>
+                    </div>}
+                  </article>;
+                })}
+              </section>
+            )}
+          </details>
           <fieldset className="min-w-0 space-y-3" disabled={!enabled || adopting}>
             {selected ? (
               <label className="block text-sm">
