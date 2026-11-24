@@ -22,8 +22,7 @@ Date: 2026-11-24. Living register, not a code implementation approval. Statuses:
 | NI-D16 | AGREED | Writer-focused Working Manuscript separate from immutable original and generated artifacts, coordinated with graph/Bible; no Word clone. | 03, 05, approval 08, design 09 |
 | NI-D17 | DELEGATED | Retain original file bytes by default within safe budget, explicit extracted-only option; immutable source references, tested migration and transaction authority. | 08, 09 |
 | NI-D18 | DELEGATED | New-project import first; existing-project append follow-on, explicit preview/revision guard; never overwrite silently. | 08, 09 |
-| NI-D19 | DELEGATED | Deliver all agreed capabilities in dependency-ordered slices; manual AI default, optional consent/budget automation later, backup retention configurable after measurement; actual IA/Figma and limits validated before implementation. | 08, 09 |
-
+| NI-D19 | DELEGATED | Deliver all agreed capabilities in dependency-ordered slices; manual AI default, optional consent/budget automation later, backup retention configurable after measurement; validate actual IA/limits through AI Studio previews and tests, Figma optional design review. | 08, 09 |
 | NI-D20 | DELEGATED | One primary editable manuscript, optional chapter/scene/block structure with stable IDs; unstructured writing permitted; narration vs chronology separate. | 08, 09 |
 | NI-D21 | DELEGATED | Text↔model sync: automatic local freshness and impact detection; explicit AI proposals, human approval, no silent bidirectional rewrite. | 08, 09 |
 | NI-D22 | DELEGATED | Keep generated artifacts immutable; explicit adoption of selected output into working manuscript with provenance. | 08, 09 |
@@ -34,3 +33,6 @@ Agreed directions are product decisions only. Final design/implementation plan, 
 
 ## Round 4 status transition (2026-11-24)
 NI-D10–15 PROPOSED → AGREED; NI-D16 OPEN → AGREED, explicit owner acceptance 08. NI-D17–19 OPEN → DELEGATED, assistant selected defaults per owner request. NI-D20–24 added DELEGATED. Original V1–V3 records and Git history retained. No separate technical implementation approval inferred for a particular schema, library, numeric limit or merge. All accepted features targeted across stages, not all in one release.
+
+## Round 5 delivery decision (2026-11-24)
+Owner explicitly reaffirms V4, authorizes Google AI Studio-first implementation planning and broad staged prompts, followed by independent review. NI-D19 delivery grouping refined: five substantial phases instead of W1–W6; visible usable preview, safe incomplete NEW functions labeled, hard data integrity and final qualification. Existing V4 delegated defaults remain accepted. See [implementation package](../../implementation/narrative-workspace/README.md). No new implementation or merge performed in this documentation update.

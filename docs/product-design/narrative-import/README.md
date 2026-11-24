@@ -25,3 +25,6 @@ Workflow: refine and approve product decisions first; then create an approved de
 Future discovery records should be appended as numbered files and linked here. Keep owner ideas separate from accepted decisions and mark superseded proposals explicitly instead of erasing history.
 
 V3 extends the archive beyond import to ongoing narrative diagnostics, creative opportunities, visualization and backup/recovery. The decision register is the current review reference; the evolution log explains changes without erasing history. V3 directions accepted in round 4; see 08 and updated register. V4 detailed defaults chosen under explicit owner delegation; implementation remains staged and unstarted.
+
+## Round 5 — execution handoff
+Owner accepted V4 and requests Google AI Studio first in substantial stages, followed by independent review. [Consolidated implementation package](../../implementation/narrative-workspace/README.md) replaces W1–W6 grouping with five phases, preserving all decisions and prior archive. Technical integration/hosted preflight required. No production code changed in this documentation PR.

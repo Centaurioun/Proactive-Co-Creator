@@ -34,3 +34,9 @@ Append next round's change entries and decision status transitions. Do not revis
 | EVO-21 | All approved features delivered together | Dependency-ordered slices W1–W6; retain all accepted scope | Protect data, reduce rework, preserve testable baseline | Delegated NI-D19 |
 
 Status transitions reflect owner round 4, not retroactive approval at V3. See 08 and 09.
+
+## Round 5 — delivery strategy
+| Change | Earlier idea | Revised direction | Reason | Status |
+|---|---|---|---|---|
+| EVO-22 | W1–W6 plus Figma-first sequencing | Five substantial AI Studio implementation phases, visible preview and later independent Codex/ChatGPT qualification; optional Figma review | Owner prefers Studio preview/model access; reduce prompts without losing safety | Agreed delivery direction NI-D19 |
+| EVO-23 | Require fully complete feature set each intermediate stage | Hard data integrity/app shell; new incomplete features explicitly labeled, checkpoint and final strict gate | Incremental reliable progress without false readiness | Delegated execution policy NI-D19 |
