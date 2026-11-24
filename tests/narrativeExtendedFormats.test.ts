@@ -90,6 +90,21 @@ test('EPUB requires mimetype to be first in the reader validated physical entry 
   assert.deepEqual(archive.calls, []);
 });
 
+test('EPUB parser propagates cancellation through the injected bounded reader and stops before later members', async () => {
+  const archive = readerFor(validFiles());
+  const originalRead = archive.readEntry.bind(archive);
+  const controller = new AbortController();
+  archive.readEntry = async (path, maxBytes, signal) => {
+    assert.equal(signal, controller.signal);
+    const bytes = await originalRead(path, maxBytes, signal);
+    if (path === 'META-INF/container.xml') controller.abort();
+    return bytes;
+  };
+  const result = await parseEpub(archive, undefined, { signal: controller.signal });
+  assert.equal(result.status, 'cancelled');
+  assert.deepEqual(archive.calls, ['mimetype', 'META-INF/container.xml']);
+});
+
 test('EPUB applies one aggregate XML node budget across many individually small spine documents', async () => {
   const files: Record<string, string> = {
     'mimetype': 'application/epub+zip',

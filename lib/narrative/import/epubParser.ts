@@ -29,7 +29,7 @@ export interface BoundedArchiveReader {
    * The shared adapter must validate ZIP structure/CRC, reject unsafe names and
    * encryption as appropriate, and never write members to disk.
    */
-  readEntry(path: string, maxBytes: number): Promise<Uint8Array>;
+  readEntry(path: string, maxBytes: number, signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 export interface EpubParseLimits {
@@ -95,7 +95,7 @@ export interface EpubCoverage {
   membersWithoutText: string[];
 }
 
-export type EpubParseStatus = 'complete' | 'partial' | 'unsupported' | 'no-text' | 'malformed' | 'limit-exceeded' | 'archive-read-failed';
+export type EpubParseStatus = 'complete' | 'partial' | 'unsupported' | 'no-text' | 'malformed' | 'limit-exceeded' | 'archive-read-failed' | 'cancelled';
 
 export interface EpubParseResult {
   status: EpubParseStatus;
@@ -454,13 +454,15 @@ function extractXhtmlBlocks(body: XmlElement, maxBlocks: number): { blocks: Extr
   return { blocks, unstructuredText };
 }
 
-function resolveTextMember(reader: BoundedArchiveReader, entries: Map<string, BoundedArchiveEntry>, path: string, limits: EpubParseLimits): Promise<string> {
+function resolveTextMember(reader: BoundedArchiveReader, entries: Map<string, BoundedArchiveEntry>, path: string, limits: EpubParseLimits, signal?: AbortSignal): Promise<string> {
+  if (signal?.aborted) return Promise.reject(new ParseFault('cancelled', 'EPUB parsing was cancelled.'));
   const entry = entries.get(path);
   if (!entry) return Promise.reject(new ParseFault('malformed', `EPUB archive is missing required member "${path}".`));
   if (entry.encrypted) return Promise.reject(new ParseFault('unsupported', `Encrypted EPUB member "${path}" is not supported.`));
   if (entry.compression === 'unsupported') return Promise.reject(new ParseFault('unsupported', `EPUB compression for member "${path}" is not supported.`));
   if (entry.uncompressedBytes > limits.maxMemberBytes) return Promise.reject(new ParseFault('limit-exceeded', `EPUB member "${path}" exceeds the configured member limit.`));
-  return reader.readEntry(path, limits.maxMemberBytes).then(bytes => {
+  return reader.readEntry(path, limits.maxMemberBytes, signal).then(bytes => {
+    if (signal?.aborted) fail('cancelled', 'EPUB parsing was cancelled.');
     if (!(bytes instanceof Uint8Array) || bytes.byteLength !== entry.uncompressedBytes || bytes.byteLength > limits.maxMemberBytes) {
       fail('malformed', `Bounded EPUB reader returned an invalid byte count for member "${path}".`);
     }
@@ -480,6 +482,7 @@ function countTextBytes(value: string): number {
 export async function parseEpub(
   reader: BoundedArchiveReader,
   limits: EpubParseLimits = DEFAULT_EPUB_PARSE_LIMITS,
+  options: { signal?: AbortSignal } = {},
 ): Promise<EpubParseResult> {
   const coverage = emptyCoverage();
   const warnings: string[] = [];
@@ -521,9 +524,9 @@ export async function parseEpub(
     const mimetypeEntry = entries.get('mimetype');
     if (!mimetypeEntry) fail('malformed', 'EPUB archive is missing its required mimetype member.');
     if (mimetypeEntry.encrypted || mimetypeEntry.compression !== 'stored') fail('unsupported', 'EPUB mimetype must be an unencrypted stored member.');
-    const mimetype = await resolveTextMember(reader, entries, 'mimetype', limits);
+    const mimetype = await resolveTextMember(reader, entries, 'mimetype', limits, options.signal);
     if (mimetype !== 'application/epub+zip') fail('malformed', 'EPUB mimetype member has an unexpected value.');
-    const containerXml = await resolveTextMember(reader, entries, 'META-INF/container.xml', limits);
+    const containerXml = await resolveTextMember(reader, entries, 'META-INF/container.xml', limits, options.signal);
     const container = parseXml(containerXml, limits, xmlNodeBudget);
     if (container.localName !== 'container' || container.namespaceUri !== CONTAINER_NS) fail('unsupported', 'EPUB container namespace or root is not supported.');
     const rootfiles = findDescendant(container, 'rootfiles', CONTAINER_NS);
@@ -532,7 +535,7 @@ export async function parseEpub(
     if (!rootfile) fail('unsupported', 'EPUB container has no supported OPF package document.');
     const packagePath = rootfile.attributes.get('full-path') ?? '';
     if (!isSafeMemberName(packagePath, limits.maxPathLength)) fail('unsupported', 'EPUB rootfile path is not a supported archive-relative member name.');
-    const packageXml = await resolveTextMember(reader, entries, packagePath, limits);
+    const packageXml = await resolveTextMember(reader, entries, packagePath, limits, options.signal);
     const opf = parseXml(packageXml, limits, xmlNodeBudget);
     if (opf.localName !== 'package' || opf.namespaceUri !== OPF_NS) fail('unsupported', 'EPUB package namespace or root is not supported.');
     const version = opf.attributes.get('version') ?? '';
@@ -590,7 +593,7 @@ export async function parseEpub(
         coverage.unsupportedItems.push(`${plannedItem.id}: encrypted or unsupported member encoding`);
         continue;
       }
-      const xhtml = parseXml(await resolveTextMember(reader, entries, plannedItem.path, limits), limits, xmlNodeBudget);
+      const xhtml = parseXml(await resolveTextMember(reader, entries, plannedItem.path, limits, options.signal), limits, xmlNodeBudget);
       if (xhtml.localName !== 'html' || xhtml.namespaceUri !== XHTML_NS) {
         coverage.omittedSpineItems += 1;
         coverage.unsupportedItems.push(`${plannedItem.id}: unsupported XHTML root or namespace`);
