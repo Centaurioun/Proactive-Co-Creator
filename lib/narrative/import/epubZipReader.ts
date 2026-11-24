@@ -225,6 +225,34 @@ function parseCentralDirectory(bytes: Uint8Array, limits: EpubZipReaderLimits): 
 
 function abortError(): Error { return new Error('EPUB ZIP member read was aborted.'); }
 
+export function withEpubWorkerErrorBridge(worker: Worker): () => void {
+  const onError = (event: ErrorEvent) => {
+    event.preventDefault();
+    const error = event.error instanceof Error ? event.error : undefined;
+    worker.onmessage?.({ data: { $e$: [event.message || 'EPUB decompression worker failed.', error?.name, error?.stack] } } as MessageEvent);
+  };
+  worker.addEventListener('error', onError);
+  return () => worker.removeEventListener('error', onError);
+}
+
+function withBrowserWorkerErrorBridge<T>(workerCleanups: Array<() => void>, operation: () => T): T {
+  if (typeof window === 'undefined' || typeof globalThis.Worker !== 'function') return operation();
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
+  const NativeWorker = globalThis.Worker;
+  class ErrorForwardingWorker extends NativeWorker {
+    constructor(scriptURL: string | URL, options?: WorkerOptions) {
+      super(scriptURL, options);
+      workerCleanups.push(withEpubWorkerErrorBridge(this));
+    }
+  }
+  Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: ErrorForwardingWorker });
+  try { return operation(); }
+  finally {
+    if (descriptor) Object.defineProperty(globalThis, 'Worker', descriptor);
+    else Reflect.deleteProperty(globalThis, 'Worker');
+  }
+}
+
 export function createEpubZipReader(input: Uint8Array, options: EpubZipReaderOptions = {}): EpubZipArchiveReader {
   const limits: EpubZipReaderLimits = { ...DEFAULT_EPUB_ZIP_READER_LIMITS, ...options.limits };
   assertLimits(limits);
@@ -278,10 +306,13 @@ export function createEpubZipReader(input: Uint8Array, options: EpubZipReaderOpt
         let outputBytes = 0;
         let crc = 0xffffffff;
         const chunks: Uint8Array[] = [];
+        const workerCleanups: Array<() => void> = [];
         const settle = (error?: Error, value?: Uint8Array) => {
           if (settled) return;
           settled = true;
           signal?.removeEventListener('abort', onAbort);
+          for (const cleanup of workerCleanups.splice(0)) cleanup();
+          if (error) activeFile?.terminate();
           if (error) reject(error);
           else resolve(value!);
         };
@@ -332,7 +363,7 @@ export function createEpubZipReader(input: Uint8Array, options: EpubZipReaderOpt
         signal?.addEventListener('abort', onAbort, { once: true });
         try {
           if (signal?.aborted) { onAbort(); return; }
-          unzip.push(bytes.subarray(record.localOffset, record.dataEnd), true);
+          withBrowserWorkerErrorBridge(workerCleanups, () => unzip.push(bytes.subarray(record.localOffset, record.dataEnd), true));
           if (!found && !settled) settle(new Error(`fflate did not discover the requested member: ${path}.`));
         } catch (error) {
           settle(error instanceof Error ? error : new Error(String(error)));

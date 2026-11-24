@@ -2,11 +2,29 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import test from 'node:test';
 import { strToU8, zipSync, type Zippable } from 'fflate';
-import { createEpubZipReader } from '../lib/narrative/import/epubZipReader.ts';
+import { createEpubZipReader, withEpubWorkerErrorBridge } from '../lib/narrative/import/epubZipReader.ts';
 
 function archive(files: Zippable, level: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 0): Uint8Array {
   return zipSync(files, { level });
 }
+
+test('browser Worker initialization errors are forwarded to fflate and the listener is removed', () => {
+  const listeners = new Map<string, (event: Event) => void>();
+  let delivered: unknown;
+  const worker = {
+    onmessage: (event: MessageEvent) => { delivered = event.data; },
+    addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => listeners.set(type, listener as (event: Event) => void),
+    removeEventListener: (type: string) => { listeners.delete(type); },
+  } as unknown as Worker;
+  const cleanup = withEpubWorkerErrorBridge(worker);
+  const preventDefault = () => { /* marks this expected worker failure as handled */ };
+  listeners.get('error')?.({ message: 'P5 synthetic worker initialization failure', error: new Error('worker boot failed'), preventDefault } as unknown as Event);
+  assert.equal((delivered as { $e$: unknown[] }).$e$[0], 'P5 synthetic worker initialization failure');
+  assert.equal((delivered as { $e$: unknown[] }).$e$[1], 'Error');
+  assert.match(String((delivered as { $e$: unknown[] }).$e$[2]), /worker boot failed/);
+  cleanup();
+  assert.equal(listeners.has('error'), false);
+});
 
 function centralOffset(bytes: Uint8Array, filename: string): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
