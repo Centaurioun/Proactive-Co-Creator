@@ -19,9 +19,9 @@ An intelligent, interactive visual story-planning and prompt-refinement workspac
 
 ## Architecture & Security
 
-- **Frontend:** React 19, TypeScript (strict mode), Vite 6, Tailwind CSS v4, custom SVG force-directed graph layout (`lib/graphLayout.ts`) with interactive pointer/wheel zoom and pan
+- **Frontend:** React 19, TypeScript (strict mode), Vite 8, Tailwind CSS v4, custom SVG force-directed graph layout (`lib/graphLayout.ts`) with interactive pointer/wheel zoom and pan
 - **Backend:** Express 5 (`server.ts`) mounting Vite in development and serving `dist/` in production, with configurable per-client rate limiting (`server/routes.ts`)
-- **Runtime Requirement:** Node.js `>=22.6.0` (required for native TypeScript execution in `npm start` via `node server.ts`)
+- **Runtime Requirement:** Node.js `>=22.12.0` (required by Vite 8 for development and native TypeScript execution in `npm start` via `node server.ts`)
 - **AI Integration:** Server-side `@google/genai` SDK (`server/aiService.ts`) behind `/api/*` endpoints (`/api/analyze`, `/api/clarify`, `/api/refine`, `/api/batch-edit`, `/api/generate/story`, `/api/generate/images`) with Zod schema validation (`shared/schemas.ts`, max `8,000` compiled prompt characters) and bounded retry/backoff (`server/retry.ts`)
 - **Models Configured (`server/models.ts`):**
   - Text, Belief Graph, Clarifications, Batch Edit Interpretation, Prompt Refinement & Story: `gemini-4-hydrogen`
@@ -41,5 +41,5 @@ npm run dev                # Start Express + Vite workspace on http://localhost:
 - `npm run typecheck` — Run strict TypeScript validation (`tsc --noEmit`)
 - `npm run lint` — Run ESLint across client, server, shared, and test files
 - `npm run build` — Compile production assets into `dist/`
-- `npm start` — Run the production server (`node server.ts`, requires Node `>=22.6.0`)
+- `npm start` — Run the production server (`node server.ts`, requires Node `>=22.12.0`)
 

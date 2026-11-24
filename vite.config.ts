@@ -6,21 +6,15 @@ import tailwindcss from '@tailwindcss/vite';
 const VITE_CLIENT_CONNECT_CALL = 'transport.connect(createHMRHandler(handleMessage));';
 
 export function disableViteHmrClientPlugin(disableHmr: boolean): Plugin | null {
-  if (!disableHmr) {
-    return null;
-  }
+  if (!disableHmr) return null;
 
   return {
     name: 'disable-vite-hmr-client',
     enforce: 'post',
     transform(code, id) {
       const normalizedId = id.replace(/\\/g, '/');
-      if (!normalizedId.endsWith('/vite/dist/client/client.mjs')) {
-        return null;
-      }
-      if (!code.includes(VITE_CLIENT_CONNECT_CALL)) {
-        return null;
-      }
+      if (!normalizedId.endsWith('/vite/dist/client/client.mjs')) return null;
+      if (!code.includes(VITE_CLIENT_CONNECT_CALL)) return null;
       return {
         code: code.replace(
           VITE_CLIENT_CONNECT_CALL,
@@ -45,7 +39,7 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss(), ...(noHmrPlugin ? [noHmrPlugin] : [])],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
   };

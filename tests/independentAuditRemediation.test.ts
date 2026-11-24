@@ -709,17 +709,17 @@ describe('Independent Audit Remediation Suite (IA-01 through IA-25)', () => {
     }
   });
 
-  it('IA-16 & IA-19: verifies package.json engines.node >=22.6.0 and README accuracy', () => {
+  it('IA-16 & IA-19: verifies package.json engines.node >=22.12.0 and README accuracy', () => {
     const pkgRaw = fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8');
     const pkg = JSON.parse(pkgRaw) as { engines?: { node?: string } };
-    assert.equal(pkg.engines?.node, '>=22.6.0');
+    assert.equal(pkg.engines?.node, '>=22.12.0');
 
     const readme = fs.readFileSync(path.resolve(process.cwd(), 'README.md'), 'utf8');
     assert.ok(readme.includes('40` undo stack steps'));
     assert.ok(!readme.includes('(`60` steps)'));
     assert.ok(!readme.includes('D3 zoom/pan'));
     assert.ok(readme.includes('.env.local'));
-    assert.ok(readme.includes('>=22.6.0'));
+    assert.ok(readme.includes('>=22.12.0'));
   });
 
   it('IA-17: builds structured Before -> After diff items and projected prompt for Review Modal', () => {

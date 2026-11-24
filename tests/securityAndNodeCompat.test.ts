@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { disableViteHmrClientPlugin } from '../vite.config.ts';
 
 const ROOT = process.cwd();
@@ -49,41 +50,32 @@ describe('security & Node 22 native execution compatibility', () => {
     assert.equal(output, 'function');
   });
 
-  it('skips Vite client WebSocket connection when DISABLE_HMR=true', () => {
+  it('skips the installed Vite client WebSocket connection when DISABLE_HMR=true', () => {
     assert.equal(disableViteHmrClientPlugin(false), null);
-
     const plugin = disableViteHmrClientPlugin(true);
-    assert.ok(plugin);
-    assert.equal(typeof plugin.transform, 'function');
+    assert.ok(plugin?.transform);
 
-    const sampleClientCode = [
-      'const hmrClient = new HMRClient(logger, transport, importer);',
-      'transport.connect(createHMRHandler(handleMessage));',
-      'export { ErrorOverlay, createHotContext, injectQuery, removeStyle, updateStyle };',
-    ].join('\n');
+    const viteEntry = fileURLToPath(import.meta.resolve('vite'));
+    const viteClientPath = path.resolve(path.dirname(viteEntry), '../client/client.mjs');
+    const installedClientCode = fs.readFileSync(viteClientPath, 'utf8');
+    assert.ok(
+      installedClientCode.includes('transport.connect(createHMRHandler(handleMessage));'),
+      `Installed Vite client no longer has the expected connection call: ${viteClientPath}`
+    );
 
-    const transformFn = plugin.transform as (
+    const transform = plugin.transform as (
       this: unknown,
       code: string,
       id: string
     ) => { code: string; map: null } | null;
+    assert.equal(transform.call({}, installedClientCode, '/app/src/App.tsx'), null);
 
-    assert.equal(transformFn.call({}, sampleClientCode, '/app/src/App.tsx'), null);
-
-    const transformed = transformFn.call(
-      {},
-      sampleClientCode,
-      '/app/applet/node_modules/vite/dist/client/client.mjs'
-    );
-    assert.ok(transformed);
+    const transformed = transform.call({}, installedClientCode, viteClientPath);
+    assert.ok(transformed?.code.includes('HMR disabled (DISABLE_HMR=true)'));
     assert.equal(
-      transformed.code.includes('transport.connect(createHMRHandler(handleMessage));'),
+      transformed?.code.includes('transport.connect(createHMRHandler(handleMessage));'),
       false
     );
-    assert.equal(
-      transformed.code.includes('export { ErrorOverlay, createHotContext, injectQuery, removeStyle, updateStyle };'),
-      true
-    );
   });
-});
 
+});
