@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { AI_OPERATION_POLICIES } from '../server/aiBudget.ts';
+import { AI_OPERATION_POLICIES, maxAttemptsWithinOperationBudget, reserveAggregateOperationUsage } from '../server/aiBudget.ts';
 import { runWritingAssistant, type NarrativeAiClientLike } from '../server/narrative/narrativeAiService.ts';
+import { extractNarrativeChunk } from '../server/narrative/extractionService.ts';
 
 const request = {
   projectId: 'synthetic-project', baseRevision: 1, sectionId: 'scene-1', sectionTitle: 'Scene 1',
@@ -9,6 +10,49 @@ const request = {
 };
 
 describe('narrative AI budget enforcement', () => {
+  it('limits retry attempts by aggregate generation calls and counted input plus output allowance', () => {
+    const story = AI_OPERATION_POLICIES.story;
+    assert.equal(maxAttemptsWithinOperationBudget(story, 4_000), 1);
+    assert.equal(maxAttemptsWithinOperationBudget(story, 100), 2);
+    assert.equal(maxAttemptsWithinOperationBudget(story, 12_000), 0);
+  });
+
+  it('enforces aggregate narrative import call, token, and elapsed limits across requests', () => {
+    const policy = AI_OPERATION_POLICIES['narrative-import'];
+    const key = `aggregate-test-${Date.now()}-${Math.random()}`;
+    assert.equal(reserveAggregateOperationUsage({ policy, operationKey: key, inputTokens: 1, now: 1_000 }).ok, true);
+    assert.equal(reserveAggregateOperationUsage({ policy, operationKey: key, inputTokens: policy.maxAggregateTokens, now: 1_001 }).ok, false);
+    assert.equal(reserveAggregateOperationUsage({ policy, operationKey: `${key}-time`, inputTokens: 1, now: 1_000 }).ok, true);
+    const expired = reserveAggregateOperationUsage({ policy, operationKey: `${key}-time`, inputTokens: 1, now: 1_000 + policy.maxAggregateElapsedMs });
+    assert.equal(expired.ok, false);
+  });
+
+  it('stops extraction at the configured aggregate call budget without a provider call', async () => {
+    let generateCalls = 0;
+    const client = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10 }),
+        generateContent: async () => {
+          generateCalls += 1;
+          return { text: JSON.stringify({ findings: [], entities: [], relationships: [], ambiguities: [] }) };
+        },
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    const digest = `f${Date.now().toString(16).padStart(63, '0')}`;
+    const policy = AI_OPERATION_POLICIES['narrative-import'];
+    for (let index = 0; index < policy.maxAggregateCalls; index += 1) {
+      await extractNarrativeChunk({
+        sourceId: 'synthetic-source', sourceVersion: 'v1', digest, chunkId: `chunk-${index}`,
+        text: 'Synthetic text.', scope: 'complete', categories: [], instruction: '',
+      }, undefined, client);
+    }
+    await assert.rejects(() => extractNarrativeChunk({
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest, chunkId: 'over-budget',
+      text: 'Synthetic text.', scope: 'complete', categories: [], instruction: '',
+    }, undefined, client), /call limit/i);
+    assert.equal(generateCalls, policy.maxAggregateCalls);
+  });
+
   it('passes the configured output-token cap to generation after provider preflight count', async () => {
     let generateConfig: Record<string, unknown> | undefined;
     const client: NarrativeAiClientLike = {

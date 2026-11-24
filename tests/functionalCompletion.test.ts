@@ -792,6 +792,23 @@ describe('Package G — DOCX Export round-trip and Verified All-Projects ZIP Arc
     );
   });
 
+  it('rejects inconsistent archive manifests and unlisted ZIP members before restore', async () => {
+    const { bytes } = await buildAllProjectsArchiveZip([createSampleProject()]);
+    const unpacked = unzipSync(bytes);
+    const manifest = JSON.parse(new TextDecoder().decode(unpacked['manifest.json'])) as Record<string, unknown>;
+
+    const wrongCount = { ...unpacked, 'manifest.json': strToU8(JSON.stringify({ ...manifest, projectCount: 2 })) };
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(zipSync(wrongCount), new Set()), /project count/i);
+
+    const wrongMetadata = JSON.parse(JSON.stringify(manifest)) as typeof manifest;
+    (wrongMetadata.entries as Array<Record<string, unknown>>)[0].name = 'Different project';
+    const mismatched = { ...unpacked, 'manifest.json': strToU8(JSON.stringify(wrongMetadata)) };
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(zipSync(mismatched), new Set()), /metadata does not match/i);
+
+    const extraMember = { ...unpacked, 'projects/unlisted.json': strToU8('{}') };
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(zipSync(extraMember), new Set()), /unlisted entry/i);
+  });
+
   it('rejects an oversized project entry before retaining expanded archive contents', async () => {
     const oversized = new Uint8Array(49 * 1024 * 1024);
     const archive = zipSync({ 'projects/oversized.json': oversized });

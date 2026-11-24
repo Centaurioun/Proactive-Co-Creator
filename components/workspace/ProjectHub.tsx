@@ -271,6 +271,7 @@ export default function ProjectHub({
                         setMessage(`Restored ${res.count} verified project(s) from portable archive.`);
                       } else {
                         setArchiveError(res.error ?? 'Archive restore failed.');
+                        if (res.count > 0) setArchivePreview(null);
                       }
                     }}
                     className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-45"

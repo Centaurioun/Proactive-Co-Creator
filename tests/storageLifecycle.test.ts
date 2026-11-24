@@ -939,6 +939,40 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
     );
   });
 
+  it('reconciles an idempotent retry from the latest IndexedDB project instead of its stale prepared candidate', async () => {
+    const base = createSampleProject();
+    await persistProjectDurably(base, { forceOverwrite: true });
+    const intentId = 'fix_storage_replay_authority';
+    const candidate = {
+      ...base,
+      revision: 2,
+      updatedAt: base.updatedAt + 1,
+      snapshot: updateStoryBibleField(base.snapshot, 'genre', 'First committed result'),
+    };
+    const firstWrite = await persistProjectDurably(candidate, {
+      expectedPersistedRevision: base.revision,
+      intentId,
+    });
+    assert.equal(firstWrite.saved, true);
+
+    const newer = {
+      ...candidate,
+      revision: 3,
+      updatedAt: candidate.updatedAt + 1,
+      snapshot: updateStoryBibleField(candidate.snapshot, 'genre', 'Newer authoritative result'),
+    };
+    assert.equal((await persistProjectDurably(newer, { expectedPersistedRevision: 2 })).saved, true);
+
+    const replay = await persistProjectDurably(candidate, {
+      expectedPersistedRevision: base.revision,
+      intentId,
+    });
+    assert.equal(replay.saved, true);
+    assert.equal(replay.idempotentHit, true);
+    assert.equal(replay.storedProject?.revision, 3);
+    assert.equal(replay.storedProject?.snapshot.storyBible.genre.value, 'Newer authoritative result');
+  });
+
   it('FIX 4: isSnapshotSemanticallyEqual compares answeredQuestions, skippedQuestions, clarification targets/options, and decision metadata', async () => {
     const { isSnapshotSemanticallyEqual } = await import('../lib/historyEngine.ts');
     const snapA = createSampleProject().snapshot;

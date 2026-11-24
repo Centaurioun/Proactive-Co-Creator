@@ -368,6 +368,9 @@ function App() {
         }
 
         const ackRevision = res.persistedRevision ?? (targetProject.revision ?? 1);
+        const acknowledgedProject = res.idempotentHit && res.storedProject
+          ? res.storedProject
+          : targetProject;
         setProject((prev) => {
           if (prev.id !== targetProject.id) return prev;
           const nextPersisted = Math.max(prev.persistedRevision ?? 0, ackRevision);
@@ -377,7 +380,7 @@ function App() {
         });
         setSavedProjects((prev) => {
           const reconciled = reconcileAsyncSaveAcknowledgement({
-            acknowledgedProject: targetProject,
+            acknowledgedProject,
             acknowledgedRevision: ackRevision,
             currentActiveProject: activeProjectRef.current,
             savedProjects: prev,
@@ -1202,15 +1205,17 @@ function App() {
   const handleRestoreArchiveProjects = async (
     restoredProjects: CreativeProject[]
   ): Promise<{ ok: boolean; count: number; error?: string }> => {
+    let nextSaved = [...savedProjectsRef.current];
+    let savedCount = 0;
     try {
-      let nextSaved = [...savedProjectsRef.current];
-      let savedCount = 0;
       for (const candidate of restoredProjects) {
         const res = await flushProjectDurably(candidate, { expectedPersistedRevision: 0 });
         if (!res.saved) {
           throw new Error(res.error ?? `Could not restore "${candidate.name}".`);
         }
-        const committed = { ...candidate, persistedRevision: res.persistedRevision ?? candidate.revision };
+        const committed = res.idempotentHit && res.storedProject
+          ? res.storedProject
+          : { ...candidate, persistedRevision: res.persistedRevision ?? candidate.revision };
         nextSaved = upsertProjectInSavedList(nextSaved, committed);
         savedCount += 1;
       }
@@ -1219,7 +1224,18 @@ function App() {
       setStatusNotification(`Restored ${savedCount} verified project(s) from portable archive.`);
       return { ok: true, count: savedCount };
     } catch (cause) {
-      return { ok: false, count: 0, error: cause instanceof Error ? cause.message : 'Archive restore failed.' };
+      if (savedCount > 0) {
+        savedProjectsRef.current = nextSaved;
+        setSavedProjects(nextSaved);
+      }
+      const detail = cause instanceof Error ? cause.message : 'Archive restore failed.';
+      return {
+        ok: false,
+        count: savedCount,
+        error: savedCount > 0
+          ? `Partial archive restore: ${savedCount} project(s) were durably restored before the next save failed. ${detail}`
+          : detail,
+      };
     }
   };
 

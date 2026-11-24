@@ -255,7 +255,11 @@ export async function parseAndVerifyAllProjectsArchive(
   if (manifest.formatVersion !== ARCHIVE_FORMAT_VERSION || !Array.isArray(manifest.entries)) {
     throw new Error('Unsupported or malformed archive manifest format.');
   }
-  if (manifest.entries.length === 0 || manifest.entries.length > MAX_ARCHIVE_PROJECTS) {
+  if (
+    manifest.entries.length === 0 ||
+    manifest.entries.length > MAX_ARCHIVE_PROJECTS ||
+    manifest.projectCount !== manifest.entries.length
+  ) {
     throw new Error('Archive project count is empty or exceeds the supported limit.');
   }
 
@@ -266,8 +270,21 @@ export async function parseAndVerifyAllProjectsArchive(
   const warnings: string[] = [];
 
   for (const entry of manifest.entries) {
-    if (!isSafeArchivePath(entry.filePath) || seenPaths.has(entry.filePath)) {
-      throw new Error(`Archive manifest contains an invalid or duplicate path: "${entry.filePath}".`);
+    if (
+      !entry ||
+      typeof entry.filePath !== 'string' ||
+      !isSafeArchivePath(entry.filePath) ||
+      seenPaths.has(entry.filePath) ||
+      typeof entry.projectId !== 'string' ||
+      typeof entry.name !== 'string' ||
+      !Number.isSafeInteger(entry.revision) || entry.revision < 1 ||
+      !Number.isSafeInteger(entry.schemaVersion) || entry.schemaVersion < 1 ||
+      !Number.isSafeInteger(entry.byteLength) || entry.byteLength < 0 ||
+      typeof entry.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(entry.sha256) ||
+      !Number.isSafeInteger(entry.extractedOnlySources) || entry.extractedOnlySources < 0 ||
+      !Number.isSafeInteger(entry.retainedOriginalSources) || entry.retainedOriginalSources < 0
+    ) {
+      throw new Error(`Archive manifest contains an invalid or duplicate path: "${typeof entry?.filePath === 'string' ? entry.filePath : '(unknown)'}".`);
     }
     seenPaths.add(entry.filePath);
 
@@ -289,6 +306,18 @@ export async function parseAndVerifyAllProjectsArchive(
     } catch {
       throw new Error(`Project file "${entry.filePath}" is not valid JSON.`);
     }
+    if (!rawProject || typeof rawProject !== 'object' || Array.isArray(rawProject)) {
+      throw new Error(`Project file "${entry.filePath}" is not a valid project object.`);
+    }
+    const archivedProject = rawProject as Record<string, unknown>;
+    if (
+      archivedProject.id !== entry.projectId ||
+      archivedProject.name !== entry.name ||
+      archivedProject.revision !== entry.revision ||
+      archivedProject.schemaVersion !== entry.schemaVersion
+    ) {
+      throw new Error(`Manifest metadata does not match project file "${entry.filePath}".`);
+    }
     const migrated = migrateProjectPayload(rawProject);
     const { project: safeProj, remapped, oldId } = remapProjectIdOnCollision(migrated, seenIds);
     seenIds.add(safeProj.id);
@@ -301,6 +330,13 @@ export async function parseAndVerifyAllProjectsArchive(
       );
     }
     projects.push(safeProj);
+  }
+
+  const expectedArchivePaths = new Set(['manifest.json', ...seenPaths]);
+  for (const path of Object.keys(entriesMap)) {
+    if (!expectedArchivePaths.has(path)) {
+      throw new Error(`Archive contains an unlisted entry: "${path}".`);
+    }
   }
 
   return {

@@ -4,6 +4,7 @@ import { filterExtractionScope } from '../../lib/narrative/import/scope.ts';
 import { AppApiError, classifyGeminiError } from '../errors.ts';
 import { getGeminiClient } from '../geminiClient.ts';
 import { GEMINI_MODELS } from '../models.ts';
+import { AI_OPERATION_POLICIES, reserveAggregateOperationUsage } from '../aiBudget.ts';
 
 const MAX_INPUT_TOKENS_PER_CHUNK = 8_000;
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -55,8 +56,12 @@ const ambiguitySchema = {
   }, required: ['id', 'title', 'detail', 'severity', 'certainty', 'rationale', 'evidence'],
 };
 
-export async function extractNarrativeChunk(request: NarrativeExtractionRequest, externalSignal?: AbortSignal) {
-  const ai = getGeminiClient();
+export async function extractNarrativeChunk(
+  request: NarrativeExtractionRequest,
+  externalSignal?: AbortSignal,
+  client: ReturnType<typeof getGeminiClient> = getGeminiClient(),
+) {
+  const ai = client;
   const abort = new AbortController();
   const timeout = setTimeout(() => abort.abort(new Error('Narrative import extraction timed out.')), REQUEST_TIMEOUT_MS);
   const onAbort = () => abort.abort(externalSignal?.reason);
@@ -93,11 +98,19 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       }),
     ]).finally(() => { if (countTimer) clearTimeout(countTimer); });
     if (abort.signal.aborted) throw new AppApiError('CANCELLED', 'Extraction was cancelled before generation.', 499, false);
-    if (!Number.isSafeInteger(tokenCount.totalTokens) || (tokenCount.totalTokens ?? -1) < 0) {
+    if (typeof tokenCount.totalTokens !== 'number' || !Number.isSafeInteger(tokenCount.totalTokens) || tokenCount.totalTokens < 0) {
       throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; extraction was not started.', 503, false);
     }
-    if ((tokenCount.totalTokens ?? Number.POSITIVE_INFINITY) > MAX_INPUT_TOKENS_PER_CHUNK) {
+    if (tokenCount.totalTokens > MAX_INPUT_TOKENS_PER_CHUNK) {
       throw new AppApiError('VALIDATION_ERROR', `This segment exceeds the safe ${MAX_INPUT_TOKENS_PER_CHUNK.toLocaleString()} input-token budget. Reduce the segment size and retry.`, 413, false);
+    }
+    const aggregateBudget = reserveAggregateOperationUsage({
+      policy: AI_OPERATION_POLICIES['narrative-import'],
+      operationKey: request.digest,
+      inputTokens: tokenCount.totalTokens,
+    });
+    if (!aggregateBudget.ok) {
+      throw new AppApiError('VALIDATION_ERROR', aggregateBudget.reason, 429, false);
     }
     const response = await ai.models.generateContent({
       model: GEMINI_MODELS.text,
@@ -105,7 +118,7 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       config: {
         abortSignal: abort.signal,
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        maxOutputTokens: 2048,
+        maxOutputTokens: Math.min(2048, AI_OPERATION_POLICIES['narrative-import'].maxOutputTokens),
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,

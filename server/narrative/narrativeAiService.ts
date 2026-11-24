@@ -24,6 +24,7 @@ import {
   AI_OPERATION_POLICIES,
   estimateTokensFromText,
   evaluateOperationBudget,
+  maxAttemptsWithinOperationBudget,
   type AiOperation,
   type AiUsageReport,
 } from '../aiBudget.ts';
@@ -107,7 +108,10 @@ async function runBudgetedJsonOperation<T>(params: {
   }
 
   const ai: NarrativeAiClientLike = params.client ?? (getGeminiClient() as unknown as NarrativeAiClientLike);
-  const { signal: reqSignal, cleanup } = combineSignals(params.signal, policy.timeoutMs);
+  const { signal: reqSignal, cleanup } = combineSignals(
+    params.signal,
+    Math.min(policy.timeoutMs, policy.maxAggregateElapsedMs)
+  );
 
   try {
     if (typeof ai.models.countTokens !== 'function') {
@@ -157,6 +161,16 @@ async function runBudgetedJsonOperation<T>(params: {
       throw new AppApiError('VALIDATION_ERROR', budget.reason ?? 'Request exceeds configured AI budget.', 400, false);
     }
 
+    const maxAttempts = maxAttemptsWithinOperationBudget(policy, providerInputTokens);
+    if (maxAttempts < 1) {
+      throw new AppApiError(
+        'VALIDATION_ERROR',
+        `The ${params.operation} operation exceeds its total call/token budget, including the configured output allowance.`,
+        400,
+        false
+      );
+    }
+
     const response = await withRetry(
       () =>
         ai.models.generateContent({
@@ -169,7 +183,7 @@ async function runBudgetedJsonOperation<T>(params: {
             maxOutputTokens: policy.maxOutputTokens,
           },
         }),
-      { maxAttempts: 2, signal: reqSignal }
+      { maxAttempts, signal: reqSignal }
     );
 
     const text = response.text?.trim();
