@@ -15,12 +15,13 @@ export interface SourceBlock {
   end: number;
   kind: 'paragraph' | 'heading';
   label?: string;
+  pageNumber?: number;
 }
 
 export interface ParsedNarrativeSource {
   text: string;
   filename: string;
-  mediaType: 'text/plain' | 'text/markdown' | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  mediaType: 'text/plain' | 'text/markdown' | 'application/pdf' | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   byteLength: number;
   digest: string;
   blocks: SourceBlock[];
@@ -223,8 +224,18 @@ export async function parseNarrativeSource(
     blocks = extracted.blocks;
     warnings.push(...extracted.warnings);
     mediaType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  } else if (suffix === 'pdf') {
+    if (new TextDecoder('ascii').decode(bytes.subarray(0, 5)) !== '%PDF-') {
+      throw new Error('Supported sources are pasted text, .txt, .md, .docx, and selectable-text .pdf files.');
+    }
+    const { extractPdfText } = await import('./pdfTextParser');
+    const extracted = await extractPdfText(bytes);
+    text = extracted.text;
+    blocks = extracted.blocks;
+    warnings.push(...extracted.warnings);
+    mediaType = 'application/pdf';
   } else {
-    throw new Error('Supported sources are pasted text, .txt, .md, and .docx files.');
+    throw new Error('Supported sources are pasted text, .txt, .md, .docx, and selectable-text .pdf files.');
   }
   const textBytes = new TextEncoder().encode(text);
   if (!text.trim()) throw new Error('No readable narrative text was found in this source.');
