@@ -4,6 +4,8 @@
 - **Observed Timestamp:** `2026-11-23T22:50Z – 23:35Z`
 - **Frequency Policy:** Real-world user prevalence is marked **`UNKNOWN`** for all findings (no production telemetry or user study exists in Stage 0). Severity reflects impact when encountered, not measured frequency.
 
+> **Qualification update (2026-11-24):** The table below is the authoritative issue register and contains **17 findings (`F-01`–`F-17`)**. The older Stage 0 report's heading saying `F-01`–`F-15` was incomplete. The 2026-11-24 qualification adds evidence for the CI timing race and hidden artifact upload under `F-01`; its current status is **locally corrected, remote verification pending**. See [`../modernization/2026-11-24-stage-0-final-qualification.md`](../modernization/2026-11-24-stage-0-final-qualification.md) for current results. Historical remote status text below is superseded by this update.
+
 ## Priority Legend
 - **P0:** Data loss, credential exposure, critical workflow completely blocked, or broken CI verification gate.
 - **P1:** High-impact accessibility failure, broken primary keyboard interaction, or CI failure blocking continuous regression checks.
@@ -14,7 +16,7 @@
 
 | ID | Priority | Classification | Confidence | Evidence | Status in Stage 0 | Owning Stage | Rough Effort |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `F-01` | **P0/P1** | CI / Reliability | Observed + Measured | GitHub runs `45270690374` & `45276592557`; local RED repro `chrome-for-testing` missing | **FIXED (Local GREEN; Remote CI BLOCKED pending push)** | Stage 0 (S0.1) | Small |
+| `F-01` | **P0/P1** | CI / Reliability | Observed + Measured | GitHub runs `45270690374`, `45276592557`, `45300419119`; local RED reproduced E2E-E immediate focus assertion and hidden artifact omission | **LOCAL FIX VERIFIED (E2E-A–I 9/9); REMOTE CI PENDING** | Stage 0 (S0.1) | Small |
 | `F-02` | **P1** | Accessibility (Keyboard) | Observed + Measured | `J05`: `BeliefGraph` Table View had `0/28` keyboard-focusable `<tr>` rows | **FIXED & RE-VERIFIED (28/28 rows)** | Stage 0 (S0.7) | Small |
 | `F-03` | **P1** | Accessibility (Focus) | Observed + Measured | `J08` & `stage0-audit-metrics.json`: `OutputGallery` lightbox & `InfoModal` failed to move focus inside dialog or trap Tab | **FIXED & RE-VERIFIED (`focusInside: true`, Escape return)** | Stage 0 (S0.7) | Small |
 | `F-04` | **P2** | Responsive / Mobile UX | Observed + Measured | `SC-11`, `SC-12`, `SC-15`, `stage0-audit-metrics.json`: `WorkspaceBottomBar` wraps to `189px` (4 rows) on `390×844`, leaving ~75–90px for Graph/Story | **DEFERRED to Figma / Stage 1** | Stage 1 (Figma) | Medium |
@@ -33,6 +35,12 @@
 | `F-17` | **P1 (Conditional)** | Security / Cost Boundary | Code Inspection (`server/routes.ts`) | Express API routes have per-IP rate limiting & Zod schemas, but no account identity or per-user spend cap if deployed publicly with a shared server `GEMINI_API_KEY` | **DOCUMENTED (Conditional Deployment Risk)** | Pre-Public Launch | Large |
 
 ## Detailed Evidence for Stage 0 Fixed Issues (`F-01`, `F-02`, `F-03`)
+
+### `F-01` qualification update — focus assertion and artifact collection (2026-11-24)
+- GitHub Actions run `45300419119` used commit `3526c24fec45c60878937a331e487fc387e28d0b`. The `Verify (Node 22.x)` job passed; `Browser E2E Smoke (Chromium)` installed the browser and reached E2E-A–D PASS, then failed E2E-E at `Escape did not return focus`. The upload step completed but reported no matching files because `.playwright-cli/` is a hidden directory and the upload action excluded hidden files by default.
+- Local macOS Chromium reproduced the same immediate assertion failure. The failure screenshot captured just after the assertion shows the dialog closed and the `Review Plan & Prompt` trigger focused. `App.tsx` restores focus in `requestAnimationFrame`; the assertion read active focus before that frame. This is a test timing defect; no product behavior change was justified.
+- `scripts/e2e-browser-smoke.sh` now waits for the dialog's close button to receive focus on open and waits for both dialog removal and trigger focus after Escape. `.github/workflows/ci.yml` now includes hidden artifacts and errors if no artifact files are found.
+- Re-run on macOS ARM64 passed E2E-A–I 9/9, with zero API hits, page errors, or console errors. The remote fix has **not** run yet; do not label remote CI green until a workflow on the final commit succeeds and its artifact is inspected.
 
 ### `F-01` — GitHub Actions Chromium Browser Installation Mismatch (FIXED locally; Remote CI pending push)
 - **Root Cause:** `.github/workflows/ci.yml` line 73 executed `playwright-cli install-browser chromium --with-deps --only-shell`, while `@playwright/cli@0.1.22` `open --browser=chromium` without a custom `executablePath` expects `chrome-for-testing` (`chromium-1247/chrome-linux64/chrome`).

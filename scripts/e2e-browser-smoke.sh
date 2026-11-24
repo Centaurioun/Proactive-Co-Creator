@@ -29,6 +29,7 @@ fi
 read -r -d '' PLAYWRIGHT_FN <<'EOF' || true
 async (page) => {
   const BASE = "__BASE_URL__";
+  const artifactDiagnostic = "__ARTIFACT_DIAGNOSTIC__" === '1';
   const browser = page.context().browser();
   const assert = (cond, msg) => { if (!cond) throw new Error('ASSERT FAILED: ' + msg); };
   const results = [];
@@ -76,8 +77,8 @@ async (page) => {
         status: 'PASS',
         durationMs: Date.now() - t0,
         apiHits: traps.apiHits.length,
-        pageErrors: traps.pageErrors.length,
-        consoleErrors: traps.consoleErrors.length,
+        pageErrors: traps.pageErrors,
+        consoleErrors: traps.consoleErrors,
       });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -100,11 +101,35 @@ async (page) => {
       throw err;
     } finally {
       if (passed) {
-        try { await ctx.tracing.stop(); } catch { /* ignore */ }
+        try {
+          if (id === 'E2E-E') await ctx.tracing.stop({ path: '.playwright-cli/trace-e2e-e.zip' });
+          else await ctx.tracing.stop();
+        } catch { /* ignore */ }
       }
       await ctx.close();
     }
   };
+
+  if (artifactDiagnostic) {
+    try {
+      await runScenario('CONTROLLED-ARTIFACT-FAILURE', async (p) => {
+        await p.goto(BASE, { waitUntil: 'networkidle' });
+        throw new Error('CONTROLLED_ARTIFACT_DIAGNOSTIC');
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      assert(message.includes('CONTROLLED_ARTIFACT_DIAGNOSTIC'), 'Unexpected diagnostic failure: ' + message);
+    }
+    const captured = structured.scenarios.find((scenario) => scenario.id === 'CONTROLLED-ARTIFACT-FAILURE');
+    assert(captured?.status === 'FAIL', 'Controlled diagnostic did not exercise the failure capture path');
+    structured.controlledFailure = captured;
+    structured.artifactDiagnostic = true;
+    structured.scenarios = [{ id: 'CONTROLLED-ARTIFACT-VERIFICATION', status: 'PASS' }];
+    structured.finishedAt = new Date().toISOString();
+    structured.passed = true;
+    structured.summary = ['CONTROLLED-ARTIFACT-FAILURE: captured'];
+    return 'E2E_JSON_BEGIN' + JSON.stringify(structured) + 'E2E_JSON_END';
+  }
 
   try {
 
@@ -251,8 +276,70 @@ async (page) => {
     await p.locator('[aria-label="Batch edit preview"] label', { hasText: /Fox/i }).locator('input[type="checkbox"]').uncheck();
     await p.getByText('Proposed Batch Operations (2/3)').waitFor({ state: 'visible' });
 
-    // Open Review Modal and inspect Before/After & Projected Prompt
-    await p.getByRole('button', { name: 'Review Plan & Prompt' }).click();
+    // Repeatedly verify modal entry, both focus-trap boundaries, close paths and canonical-state integrity.
+    const reviewButton = p.getByRole('button', { name: 'Review Plan & Prompt' });
+    const footerBeforeModal = await p.locator('footer').textContent();
+    const revisionBeforeModal = footerBeforeModal.match(/(\d+)\s+revs?/)?.[1];
+    assert(revisionBeforeModal !== undefined, 'E2E-E could not read canonical project revision before modal cycles');
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      await reviewButton.click();
+      await p.waitForFunction(
+        () => Boolean(document.querySelector('[role="dialog"]')) && document.activeElement?.textContent?.trim() === 'Close',
+        null,
+        { timeout: 1000 }
+      );
+      const modalButtons = p.locator('[role="dialog"] button:not([disabled])');
+      const firstButtonText = (await modalButtons.first().textContent())?.trim();
+      const lastButtonText = (await modalButtons.last().textContent())?.trim();
+      assert(firstButtonText === 'Close', `E2E-E cycle ${cycle + 1} modal first focusable is ${firstButtonText}`);
+      await p.keyboard.press('Shift+Tab');
+      await p.waitForFunction((expected) => document.activeElement?.textContent?.trim() === expected, lastButtonText, { timeout: 1000 });
+      await p.keyboard.press('Tab');
+      await p.waitForFunction((expected) => document.activeElement?.textContent?.trim() === expected, firstButtonText, { timeout: 1000 });
+      if (cycle === 1) await p.getByRole('button', { name: 'Close', exact: true }).click();
+      else await p.keyboard.press('Escape');
+      await p.waitForFunction(
+        () => !document.querySelector('[role="dialog"]') && document.activeElement?.textContent?.trim() === 'Review Plan & Prompt',
+        null,
+        { timeout: 1000 }
+      );
+      assert(await reviewButton.count() === 1, `E2E-E cycle ${cycle + 1} opener was detached`);
+      assert(await reviewButton.isEnabled(), `E2E-E cycle ${cycle + 1} opener was not focusable`);
+      assert(
+        (await p.evaluate(() => document.activeElement?.textContent?.trim())) === 'Review Plan & Prompt',
+        `E2E-E cycle ${cycle + 1} focus did not return to the opener`
+      );
+      const footerAfterCycle = await p.locator('footer').textContent();
+      assert(
+        (footerAfterCycle.match(/(\d+)\s+revs?/)?.[1] ?? null) === (revisionBeforeModal ?? null),
+        `E2E-E cycle ${cycle + 1} changed canonical revision`
+      );
+    }
+
+    // Check the same entry and Escape restoration behavior at a phone-sized viewport.
+    await p.setViewportSize({ width: 390, height: 844 });
+    await reviewButton.click();
+    await p.waitForFunction(
+      () => Boolean(document.querySelector('[role="dialog"]')) && document.activeElement?.textContent?.trim() === 'Close',
+      null,
+      { timeout: 1000 }
+    );
+    await p.keyboard.press('Escape');
+    await p.waitForFunction(
+      () => !document.querySelector('[role="dialog"]') && document.activeElement?.textContent?.trim() === 'Review Plan & Prompt',
+      null,
+      { timeout: 1000 }
+    );
+    await p.screenshot({ path: '.playwright-cli/e2e-e-mobile-modal.png' });
+    await p.setViewportSize({ width: 1440, height: 900 });
+
+    // Reopen for impact assertions and a representative success trace.
+    await reviewButton.click();
+    await p.waitForFunction(
+      () => Boolean(document.querySelector('[role="dialog"]')) && document.activeElement?.textContent?.trim() === 'Close',
+      null,
+      { timeout: 1000 }
+    );
     const batchDiffText = (
       await p.locator('[data-testid="review-diff-list"] [data-diff-source="batch-preview"]').allTextContents()
     ).join(' | ');
@@ -266,6 +353,13 @@ async (page) => {
 
     // Close Review Modal via Escape and assert focus returns to Review button
     await p.keyboard.press('Escape');
+    await p.waitForFunction(
+      () =>
+        !document.querySelector('[role="dialog"]') &&
+        document.activeElement?.textContent?.trim() === 'Review Plan & Prompt',
+      null,
+      { timeout: 1000 }
+    );
     assert((await p.evaluate(() => document.activeElement?.textContent?.trim())) === 'Review Plan & Prompt', 'E2E-E Escape did not return focus');
 
     // Advance revision -> preview becomes visibly stale & Apply button disabled
@@ -475,6 +569,7 @@ async (page) => {
 EOF
 
 PLAYWRIGHT_FN="${PLAYWRIGHT_FN//__BASE_URL__/$BASE_URL}"
+PLAYWRIGHT_FN="${PLAYWRIGHT_FN//__ARTIFACT_DIAGNOSTIC__/${E2E_ARTIFACT_DIAGNOSTIC:-0}}"
 
 RUN_OUT="$(playwright-cli run-code "$PLAYWRIGHT_FN" 2>&1)" || {
   echo "$RUN_OUT" >&2
@@ -502,8 +597,31 @@ if (payloadStr.startsWith("\\\"") || resultSection.slice(start - 1, start) === "
   payloadStr = JSON.parse("\"" + payloadStr + "\"");
 }
 const data = JSON.parse(payloadStr);
-fs.writeFileSync(".playwright-cli/e2e-results.json", JSON.stringify(data, null, 2));
-if (!data.passed || !Array.isArray(data.summary) || data.summary.length !== 9) {
+const targetPath = data.artifactDiagnostic
+  ? ".playwright-cli/controlled-failure-results.json"
+  : ".playwright-cli/e2e-results.json";
+fs.writeFileSync(targetPath, JSON.stringify(data, null, 2));
+const browserLogs = (data.scenarios || []).map((scenario) => ({
+  scenario: scenario.id,
+  pageErrors: (Array.isArray(scenario.pageErrors) ? scenario.pageErrors : []).map((message) =>
+    String(message).replace(/([?&](?:key|token|api_key)=)[^&\s]+/gi, "$1[REDACTED]")
+  ),
+  consoleErrors: (Array.isArray(scenario.consoleErrors) ? scenario.consoleErrors : []).map((message) =>
+    String(message).replace(/([?&](?:key|token|api_key)=)[^&\s]+/gi, "$1[REDACTED]")
+  ),
+}));
+fs.writeFileSync(".playwright-cli/browser-logs.json", JSON.stringify(browserLogs, null, 2));
+if (data.artifactDiagnostic) {
+  const failure = data.controlledFailure;
+  const fsExists = (name) => fs.existsSync(`.playwright-cli/${name}`);
+  if (!data.passed || !failure || failure.status !== "FAIL" ||
+      !fsExists("fail-controlled-artifact-failure.png") ||
+      !fsExists("trace-fail-controlled-artifact-failure.zip")) {
+    console.error("E2E_ARTIFACT_DIAGNOSTIC_FAIL: controlled failure evidence is incomplete.");
+    process.exit(1);
+  }
+  console.log("E2E_ARTIFACT_DIAGNOSTIC_PASS: screenshot, trace, and structured failure results captured.");
+} else if (!data.passed || !Array.isArray(data.summary) || data.summary.length !== 9) {
   console.error("E2E_SMOKE_FAIL:", data.fatalError || "Not all 9 E2E scenarios passed", JSON.stringify(data.scenarios));
   process.exit(1);
 }

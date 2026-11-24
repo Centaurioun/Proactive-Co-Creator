@@ -1,10 +1,12 @@
 # Proactive Co-Creator 2.0 — Stage 0 UX & Technical Baseline
 
 - **Date:** 2026-11-23 / 2026-11-24
-- **Remote `main` Baseline SHA:** `03e9fda79f00fc9d27984142dcb188f099f28fde` (`docs: add six-cycle Stage 0 UX baseline and CI audit execution plan`, 1 commit ahead of historical plan baseline `faf580e30532481fdf9c8e4113084f6fb07340de`)
+- **Historical remote `main` baseline SHA (2026-11-23):** `03e9fda79f00fc9d27984142dcb188f099f28fde` (`docs: add six-cycle Stage 0 UX baseline and CI audit execution plan`, 1 commit ahead of historical plan baseline `faf580e30532481fdf9c8e4113084f6fb07340de`)
 - **Checkpoint Backup:** `/tmp/stage0-checkpoint-03e9fda` (SHA-256 tree digest `6ca96f21fae03cb356984f6b70e6160bbbdbc4bcfbcbf9274357c7585ad02266`)
-- **Runtime & Browser:** Node `v22.23.5`, npm `10.9.9`, `@playwright/cli@0.1.22` (Playwright `1.64.0-alpha`), Chromium headless shell (`chromium-1247`), Linux `4.19.0-gvisor x64`
+- **Historical baseline runtime & browser:** Node `v22.23.5`, npm `10.9.9`, `@playwright/cli@0.1.22` (Playwright `1.64.0-alpha`), Chromium headless shell (`chromium-1247`), Linux `4.19.0-gvisor x64`
 - **API Cost Guarantee:** **0 paid Gemini API calls.** All browser captures and journey runs executed against a key-free production server (`env -u GEMINI_API_KEY -u API_KEY NODE_ENV=production PORT=3100 node server.ts`, verified `/api/health` → `{"ok":true,"configured":false}`) plus Playwright `**/api/**` route interception asserting `unmockedApiHits === 0`.
+
+> **Final qualification update (2026-11-24):** Current repo HEAD at inspection was `3526c24fec45c60878937a331e487fc387e28d0b`, Node `v26.12.1` / npm `11.20.0`, macOS `darwin 27.0.0 arm64`, Playwright CLI `0.1.22`, Chromium for Testing `155.0.8059.12` (Playwright build `1247`). The corrected local smoke suite passed E2E-A–I 9/9 and the existing audit passed J01–J12 12/12, all with a key-free server. The checked-in screenshot set remains the historical 16-image baseline; captures were not regenerated because no visible application change was made. Remote CI is still pending: run `45300419119` failed E2E-E before the local timing correction and uploaded no files because `.playwright-cli` is hidden. See the [final qualification report](../modernization/2026-11-24-stage-0-final-qualification.md).
 
 ## Reproducible Local Commands
 
