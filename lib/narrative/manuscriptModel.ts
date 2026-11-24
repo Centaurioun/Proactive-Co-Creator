@@ -6,6 +6,7 @@ import { NARRATIVE_SCHEMA_VERSION } from '../storageEngine.ts';
 import { recordNarrativeChange } from './changeAudit.ts';
 import { isTextBoundary, validateNarrativeRecords, verifyTextSpan } from './evidenceRegistry.ts';
 import { invalidateTargetEvidence } from './issueRegistry.ts';
+import { createStyleProfile, type StyleProfile } from './context/styleProfile.ts';
 
 const empty: ManuscriptSection[] = [];
 export function manuscriptSections(project: CreativeProject): ManuscriptSection[] {
@@ -94,15 +95,20 @@ export function prepareManuscriptChange(
   base: NarrativeBase,
   sections: ManuscriptSection[],
   artifact?: ArtifactAnchor,
+  styleProfile?: StyleProfile,
 ) {
   if (base.projectId !== project.id || base.revision !== project.revision ||
     base.manuscriptVersionId !== project.snapshot.manuscriptVersionId) {
     throw new Error('The project changed. Keep a copy of the draft and reopen the latest version before applying it.');
   }
-  if (JSON.stringify(manuscriptSections(project)) === JSON.stringify(sections)) return null;
   const id = crypto.randomUUID();
   const records = project.narrative ?? { versions: [], sectionVersions: [], sources: [], claims: [], issues: [], audit: [] };
   const previousVersion = records.versions.find(version => version.id === base.manuscriptVersionId);
+  const previousStyleProfile = previousVersion?.styleProfile ?? createStyleProfile(project.id);
+  if (styleProfile && styleProfile.projectId !== project.id) throw new Error('Style profile belongs to a different project.');
+  const styleProfileChanged = styleProfile !== undefined && JSON.stringify(styleProfile) !== JSON.stringify(previousStyleProfile);
+  if (JSON.stringify(manuscriptSections(project)) === JSON.stringify(sections) && !styleProfileChanged) return null;
+  const nextStyleProfile = styleProfile?.observations.length ? styleProfile : previousVersion?.styleProfile;
   const previousSectionRefs = new Set(previousVersion?.sectionVersionIds);
   const previousBySectionId = new Map(records.sectionVersions
     .filter(record => previousSectionRefs.has(record.id))
@@ -123,7 +129,7 @@ export function prepareManuscriptChange(
   });
   const label = artifact ? 'Adopt generated story' : 'Edit manuscript';
   const result = commitSnapshotTransaction(
-    { ...project, schemaVersion: NARRATIVE_SCHEMA_VERSION, narrative: { ...invalidateTargetEvidence(records, [...changedTargets]), sectionVersions, versions: [...records.versions, { id, sectionVersionIds }] } },
+    { ...project, schemaVersion: NARRATIVE_SCHEMA_VERSION, narrative: { ...invalidateTargetEvidence(records, [...changedTargets]), sectionVersions, versions: [...records.versions, { id, sectionVersionIds, ...(nextStyleProfile ? { styleProfile: nextStyleProfile } : {}) }] } },
     undo,
     { ...project.snapshot, manuscriptVersionId: id },
     label,

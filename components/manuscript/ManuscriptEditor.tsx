@@ -11,7 +11,7 @@ const field = 'w-full rounded-md border border-gray-300 bg-white px-3 py-2 dark:
 
 interface Props {
   project: CreativeProject;
-  onSave: (base: NarrativeBase, sections: ManuscriptSection[], artifact?: ArtifactAnchor) => Promise<void>;
+  onSave: (base: NarrativeBase, sections: ManuscriptSection[], artifact?: ArtifactAnchor, styleProfile?: StyleProfile) => Promise<void>;
   onDirty: (dirty: boolean) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -34,7 +34,8 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const [chapterFilter, setChapterFilter] = useState('');
   const [chronologyFilter, setChronologyFilter] = useState('');
   const [previewSection, setPreviewSection] = useState(false);
-  const [styleProfile, setStyleProfile] = useState<StyleProfile>(() => createStyleProfile(project.id));
+  const profileForCurrentVersion = project.narrative?.versions.find(({ id }) => id === project.snapshot.manuscriptVersionId)?.styleProfile ?? createStyleProfile(project.id);
+  const [styleProfile, setStyleProfile] = useState<StyleProfile>(() => profileForCurrentVersion);
   const [styleSourceId, setStyleSourceId] = useState('');
   const [styleTrait, setStyleTrait] = useState<StyleTrait>('voice');
   const [styleValue, setStyleValue] = useState('');
@@ -62,10 +63,10 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const storyCount = project.artifacts.filter(artifact => artifact.mode === 'story' && artifact.storyText).length;
 
   useEffect(() => {
-    setStyleProfile(createStyleProfile(project.id));
+    setStyleProfile(profileForCurrentVersion);
     setStyleSourceId('');
     setStyleError('');
-  }, [project.id]);
+  }, [project.id, project.snapshot.manuscriptVersionId]);
 
   function resolveStyleSource(ref: { recordId: string; version: string; digest: string }) {
     const source = styleSources.find(item => item.id === ref.recordId && item.version === ref.version && item.digest === ref.digest);
@@ -77,6 +78,7 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
     return source !== undefined && source.text.slice(observation.evidence.start, observation.evidence.end) === observation.evidence.excerpt;
   });
   const currentStyleProfile = { ...styleProfile, observations: currentStyleObservations };
+  const styleProfileDirty = JSON.stringify(styleProfile) !== JSON.stringify(profileForCurrentVersion);
   const styleContext = selected
     ? selectStyleContext(currentStyleProfile, project.id, selected.id)
     : { guidance: [], conflicts: [] };
@@ -104,6 +106,7 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
         start, end: start + styleExcerpt.length, excerpt: styleExcerpt },
     });
     setStyleProfile(profile => ({ ...profile, observations: [...profile.observations, observation] }));
+    onDirty(true);
     setStyleValue('');
     setStyleExcerpt('');
     setStyleError('');
@@ -112,6 +115,7 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   function reviewStyle(id: string, status: 'confirmed' | 'rejected') {
     try {
       setStyleProfile(profile => reviewStyleObservation(profile, id, status, resolveStyleSource));
+      onDirty(true);
       setStyleError('');
     } catch (cause) {
       setStyleError(cause instanceof Error ? cause.message : 'This style note could not be reviewed.');
@@ -132,7 +136,7 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
     }
   }
 
-  async function save(base: NarrativeBase, next: ManuscriptSection[], artifact?: ArtifactAnchor) {
+  async function save(base: NarrativeBase, next: ManuscriptSection[], artifact?: ArtifactAnchor, nextStyleProfile = styleProfile) {
     if (inFlight.current) return;
     inFlight.current = true;
     if (artifact) setDraft({ base, sections: next, artifact });
@@ -140,9 +144,10 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
     setSaving(true);
     setError('');
     try {
-      await onSave(base, next, artifact);
+      await onSave(base, next, artifact, nextStyleProfile);
       setDraft(null);
       setAdopting(false);
+      setStyleProfile(nextStyleProfile);
       onDirty(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Save failed. Your draft is still open.');
@@ -267,7 +272,7 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
           <details className="mb-4 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
             <summary className="cursor-pointer font-semibold">User-reviewed style profile</summary>
             <p className="my-2 text-sm text-gray-600 dark:text-gray-300">
-              Notes are temporary for this editor session. They use existing imported sources, are not written to canonical facts, and do not trigger analysis or provider calls.
+              Notes use existing imported sources and are separate from canonical facts. Save the profile to the project; no analysis or provider call is triggered.
             </p>
             <section aria-label="Confirmed style context" className="mb-3 rounded bg-gray-50 p-3 dark:bg-gray-950">
               <h3 className="font-medium">Current style context{selected ? ` · ${selected.title || selected.kind}` : ''}</h3>
@@ -283,7 +288,7 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
               {styleContext.conflicts.map(conflict => <p key={conflict.trait} role="status" className="mt-2 text-sm text-amber-800">Conflicting confirmed notes for {conflict.trait} are excluded.</p>)}
             </section>
             {styleSources.length ? (
-              <fieldset className="grid gap-3" disabled={!selectedStyleSource}>
+              <fieldset className="grid gap-3" disabled={!selectedStyleSource || saving}>
                 <legend className="font-medium">Add a note for review</legend>
                 <label className="grid gap-1 text-sm">Source record
                   <select className={field} value={selectedStyleSource ? `${selectedStyleSource.id}:${selectedStyleSource.version}:${selectedStyleSource.digest}` : ''}
@@ -321,6 +326,10 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
               </fieldset>
             ) : <p className="mt-2 text-sm">No imported source records are available to anchor style notes.</p>}
             {styleError && <p role="alert" className="mt-2 text-sm text-red-700">{styleError}</p>}
+            {styleProfileDirty && <button type="button" className={`${workspaceButton} mt-3`} disabled={!enabled || saving || isComposing}
+              onClick={() => void save(draft?.base ?? narrativeBase(project), draft?.sections ?? sections, draft?.artifact, styleProfile)}>
+              Save style profile
+            </button>}
             {styleProfile.observations.length > 0 && (
               <section aria-label="Style note review queue" className="mt-4 space-y-2">
                 <h3 className="font-medium">Review queue</h3>
