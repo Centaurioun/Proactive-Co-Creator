@@ -111,7 +111,6 @@ const CONTAINER_NS = 'urn:oasis:names:tc:opendocument:xmlns:container';
 const OPF_NS = 'http://www.idpf.org/2007/opf';
 const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 const XML_NS = 'http://www.w3.org/XML/1998/namespace';
-const MAX_KNOWN_COMPRESSION_RATIO = 200;
 const BLOCK_NAMES = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote', 'pre']);
 const IGNORED_NAMES = new Set(['head', 'script', 'style', 'svg', 'template', 'noscript']);
 
@@ -168,8 +167,20 @@ function failure(status: FailureStatus, reason: string, coverage = emptyCoverage
   return { status, reason, text: '', blocks: [], chapters: [], coverage, warnings: [reason] };
 }
 
+function hasForbiddenControlCharacter(value: string, allowXmlWhitespace: boolean): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (allowXmlWhitespace) {
+      if (code < 32 && code !== 9 && code !== 10 && code !== 13) return true;
+    } else if (code < 32 || code === 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isSafeMemberName(path: string, maxPathLength = 1024): boolean {
-  if (!path || path.length > maxPathLength || /[\u0000-\u001f\u007f]/.test(path) || path.startsWith('/') || path.includes('\\') || path.includes('%') || path.includes('?') || path.includes('#')) return false;
+  if (!path || path.length > maxPathLength || hasForbiddenControlCharacter(path, false) || path.startsWith('/') || path.includes('\\') || path.includes('%') || path.includes('?') || path.includes('#')) return false;
   if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return false;
   const segments = path.split('/');
   return segments.every(segment => segment.length > 0 && segment !== '.' && segment !== '..');
@@ -247,7 +258,7 @@ function readTagEnd(xml: string, start: number): number {
 
 function parseXml(xml: string, limits: EpubParseLimits, budget: XmlNodeBudget): XmlElement {
   if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(xml)) fail('unsupported', 'EPUB XML declarations with DTD or entities are not supported.');
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(xml)) fail('malformed', 'EPUB XML contains invalid control characters.');
+  if (hasForbiddenControlCharacter(xml, true)) fail('malformed', 'EPUB XML contains invalid control characters.');
   let cursor = 0;
   let root: XmlElement | undefined;
   let sawXmlDeclaration = false;

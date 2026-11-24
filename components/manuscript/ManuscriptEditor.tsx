@@ -35,6 +35,8 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const [chronologyFilter, setChronologyFilter] = useState('');
   const [previewSection, setPreviewSection] = useState(false);
   const profileForCurrentVersion = project.narrative?.versions.find(({ id }) => id === project.snapshot.manuscriptVersionId)?.styleProfile ?? createStyleProfile(project.id);
+  const styleVersionKey = JSON.stringify([project.id, project.snapshot.manuscriptVersionId]);
+  const [previousStyleVersionKey, setPreviousStyleVersionKey] = useState(styleVersionKey);
   const [styleProfile, setStyleProfile] = useState<StyleProfile>(() => profileForCurrentVersion);
   const [styleSourceId, setStyleSourceId] = useState('');
   const [styleTrait, setStyleTrait] = useState<StyleTrait>('voice');
@@ -62,11 +64,13 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
   const words = sections.reduce((total, section) => total + (section.text.match(/\S+/gu)?.length ?? 0), 0);
   const storyCount = project.artifacts.filter(artifact => artifact.mode === 'story' && artifact.storyText).length;
 
-  useEffect(() => {
+  // Reset only when the project or persisted manuscript version changes.
+  if (previousStyleVersionKey !== styleVersionKey) {
+    setPreviousStyleVersionKey(styleVersionKey);
     setStyleProfile(profileForCurrentVersion);
     setStyleSourceId('');
     setStyleError('');
-  }, [project.id, project.snapshot.manuscriptVersionId]);
+  }
 
   function resolveStyleSource(ref: { recordId: string; version: string; digest: string }) {
     const source = styleSources.find(item => item.id === ref.recordId && item.version === ref.version && item.digest === ref.digest);

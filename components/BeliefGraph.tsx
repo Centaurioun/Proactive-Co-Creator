@@ -221,14 +221,15 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
     () => new Map(relationshipProjection.nodes.map(node => [node.id, node])),
     [relationshipProjection.nodes]
   );
+  const selectedRelationshipEntityId = selectedEntity?.id;
   const tableRelationships = useMemo(() => relationshipProjection.edges.flatMap(edge => {
-    if (selectedEntityRelationshipsOnly && selectedEntity?.id &&
-      edge.sourceId !== selectedEntity.id && edge.targetId !== selectedEntity.id) return [];
+    if (selectedEntityRelationshipsOnly && selectedRelationshipEntityId &&
+      edge.sourceId !== selectedRelationshipEntityId && edge.targetId !== selectedRelationshipEntityId) return [];
     const source = projectedNodesById.get(edge.sourceId);
     const target = projectedNodesById.get(edge.targetId);
     const relationship = data?.relationships.find(item => item.id === edge.id);
     return source && target && relationship ? [{ edge, source, target, relationship }] : [];
-  }), [relationshipProjection.edges, projectedNodesById, selectedEntityRelationshipsOnly, selectedEntity?.id, data?.relationships]);
+  }), [relationshipProjection.edges, projectedNodesById, selectedEntityRelationshipsOnly, selectedRelationshipEntityId, data?.relationships]);
 
   const parallelEdgeOffsets = useMemo(
     () => computeParallelEdgeOffsets(relationships),

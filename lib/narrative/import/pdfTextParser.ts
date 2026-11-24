@@ -129,7 +129,7 @@ export async function extractPdfText(input: Uint8Array, signal?: AbortSignal): P
     };
   } catch (error) {
     if (signal?.aborted || (error instanceof Error && error.name === 'AbortException')) throw abortError();
-    if (passwordRequired) throw new Error('Password-protected or encrypted PDFs are unsupported. Remove protection and try again.');
+    if (passwordRequired) throw new Error('Password-protected or encrypted PDFs are unsupported. Remove protection and try again.', { cause: error });
     if (error instanceof Error && (error.name === 'AbortError' || /No selectable text|more than 200 pages|8 MiB limit/.test(error.message))) throw error;
     throw pdfError(error);
   } finally {
