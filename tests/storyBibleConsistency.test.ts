@@ -14,11 +14,28 @@ import {
 } from '../lib/canonicalModel.ts';
 import { createUndoRedoState } from '../lib/historyEngine.ts';
 import { commitSnapshotTransaction, commitUndoTransaction } from '../lib/projectController.ts';
-import { synthesizeRefinedPrompt } from '../lib/promptBuilder.ts';
+import { resolveProviderPrompt, synthesizeRefinedPrompt } from '../lib/promptBuilder.ts';
 
 import { evaluateProjectConsistency } from '../lib/consistencyChecker.ts';
 
 describe('T1: Story Bible Clear, Sync Authority, Clarifications & Validation (SB-01 through SB-06)', () => {
+  it('excludes unattributed belief claims from story and image prompts and blocks unknown legacy context', () => {
+    const base = createSampleProject().snapshot;
+    const character = base.entities.find(entity => entity.category === 'character')!;
+    character.attributes.push({ id: 'imported-belief', name: 'secret', value: [{ name: 'Only Mira believes this' }], confirmedValue: 'Only Mira believes this', status: 'confirmed', provenance: 'accepted-suggestion', epistemicKind: 'belief', sourceBacked: true, presence_in_prompt: true });
+    assert.equal(synthesizeRefinedPrompt(base, 'story').includes('Only Mira believes this'), false);
+    assert.equal(synthesizeRefinedPrompt(base, 'image').includes('Only Mira believes this'), false);
+    const safe = resolveProviderPrompt({ ...createSampleProject(), snapshot: base }, 'story');
+    assert.equal(safe.ok, true);
+    if (safe.ok) {
+      assert.equal(safe.prompt.includes('Only Mira believes this'), false, 'provider prompt excludes the unsupported claim');
+      assert.match(safe.warning ?? '', /withheld/i, 'withholding is surfaced instead of silent');
+    }
+    character.attributes.find(attribute => attribute.id === 'imported-belief')!.epistemicKind = undefined;
+    const blocked = resolveProviderPrompt({ ...createSampleProject(), snapshot: base }, 'image');
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) assert.match(blocked.reason, /review/i);
+  });
   it('T1.1: clearing mirrored Story Bible setting/tone unsets status and stays unset after scene sync, AI merge, and prompt synthesis', () => {
     const baseProj = createSampleProject();
     let snap = updateStoryBibleField(baseProj.snapshot, 'setting', 'Clockwork Observatory');

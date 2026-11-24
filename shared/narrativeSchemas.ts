@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const id = z.string().min(1);
 const offset = z.number().int().nonnegative();
+export const epistemicKindSchema = z.enum(['explicit', 'interpretation', 'belief', 'reported', 'ambiguous', 'user-authored']);
 
 export const sectionSchema = z.strictObject({
   id,
@@ -74,6 +75,7 @@ const importProposalSchema = z.strictObject({
   detail: z.string(),
   category: z.string(),
   approval: z.enum(['pending', 'confirmed', 'rejected']),
+  epistemicKind: epistemicKindSchema.optional(),
   rationale: z.string(),
   evidence: evidenceSchema,
 });
@@ -87,6 +89,9 @@ export const narrativeSchema = z.strictObject({
     targetId: id,
     rationale: z.string(),
     approval: z.enum(['pending', 'confirmed', 'rejected']),
+    epistemicKind: epistemicKindSchema.optional(),
+    authoredText: z.string().optional(),
+    supersedesClaimId: id.optional(),
     freshness: z.enum(['current', 'needs-recheck', 'historical']),
     anchors: z.array(evidenceSchema).min(1),
   })),

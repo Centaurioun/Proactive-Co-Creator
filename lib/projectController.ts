@@ -533,6 +533,7 @@ export function commitSnapshotTransaction(
   changeCount: number = 1,
   options?: { coalesceKey?: string; coalesceWindowMs?: number; nowMs?: number }
 ): { project: CreativeProject; undoState: UndoRedoState } {
+  project = appendAuthoredAttributeClaims(project, nextSnapshot);
   const nextUndoState = options?.coalesceKey
     ? pushCoalescedTransaction(
         undoState,
@@ -564,6 +565,33 @@ export function commitSnapshotTransaction(
     project: nextProject,
     undoState: nextUndoState,
   };
+}
+
+export function appendAuthoredAttributeClaims(project: CreativeProject, nextSnapshot: ProjectSnapshot): CreativeProject {
+  const records = project.narrative;
+  if (!records) return project;
+  const claims = records.claims.slice();
+  let changed = false;
+  for (const nextEntity of nextSnapshot.entities) {
+    const beforeEntity = project.snapshot.entities.find(entity => entity.id === nextEntity.id);
+    if (!beforeEntity) continue;
+    for (const nextAttribute of nextEntity.attributes) {
+      const beforeAttribute = beforeEntity.attributes.find(attribute => attribute.id === nextAttribute.id);
+      const attributeId = nextAttribute.id;
+      if (!attributeId || !beforeAttribute || (!beforeAttribute.sourceBacked && !beforeAttribute.epistemicKind) || nextAttribute.epistemicKind !== 'user-authored' ||
+        (beforeAttribute.confirmedValue ?? '') === (nextAttribute.confirmedValue ?? '')) continue;
+      const sourceClaim = claims.find(claim => claim.targetId === attributeId && claim.epistemicKind === beforeAttribute.epistemicKind);
+      if (!sourceClaim || claims.some(claim => claim.supersedesClaimId === sourceClaim.id && claim.authoredText === (nextAttribute.confirmedValue ?? ''))) continue;
+      claims.push({
+        id: makeStableId('claim_author'), targetId: attributeId,
+        rationale: 'User-authored replacement; original imported evidence remains attached to its historical source claim.',
+        approval: 'confirmed', freshness: 'current', anchors: structuredClone(sourceClaim.anchors),
+        epistemicKind: 'user-authored', authoredText: nextAttribute.confirmedValue ?? '', supersedesClaimId: sourceClaim.id,
+      });
+      changed = true;
+    }
+  }
+  return changed ? { ...project, narrative: { ...records, claims } } : project;
 }
 
 export function applyAsyncAnalysisCompletion(params: {

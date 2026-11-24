@@ -71,6 +71,7 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
 
   const parsedHasFileRetentionGap = Boolean(file && source?.retention === 'extracted-only');
   const extraction = results.length ? deduplicateChunkProposals(results) : emptyExtraction();
+  const unclassifiedFindings = extraction.findings.filter(finding => finding.category === 'other');
   const identityMatches = findPossibleIdentityMatches(extraction.entities);
   const explicitProposalIds = [
     ...extraction.entities.filter(item => item.kind === 'explicit').map(item => item.id),
@@ -305,9 +306,10 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
               <label className="flex gap-2"><input type="checkbox" checked={acceptedIds.has(relation.id)} onChange={event => toggleAccepted(relation.id, event.target.checked)} />{relation.source} → {relation.target} · {relation.label} · {relation.kind}</label>
               <p>{relation.rationale}</p><EvidenceQuote evidence={relation.evidence} />
             </article>)}
-            <h3 className="font-medium">Other findings ({extraction.findings.length})</h3>
+            <h3 className="font-medium">Findings for review ({extraction.findings.length})</h3>
+            {scope === 'complete' && unclassifiedFindings.length > 0 && <p role="status" className="rounded border border-amber-400 p-3 text-sm">{unclassifiedFindings.length} unclassified findings retained for review. Complete segment coverage does not mean every fact or category was understood.</p>}
             {extraction.findings.map(finding => <article key={finding.id} className="rounded border p-3">
-              <label className="flex gap-2"><input type="checkbox" checked={acceptedIds.has(finding.id)} onChange={event => toggleAccepted(finding.id, event.target.checked)} />{finding.title}: {finding.value} · {finding.kind}</label>
+              <label className="flex gap-2"><input type="checkbox" checked={acceptedIds.has(finding.id)} onChange={event => toggleAccepted(finding.id, event.target.checked)} />{finding.title}: {finding.value} · {finding.category} · {finding.kind}</label>
               <p>{finding.rationale}</p><EvidenceQuote evidence={finding.evidence} />
               <button type="button" className="text-sm underline" onClick={() => toggleRejected(finding.id, !rejectedIds.has(finding.id))}>{rejectedIds.has(finding.id) ? 'Mark pending' : 'Reject finding'}</button>
             </article>)}

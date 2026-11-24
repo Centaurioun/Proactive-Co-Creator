@@ -107,7 +107,7 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
     });
     if (!response.text?.trim()) throw new AppApiError('INVALID_RESPONSE', 'Narrative analysis returned an empty response.', 502, false);
     const extracted = NarrativeExtractionSchema.parse(JSON.parse(response.text));
-    return filterExtractionScope(extracted, selected as NarrativeExtractionRequest['categories']);
+    return filterExtractionScope(extracted, { scope: request.scope, categories: selected as NarrativeExtractionRequest['categories'] });
   } catch (error) {
     if (error instanceof AppApiError) throw error;
     throw classifyGeminiError(error);
