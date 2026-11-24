@@ -1,4 +1,8 @@
 import { AsyncUnzipInflate, Unzip, UnzipPassThrough } from 'fflate';
+import { createEpubZipReader } from './epubZipReader';
+import type { EpubZipArchiveReader } from './epubZipReader';
+import { parseEpub } from './epubParser';
+import type { EpubCoverage, EpubParseStatus } from './epubParser';
 
 export const SOURCE_PARSER_VERSION = '1';
 export const MAX_SOURCE_BYTES = 12 * 1024 * 1024;
@@ -21,13 +25,27 @@ export interface SourceBlock {
 export interface ParsedNarrativeSource {
   text: string;
   filename: string;
-  mediaType: 'text/plain' | 'text/markdown' | 'application/pdf' | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  mediaType: 'text/plain' | 'text/markdown' | 'application/pdf' | 'application/epub+zip' | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   byteLength: number;
   digest: string;
   blocks: SourceBlock[];
   warnings: string[];
   originalBytesBase64?: string;
   retention: 'original-and-extracted' | 'extracted-only';
+}
+
+export type NarrativeSourceFailureKind = Exclude<EpubParseStatus, 'complete' | 'partial'>;
+
+/** Typed EPUB failures let the import UI distinguish unsupported, empty, malformed, and bounded failures. */
+export class NarrativeSourceParseError extends Error {
+  constructor(
+    readonly kind: NarrativeSourceFailureKind,
+    message: string,
+    readonly coverage?: EpubCoverage,
+  ) {
+    super(message);
+    this.name = 'NarrativeSourceParseError';
+  }
 }
 
 function decodeText(bytes: Uint8Array): string {
@@ -200,6 +218,7 @@ export async function parseNarrativeSource(
   input: string | File | Uint8Array,
   filename = 'pasted-narrative.txt',
   retainOriginal = true,
+  signal?: AbortSignal,
 ): Promise<ParsedNarrativeSource> {
   const pasted = typeof input === 'string';
   const bytes = pasted ? new TextEncoder().encode(input) : input instanceof Uint8Array ? input : new Uint8Array(await input.arrayBuffer());
@@ -213,6 +232,7 @@ export async function parseNarrativeSource(
   let mediaType: ParsedNarrativeSource['mediaType'];
   let blocks: SourceBlock[];
   const warnings: string[] = [];
+  if (signal?.aborted) throw new NarrativeSourceParseError('cancelled', 'Source preview was cancelled.');
   if (pasted || suffix === 'txt' || suffix === 'md' || suffix === 'markdown') {
     text = pasted ? input as string : decodeText(bytes);
     mediaType = suffix === 'md' || suffix === 'markdown' ? 'text/markdown' : 'text/plain';
@@ -234,8 +254,34 @@ export async function parseNarrativeSource(
     blocks = extracted.blocks;
     warnings.push(...extracted.warnings);
     mediaType = 'application/pdf';
+  } else if (suffix === 'epub') {
+    let reader: EpubZipArchiveReader;
+    try {
+      reader = createEpubZipReader(bytes, { signal });
+    } catch (error) {
+      const kind = signal?.aborted ? 'cancelled' : 'malformed';
+      throw new NarrativeSourceParseError(kind, error instanceof Error ? error.message : 'The EPUB ZIP structure is malformed.');
+    }
+    const extracted = await parseEpub(reader, undefined, { signal });
+    if (extracted.status !== 'complete' && extracted.status !== 'partial') {
+      throw new NarrativeSourceParseError(extracted.status, extracted.reason ?? 'EPUB content could not be read.', extracted.coverage);
+    }
+    text = extracted.text;
+    blocks = extracted.blocks.map(block => ({
+      id: block.id,
+      start: block.start,
+      end: block.end,
+      kind: block.kind,
+      ...(block.label ? { label: block.label } : {}),
+    }));
+    warnings.push(...extracted.warnings);
+    if (extracted.status === 'partial') {
+      const omitted = extracted.coverage.unsupportedItems.slice(0, 5).join('; ');
+      warnings.push(`EPUB text is partial: ${extracted.coverage.extractedSpineItems} of ${extracted.coverage.totalSpineItems} spine items were extracted; ${extracted.coverage.omittedSpineItems} were omitted.${omitted ? ` Examples: ${omitted}${extracted.coverage.unsupportedItems.length > 5 ? '; …' : ''}` : ''}`);
+    }
+    mediaType = 'application/epub+zip';
   } else {
-    throw new Error('Supported sources are pasted text, .txt, .md, .docx, and selectable-text .pdf files.');
+    throw new Error('Supported sources are pasted text, .txt, .md, .docx, selectable-text .pdf, and text-based .epub files.');
   }
   const textBytes = new TextEncoder().encode(text);
   if (!text.trim()) throw new Error('No readable narrative text was found in this source.');

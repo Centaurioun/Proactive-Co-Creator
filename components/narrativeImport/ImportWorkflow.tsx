@@ -97,12 +97,14 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
   const previewSource = async () => {
     const readEpoch = ++sourceReadEpochRef.current;
     setSourceError(''); setRequestError(''); setSource(null); resetAnalysis(); setConfirmExtractedOnly(false);
+    const previewAbort = new AbortController();
+    abortRef.current = previewAbort;
     try {
       let parsed: ParsedNarrativeSource;
       if (file) {
-        parsed = await parseNarrativeSource(file, file.name, retainOriginal);
+        parsed = await parseNarrativeSource(file, file.name, retainOriginal, previewAbort.signal);
       } else {
-        parsed = await parseNarrativeSource(pastedText);
+        parsed = await parseNarrativeSource(pastedText, 'pasted-narrative.txt', true, previewAbort.signal);
       }
       if (readEpoch !== sourceReadEpochRef.current) return;
       setSource(parsed); setSourceId(crypto.randomUUID());
@@ -110,6 +112,8 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
     } catch (error) {
       if (readEpoch !== sourceReadEpochRef.current) return;
       setSourceError(error instanceof Error ? error.message : 'The source could not be previewed.');
+    } finally {
+      if (abortRef.current === previewAbort) abortRef.current = null;
     }
   };
 
@@ -229,8 +233,8 @@ export default function ImportWorkflow({ onCreateProject, onCancelImport }: Prop
 
         <section className="space-y-3 rounded-lg border border-gray-300 p-4 dark:border-gray-700" aria-labelledby="import-source-title">
           <h2 id="import-source-title" className="font-semibold">1. Select source</h2>
-          <label className="block text-sm" htmlFor="import-file">Choose a TXT, Markdown, DOCX, or selectable-text PDF file</label>
-          <input id="import-file" type="file" accept=".txt,.md,.markdown,.docx,.pdf,application/pdf" onChange={event => readFile(event.currentTarget.files?.[0] ?? null)} />
+          <label className="block text-sm" htmlFor="import-file">Choose a TXT, Markdown, DOCX, selectable-text PDF, or text-based EPUB file</label>
+          <input id="import-file" type="file" accept=".txt,.md,.markdown,.docx,.pdf,.epub,application/pdf,application/epub+zip" onChange={event => readFile(event.currentTarget.files?.[0] ?? null)} />
           <label className="block text-sm" htmlFor="import-pasted-text">Or paste narrative text</label>
           <textarea id="import-pasted-text" className="min-h-36 w-full rounded border p-2 dark:bg-gray-950" value={pastedText}
             onChange={event => { sourceReadEpochRef.current += 1; setPastedText(event.target.value); if (file) setFile(null); setSource(null); resetAnalysis(); }} placeholder="Paste text to preview locally" />
