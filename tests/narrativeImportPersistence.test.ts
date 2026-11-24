@@ -4,6 +4,9 @@ import { assembleImportedProject } from '../lib/narrative/import/assembleProject
 import { parseNarrativeSource } from '../lib/narrative/import/sourceParser.ts';
 import { createBackup, verifyBackup } from '../lib/narrative/recovery.ts';
 import { migrateProjectPayload } from '../lib/storageEngine.ts';
+import { resolveProviderPrompt } from '../lib/promptBuilder.ts';
+import { setEntityAttribute } from '../lib/canonicalModel.ts';
+import { appendAuthoredAttributeClaims } from '../lib/projectController.ts';
 import type { VerifiedExtraction } from '../lib/narrative/import/proposalValidator.ts';
 
 test('schema-4 import keeps original bytes, verified evidence, partial coverage, and issues through migration and portable backup', async t => {
@@ -28,6 +31,9 @@ test('schema-4 import keeps original bytes, verified evidence, partial coverage,
       kind: 'interpretation',
       rationale: 'The source uses a curious observation.',
       evidence,
+    }, {
+      id: 'finding-other', title: 'Unclassified observation', value: 'An unnamed voice reports a pale comet.', category: 'other', kind: 'reported',
+      rationale: 'The report is retained for review without inventing a reporter.', evidence,
     }],
     entities: [],
     relationships: [],
@@ -38,7 +44,7 @@ test('schema-4 import keeps original bytes, verified evidence, partial coverage,
   const imported = assembleImportedProject(source, extraction, [], {
     sourceId,
     projectName: 'Synthetic import',
-    acceptedIds: new Set(['finding-tone']),
+    acceptedIds: new Set(['finding-tone', 'finding-other']),
     rejectedIds: new Set(),
     coverage: {
       complete: false,
@@ -62,6 +68,21 @@ test('schema-4 import keeps original bytes, verified evidence, partial coverage,
   assert.equal(migrated.narrative!.claims[0].anchors[0].excerpt, text);
   assert.equal(migrated.narrative!.claims[0].anchors[0].sourceId, sourceId);
   assert.ok(migrated.narrative!.issues.some(issue => issue.title === 'Narrative analysis incomplete'));
+  assert.equal(migrated.narrative!.proposals?.[0].epistemicKind, 'interpretation');
+  assert.equal(migrated.narrative!.claims[0].epistemicKind, 'interpretation');
+  assert.equal(migrated.snapshot.storyBible.tone.epistemicKind, 'interpretation');
+  const otherProposal = migrated.narrative!.proposals!.find(proposal => proposal.id === 'finding-other')!;
+  assert.equal(otherProposal.category, 'other');
+  assert.equal(otherProposal.epistemicKind, 'reported');
+  assert.equal(migrated.narrative!.claims.find(claim => claim.targetId === 'finding-other')?.epistemicKind, 'reported');
+  assert.equal(migrated.snapshot.storyBible.tone.value, 'Wonder', 'unclassified finding is not projected into Story Bible');
+  assert.equal(migrated.snapshot.entities.length, 0, 'partial analysis does not infer missing entities as negative evidence');
+  const invalidKind = structuredClone(imported);
+  (invalidKind.narrative!.proposals![0] as { epistemicKind?: string }).epistemicKind = 'invented';
+  assert.throws(() => migrateProjectPayload(invalidKind), /Invalid option|epistemicKind|enum/i);
+  const invalidCanonicalKind = structuredClone(imported);
+  (invalidCanonicalKind.snapshot.storyBible.tone as { epistemicKind?: string }).epistemicKind = 'invented';
+  assert.throws(() => migrateProjectPayload(invalidCanonicalKind), /Invalid option|epistemicKind|enum/i);
 
   const assertInvalidOriginalIsNotRetained = (raw: typeof imported, caseName: string) => {
     let restored;
@@ -105,8 +126,31 @@ test('schema-4 import keeps original bytes, verified evidence, partial coverage,
   assert.equal(restored.narrative!.sources[0].originalBytesBase64, source.originalBytesBase64);
   assert.deepEqual(restored.narrative!.sources[0].analysisCoverage, migratedSource.analysisCoverage);
   assert.equal(restored.narrative!.claims[0].anchors[0].excerpt, text);
+  assert.equal(restored.narrative!.proposals!.find(proposal => proposal.id === 'finding-other')?.category, 'other');
+  assert.equal(restored.narrative!.proposals!.find(proposal => proposal.id === 'finding-other')?.epistemicKind, 'reported');
   assert.equal(restored.narrative!.issues[0].title, 'Narrative analysis incomplete');
 
   const altered = { ...backup, payload: backup.payload.replace(text, 'İpek sees a moon. 🦉') };
   await assert.rejects(() => verifyBackup(altered), /checksum or size/i);
+
+  const legacyUnknown = structuredClone(imported);
+  legacyUnknown.snapshot.refinedPrompt = 'Legacy prompt with unsupported PALER COMET context';
+  legacyUnknown.snapshot.entities.push({
+    id: 'legacy-entity', name: 'Ipek', category: 'character', presence_in_prompt: true, description: '', alternatives: null,
+    attributes: [{ id: 'legacy-attribute', name: 'secret', presence_in_prompt: true, value: [{ name: 'PALER COMET' }], confirmedValue: 'PALER COMET', status: 'confirmed', provenance: 'accepted-suggestion' }],
+    status: 'confirmed', provenance: 'accepted-suggestion', epistemicKind: 'explicit', sourceBacked: true,
+  });
+  legacyUnknown.narrative!.claims.push({ id: 'legacy-source-claim', targetId: 'legacy-attribute', rationale: 'Legacy source claim.', approval: 'confirmed', freshness: 'current', anchors: structuredClone(legacyUnknown.narrative!.claims[0].anchors) });
+  const legacyReloaded = migrateProjectPayload(legacyUnknown);
+  assert.equal(legacyReloaded.snapshot.refinedPrompt, legacyUnknown.snapshot.refinedPrompt, 'old prompt text remains available after load');
+  assert.equal(resolveProviderPrompt(legacyReloaded, 'story').ok, false, 'legacy unknown context blocks dependent provider use after load');
+  const legacyBackup = await createBackup(legacyReloaded, 'Legacy unknown class');
+  const legacyRestored = await verifyBackup(legacyBackup);
+  assert.equal(legacyRestored.snapshot.refinedPrompt, legacyUnknown.snapshot.refinedPrompt);
+  assert.equal(resolveProviderPrompt(legacyRestored, 'image').ok, false, 'unknown context remains blocked after backup restore');
+  const editedLegacySnapshot = setEntityAttribute(legacyRestored.snapshot, 'legacy-entity', 'secret', 'Reviewed PALER COMET');
+  const editedLegacyProject = appendAuthoredAttributeClaims(legacyRestored, editedLegacySnapshot);
+  assert.equal(resolveProviderPrompt({ ...legacyRestored, snapshot: editedLegacySnapshot }, 'image').ok, true, 'explicit local edit unlocks only the reviewed value');
+  assert.equal(editedLegacyProject.narrative!.claims.find(claim => claim.id === 'legacy-source-claim')?.anchors[0].excerpt, text);
+  assert.equal(editedLegacyProject.narrative!.claims.find(claim => claim.epistemicKind === 'user-authored')?.authoredText, 'Reviewed PALER COMET');
 });

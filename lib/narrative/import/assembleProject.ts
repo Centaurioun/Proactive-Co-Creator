@@ -67,33 +67,34 @@ export function assembleImportedProject(
     const approval = approvalFor(proposal.id, selection);
     const canonicalId = crypto.randomUUID();
     proposals.push({ id: proposal.id, kind: 'entity', label: proposal.name, detail: proposal.description,
-      category: proposal.category, approval, rationale: proposal.rationale, evidence: evidenceAnchor(proposal.evidence) });
+      category: proposal.category, approval, rationale: proposal.rationale, evidence: evidenceAnchor(proposal.evidence), epistemicKind: proposal.kind });
     if (approval === 'confirmed') {
       entityIds.set(proposal.id, canonicalId);
       const attributes = proposal.attributes.map(attribute => {
         const status = selection.rejectedIds.has(attribute.id) ? 'rejected' : approvalFor(attribute.id, selection);
         proposals.push({ id: attribute.id, kind: 'attribute', label: attribute.name, detail: attribute.value,
-          category: proposal.category, approval: status, rationale: attribute.rationale, evidence: evidenceAnchor(attribute.evidence) });
-        claims.push({ id: crypto.randomUUID(), targetId: canonicalId, rationale: attribute.rationale, approval: status, freshness: 'current', anchors: [evidenceAnchor(attribute.evidence)] });
+          category: proposal.category, approval: status, rationale: attribute.rationale, evidence: evidenceAnchor(attribute.evidence), epistemicKind: attribute.kind });
+        const attributeId = attribute.id;
+        claims.push({ id: crypto.randomUUID(), targetId: attributeId, rationale: attribute.rationale, approval: status, freshness: 'current', anchors: [evidenceAnchor(attribute.evidence)], epistemicKind: attribute.kind });
         return {
-          id: crypto.randomUUID(), name: attribute.name, presence_in_prompt: true, value: [{ name: attribute.value }],
-          confirmedValue: status === 'confirmed' ? attribute.value : undefined, status, provenance: status === 'confirmed' ? 'accepted-suggestion' as const : 'imported' as const,
+          id: attributeId, name: attribute.name, presence_in_prompt: true, value: [{ name: attribute.value }],
+          confirmedValue: status === 'confirmed' ? attribute.value : undefined, status, provenance: status === 'confirmed' ? 'accepted-suggestion' as const : 'imported' as const, epistemicKind: attribute.kind, sourceBacked: true,
         };
       });
       entities.push({
         id: canonicalId, name: proposal.name, category: proposal.category, presence_in_prompt: true,
         description: proposal.description, alternatives: null, attributes, aliases: proposal.aliases,
-        status: 'confirmed', provenance: proposal.kind === 'explicit' ? 'imported' : 'accepted-suggestion',
+        status: 'confirmed', provenance: 'accepted-suggestion', epistemicKind: proposal.kind, sourceBacked: true,
       });
     } else {
       for (const attribute of proposal.attributes) {
         const status = selection.rejectedIds.has(attribute.id) ? 'rejected' : 'pending';
         proposals.push({ id: attribute.id, kind: 'attribute', label: attribute.name, detail: attribute.value,
-          category: proposal.category, approval: status, rationale: attribute.rationale, evidence: evidenceAnchor(attribute.evidence) });
-        claims.push({ id: crypto.randomUUID(), targetId: attribute.id, rationale: attribute.rationale, approval: status, freshness: 'current', anchors: [evidenceAnchor(attribute.evidence)] });
+          category: proposal.category, approval: status, rationale: attribute.rationale, evidence: evidenceAnchor(attribute.evidence), epistemicKind: attribute.kind });
+        claims.push({ id: crypto.randomUUID(), targetId: attribute.id, rationale: attribute.rationale, approval: status, freshness: 'current', anchors: [evidenceAnchor(attribute.evidence)], epistemicKind: attribute.kind });
       }
     }
-    claims.push({ id: crypto.randomUUID(), targetId: approval === 'confirmed' ? canonicalId : proposal.id, rationale: proposal.rationale, approval, freshness: 'current', anchors: [evidenceAnchor(proposal.evidence)] });
+    claims.push({ id: crypto.randomUUID(), targetId: approval === 'confirmed' ? canonicalId : proposal.id, rationale: proposal.rationale, approval, freshness: 'current', anchors: [evidenceAnchor(proposal.evidence)], epistemicKind: proposal.kind });
   }
 
   const byName = new Map<string, Entity[]>();
@@ -105,8 +106,8 @@ export function assembleImportedProject(
   for (const proposal of extraction.relationships) {
     const approval = approvalFor(proposal.id, selection);
     proposals.push({ id: proposal.id, kind: 'relationship', label: `${proposal.source} → ${proposal.target} · ${proposal.label}`,
-      detail: `${proposal.source} → ${proposal.target}`, category: 'relationship', approval, rationale: proposal.rationale, evidence: evidenceAnchor(proposal.evidence) });
-    claims.push({ id: crypto.randomUUID(), targetId: proposal.id, rationale: proposal.rationale, approval, freshness: 'current', anchors: [evidenceAnchor(proposal.evidence)] });
+      detail: `${proposal.source} → ${proposal.target}`, category: 'relationship', approval, rationale: proposal.rationale, evidence: evidenceAnchor(proposal.evidence), epistemicKind: proposal.kind });
+    claims.push({ id: crypto.randomUUID(), targetId: proposal.id, rationale: proposal.rationale, approval, freshness: 'current', anchors: [evidenceAnchor(proposal.evidence)], epistemicKind: proposal.kind });
     if (approval !== 'confirmed') continue;
     const sources = byName.get(normalizedName(proposal.source)) ?? [];
     const targets = byName.get(normalizedName(proposal.target)) ?? [];
@@ -120,8 +121,8 @@ export function assembleImportedProject(
       continue;
     }
     relationships.push({
-      id: crypto.randomUUID(), sourceId: sources[0].id, targetId: targets[0].id, source: sources[0].name, target: targets[0].name,
-      label: proposal.label, status: 'confirmed', presence_in_prompt: true, provenance: 'imported', evidenceExcerpt: proposal.evidence.excerpt,
+      id: proposal.id, sourceId: sources[0].id, targetId: targets[0].id, source: sources[0].name, target: targets[0].name,
+      label: proposal.label, status: 'confirmed', presence_in_prompt: true, provenance: 'accepted-suggestion', evidenceExcerpt: proposal.evidence.excerpt, epistemicKind: proposal.kind, sourceBacked: true,
     });
   }
 
@@ -130,8 +131,8 @@ export function assembleImportedProject(
   for (const proposal of extraction.findings) {
     const approval = approvalFor(proposal.id, selection);
     proposals.push({ id: proposal.id, kind: 'finding', label: proposal.title, detail: proposal.value,
-      category: proposal.category, approval, rationale: proposal.rationale, evidence: evidenceAnchor(proposal.evidence) });
-    claims.push({ id: crypto.randomUUID(), targetId: proposal.id, rationale: proposal.rationale, approval, freshness: 'current', anchors: [evidenceAnchor(proposal.evidence)] });
+      category: proposal.category, approval, rationale: proposal.rationale, evidence: evidenceAnchor(proposal.evidence), epistemicKind: proposal.kind });
+    claims.push({ id: crypto.randomUUID(), targetId: proposal.id, rationale: proposal.rationale, approval, freshness: 'current', anchors: [evidenceAnchor(proposal.evidence)], epistemicKind: proposal.kind });
     if (proposal.category !== 'story-bible') continue;
     const field = fieldAliases[proposal.title.replace(/[^\p{L}\p{N}]/gu, '').toLocaleLowerCase('en')];
     if (field) bibleCandidates.set(field, [...(bibleCandidates.get(field) ?? []), { proposal, approval }]);
@@ -140,7 +141,7 @@ export function assembleImportedProject(
     const accepted = candidates.filter(candidate => candidate.approval === 'confirmed');
     const distinct = new Set(accepted.map(candidate => candidate.proposal.value.trim()));
     if (distinct.size === 1) storyBible[field] = {
-      value: [...distinct][0], status: 'confirmed', provenance: 'imported', updatedAt: now,
+      value: [...distinct][0], status: 'confirmed', provenance: 'accepted-suggestion', updatedAt: now, epistemicKind: accepted[0].proposal.kind, sourceBacked: true,
     };
     else if (distinct.size > 1) {
       issues.push({

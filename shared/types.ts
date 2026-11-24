@@ -14,6 +14,8 @@ export type DecisionProvenance =
   | 'imported'
   | 'derived';
 
+export type EpistemicKind = 'explicit' | 'interpretation' | 'belief' | 'reported' | 'ambiguous' | 'user-authored';
+
 export type ApprovalStatus = 'confirmed' | 'pending' | 'rejected';
 
 export type EntityCategory = 'character' | 'location' | 'object' | 'event' | 'group' | 'scene';
@@ -31,6 +33,8 @@ export interface Attribute {
   status?: ApprovalStatus;
   provenance?: DecisionProvenance;
   updatedAt?: number;
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface Entity {
@@ -46,6 +50,8 @@ export interface Entity {
   excluded?: boolean;
   groupId?: string;
   aliases?: string[];
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface Relationship {
@@ -60,6 +66,8 @@ export interface Relationship {
   provenance?: DecisionProvenance;
   presence_in_prompt?: boolean;
   evidenceExcerpt?: string;
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface BeliefState {
@@ -113,6 +121,8 @@ export interface StoryBibleField<T = string> {
   status: ApprovalStatus;
   provenance: DecisionProvenance;
   updatedAt: number;
+  epistemicKind?: EpistemicKind;
+  sourceBacked?: boolean;
 }
 
 export interface StoryBibleFields {

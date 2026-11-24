@@ -109,12 +109,14 @@ describe('server/routes API contract', () => {
 
   it('validates narrative import extraction requests and returns only the mocked scoped result', async () => {
     let observedText = '';
+    let observedScope = '';
     let handlerCalls = 0;
     const srv = await startTestServer(createStubHandlers({
       extractNarrativeChunk: async request => {
         handlerCalls += 1;
         observedText = request.text;
-        return { findings: [], entities: [], relationships: [], ambiguities: [] };
+        observedScope = request.scope;
+        return { findings: [{ id: 'other-1', title: 'Unclassified', value: 'Kept for review', category: 'other', kind: 'reported', rationale: 'No reporter attributed.', evidence: { sourceId: 's', version: 'v1', digest: 'd', start: 0, end: 1, excerpt: 'A' } }], entities: [], relationships: [], ambiguities: [] } as never;
       },
     }));
     closeServer = srv.close;
@@ -138,11 +140,13 @@ describe('server/routes API contract', () => {
     }
     const good = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'selective', categories: ['characters'], instruction: 'Keep it faithful.' }),
+      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [], instruction: 'Keep it faithful.' }),
     });
     assert.equal(good.status, 200);
     assert.equal(observedText, 'Ada enters.');
-    assert.deepEqual(await good.json(), { extraction: { findings: [], entities: [], relationships: [], ambiguities: [] } });
+    assert.equal(observedScope, 'complete');
+    const result = await good.json() as { extraction: { findings: Array<{ category: string }> } };
+    assert.equal(result.extraction.findings[0].category, 'other', 'complete-scope route returns retained unclassified findings');
     assert.equal(handlerCalls, 1, 'invalid requests must not reach the extraction handler');
   });
 

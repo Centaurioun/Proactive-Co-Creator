@@ -27,6 +27,7 @@ import type {
   Relationship,
   StoryBibleFields,
 } from '../shared/types.ts';
+import { epistemicKindSchema } from '../shared/narrativeSchemas.ts';
 
 import { validateNarrativeRecords } from './narrative/evidenceRegistry.ts';
 
@@ -95,6 +96,8 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
     const rawSnap = obj.snapshot as Record<string, unknown>;
     const rawMode = String(rawSnap.mode ?? 'story');
     const safeMode: GenerationMode = rawMode === 'image' ? 'image' : 'story';
+    const hasImportedSourceEvidence = Boolean(hasNarrative && obj.narrative && typeof obj.narrative === 'object' &&
+      Array.isArray((obj.narrative as { sources?: unknown }).sources) && (obj.narrative as { sources: unknown[] }).sources.length > 0);
 
     const originalIdea =
       typeof rawSnap.originalIdea === 'string' && rawSnap.originalIdea.trim()
@@ -103,13 +106,25 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
           ? rawSnap.prompt
           : 'Untitled creative project';
 
-    const entities = normalizeMigratedEntities(
+    const normalizedEntities = normalizeMigratedEntities(
       Array.isArray(rawSnap.entities) ? rawSnap.entities : []
     );
-    const relationships = normalizeMigratedRelationships(
+    const entities = normalizedEntities.map(entity => ({
+      ...entity,
+      ...(entity.sourceBacked === true || entity.provenance === 'imported' || hasImportedSourceEvidence && entity.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
+      attributes: entity.attributes.map(attribute => ({
+        ...attribute,
+        ...(attribute.sourceBacked === true || attribute.provenance === 'imported' || hasImportedSourceEvidence && attribute.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
+      })),
+    }));
+    const normalizedRelationships = normalizeMigratedRelationships(
       Array.isArray(rawSnap.relationships) ? rawSnap.relationships : [],
       entities
     );
+    const relationships = normalizedRelationships.map(relationship => ({
+      ...relationship,
+      ...(relationship.sourceBacked === true || relationship.provenance === 'imported' || hasImportedSourceEvidence && relationship.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
+    }));
 
     const baseBible = createEmptyStoryBible(now);
     if (rawSnap.storyBible && typeof rawSnap.storyBible === 'object') {
@@ -122,6 +137,8 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
             status?: unknown;
             provenance?: unknown;
             updatedAt?: unknown;
+            epistemicKind?: unknown;
+            sourceBacked?: unknown;
           };
           baseBible[key] = {
             value: typeof typedEntry.value === 'string' ? typedEntry.value : '',
@@ -134,6 +151,8 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
                 ? (typedEntry.provenance as never)
                 : 'imported',
             updatedAt: typeof typedEntry.updatedAt === 'number' ? typedEntry.updatedAt : now,
+            ...(typedEntry.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(typedEntry.epistemicKind) }),
+            ...(typedEntry.sourceBacked === true || typedEntry.provenance === 'imported' || hasImportedSourceEvidence && typedEntry.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
           };
         }
       }
@@ -409,6 +428,7 @@ function normalizeMigratedEntities(rawEntities: unknown[]): Entity[] {
               : a.presence_in_prompt
                 ? ('prompt-explicit' as const)
                 : ('ai-inferred' as const),
+          ...(a.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(a.epistemicKind) }),
         };
       });
 
@@ -435,6 +455,7 @@ function normalizeMigratedEntities(rawEntities: unknown[]): Entity[] {
           : ('confirmed' as const),
       provenance:
         typeof raw.provenance === 'string' ? (raw.provenance as never) : 'imported',
+      ...(raw.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(raw.epistemicKind) }),
       excluded: Boolean(raw.excluded),
       aliases: Array.isArray(raw.aliases)
         ? (raw.aliases as unknown[]).filter((s): s is string => typeof s === 'string')
@@ -482,6 +503,7 @@ function normalizeMigratedRelationships(
       status: raw.status === 'pending' || raw.status === 'rejected' ? raw.status : 'confirmed',
       provenance:
         typeof raw.provenance === 'string' ? (raw.provenance as never) : 'imported',
+      ...(raw.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(raw.epistemicKind) }),
     });
   }
   return results;

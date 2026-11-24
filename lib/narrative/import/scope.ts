@@ -2,7 +2,11 @@ import type { NarrativeExtraction } from '../../../shared/importSchemas.ts';
 
 export type ExtractionCategory = 'characters' | 'attributes' | 'relationships' | 'locations' | 'objects' | 'events' | 'story-bible' | 'themes-style' | 'continuity';
 
-export function filterExtractionScope(extraction: NarrativeExtraction, categories: readonly ExtractionCategory[]): NarrativeExtraction {
+export function filterExtractionScope(
+  extraction: NarrativeExtraction,
+  scope: { scope: 'complete' | 'selective'; categories: readonly ExtractionCategory[] },
+): NarrativeExtraction {
+  const { categories } = scope;
   const selected = new Set(categories);
   const entityCategory = (category: NarrativeExtraction['entities'][number]['category']) => {
     if (category === 'character' || category === 'group') return selected.has('characters');
@@ -18,6 +22,7 @@ export function filterExtractionScope(extraction: NarrativeExtraction, categorie
     if (category === 'event') return selected.has('events');
     if (category === 'story-bible') return selected.has('story-bible');
     if (category === 'theme' || category === 'style') return selected.has('themes-style');
+    if (category === 'other') return scope.scope === 'complete';
     return false;
   };
   return {

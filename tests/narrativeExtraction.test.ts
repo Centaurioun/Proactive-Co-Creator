@@ -5,8 +5,10 @@ import { segmentNarrativeSource } from '../lib/narrative/import/segmentation.ts'
 import { verifyExtractionEvidence } from '../lib/narrative/import/proposalValidator.ts';
 import { findPossibleIdentityMatches } from '../lib/narrative/import/identityResolver.ts';
 import { assembleImportedProject } from '../lib/narrative/import/assembleProject.ts';
+import { setEntityAttribute } from '../lib/canonicalModel.ts';
+import { appendAuthoredAttributeClaims } from '../lib/projectController.ts';
 import { parseNarrativeSource } from '../lib/narrative/import/sourceParser.ts';
-import { registryReport } from '../lib/narrative/recovery.ts';
+import { createBackup, registryReport, verifyBackup } from '../lib/narrative/recovery.ts';
 import { filterExtractionScope } from '../lib/narrative/import/scope.ts';
 import { migrateProjectPayload } from '../lib/storageEngine.ts';
 
@@ -51,12 +53,12 @@ test('validates source excerpts deterministically and rejects fabricated quotes'
 
 test('selective extraction filters categories and keeps parent entities required for selected attributes', () => {
   const extracted = NarrativeExtractionSchema.parse(raw('Ada thinks the letter lies.', 0));
-  const attributesOnly = filterExtractionScope(extracted, ['attributes']);
+  const attributesOnly = filterExtractionScope(extracted, { scope: 'selective', categories: ['attributes'] });
   assert.equal(attributesOnly.entities.length, 1);
   assert.equal(attributesOnly.entities[0].attributes.length, 1);
   assert.deepEqual(attributesOnly.findings, []);
   assert.deepEqual(attributesOnly.relationships, []);
-  const storiesOnly = filterExtractionScope(extracted, ['story-bible']);
+  const storiesOnly = filterExtractionScope(extracted, { scope: 'selective', categories: ['story-bible'] });
   assert.deepEqual(storiesOnly.entities, []);
   assert.deepEqual(storiesOnly.relationships, []);
 });
@@ -97,7 +99,7 @@ test('project assembly preserves source and manuscript, confirms only reviewed f
   const project = assembleImportedProject(source, extraction, matches, {
     sourceId: 'src',
     projectName: 'Imported novel',
-    acceptedIds: new Set([extraction.entities[0].id, extraction.entities[1].id, extraction.entities[2].id,
+    acceptedIds: new Set([extraction.entities[0].id, extraction.entities[0].attributes[0].id, extraction.entities[1].id, extraction.entities[2].id,
       extraction.findings[0].id, extraction.relationships[0].id]),
     rejectedIds: new Set(),
     coverage: { complete: true, scope: 'complete', categories: ['characters'], totalCharacters: text.length,
@@ -114,18 +116,37 @@ test('project assembly preserves source and manuscript, confirms only reviewed f
   assert.equal(project.narrative?.sources[0].analysisCoverage?.calls, 1);
   const restoredProject = migrateProjectPayload(project);
   assert.equal(restoredProject.narrative?.sources[0].text, text, 'schema-4 migration must retain the source after reload');
+  assert.equal(restoredProject.snapshot.entities[0].attributes[0].epistemicKind, 'explicit', 'schema-4 reload preserves the imported attribute class');
   assert.equal(restoredProject.narrative?.claims.length, 6, 'schema-4 migration must retain all evidence claims');
   const sections = project.narrative!.versions[0].sectionVersionIds.map(id => project.narrative!.sectionVersions.find(section => section.id === id)!.section);
   assert.equal(sections.map(section => section.text).join(''), text);
   assert.equal(project.snapshot.entities.length, 3);
   assert.equal(project.snapshot.relationships.length, 0, 'ambiguous endpoint names must not create a directed edge');
+  assert.ok(project.snapshot.entities.every(entity => !('chronology' in entity)), 'source order is not inferred as chronology');
   const targets = new Set([...project.snapshot.entities.map(entity => entity.id), ...(project.narrative?.proposals ?? []).map(proposal => proposal.id)]);
   assert.ok(project.narrative?.claims.every(claim => targets.has(claim.targetId)), 'evidence claims must target a persisted entity or proposal');
   assert.ok(project.narrative?.proposals?.some(proposal => proposal.label === 'Ada' && proposal.approval === 'confirmed'));
-  assert.ok(project.narrative?.proposals?.some(proposal => proposal.label === 'occupation' && proposal.approval === 'pending'));
+  assert.ok(project.narrative?.proposals?.some(proposal => proposal.label === 'occupation' && proposal.approval === 'confirmed'));
   assert.ok(project.narrative?.proposals?.every(proposal => project.narrative?.sources.some(sourceRecord => sourceRecord.id === proposal.evidence.sourceId)));
   assert.equal(project.snapshot.storyBible.tone.value, 'Uneasy');
   assert.equal(project.snapshot.storyBible.tone.status, 'confirmed');
+  const importedAttribute = project.snapshot.entities[0].attributes[0];
+  assert.equal(importedAttribute.epistemicKind, 'explicit');
+  const sourceClaim = project.narrative!.claims.find(claim => claim.targetId === importedAttribute.id)!;
+  assert.equal(sourceClaim.epistemicKind, 'explicit');
+  const noOp = setEntityAttribute(project.snapshot, project.snapshot.entities[0].id!, 'occupation', 'mapmaker');
+  assert.equal(noOp.entities[0].attributes[0].epistemicKind, 'explicit', 'no-op edit preserves source class');
+  const editedSnapshot = setEntityAttribute(project.snapshot, project.snapshot.entities[0].id!, 'occupation', 'navigator');
+  assert.equal(editedSnapshot.entities[0].attributes[0].epistemicKind, 'user-authored');
+  const editedProject = appendAuthoredAttributeClaims(project, editedSnapshot);
+  assert.equal(editedProject.narrative!.claims.includes(sourceClaim), true, 'historical source evidence is retained');
+  const authoredClaim = editedProject.narrative!.claims.find(claim => claim.epistemicKind === 'user-authored');
+  assert.equal(authoredClaim?.authoredText, 'navigator');
+  assert.equal(authoredClaim?.supersedesClaimId, sourceClaim.id);
+  assert.equal(authoredClaim?.anchors[0].excerpt, first);
+  const restoredEdit = await verifyBackup(await createBackup({ ...editedProject, snapshot: editedSnapshot }, 'Authored attribute change'));
+  assert.equal(restoredEdit.narrative!.claims.find(claim => claim.id === sourceClaim.id)?.anchors[0].excerpt, first);
+  assert.equal(restoredEdit.narrative!.claims.find(claim => claim.epistemicKind === 'user-authored')?.authoredText, 'navigator');
   assert.equal(project.narrative?.issues.some(issue => issue.title.startsWith('Possible same identity: Ada')), true);
   assert.ok(project.narrative?.claims.every(claim => claim.anchors[0].excerpt.length > 0));
 });

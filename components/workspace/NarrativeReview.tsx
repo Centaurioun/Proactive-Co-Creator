@@ -52,8 +52,9 @@ export default function NarrativeReview({ project, checks, openChecks, openHisto
           {proposals.length > 0 && <section aria-labelledby="import-proposals-heading" className="space-y-3 border-t border-gray-300 pt-3 dark:border-gray-700">
             <h3 id="import-proposals-heading" className="font-semibold">Imported findings and proposals ({proposals.length})</h3>
             <p className="text-sm">Confirmed proposals were accepted during import. Pending and rejected items remain in this record for review.</p>
+            {proposals.filter(proposal => proposal.category === 'other').length > 0 && <p role="status" className="rounded border border-amber-400 p-3 text-sm">{proposals.filter(proposal => proposal.category === 'other').length} unclassified findings retained for review. This does not assert semantic completeness.</p>}
             {proposals.map(proposal => <article key={proposal.id} className="space-y-1 rounded border border-gray-300 p-3 dark:border-gray-700">
-              <h4 className="font-medium">{proposal.label} · {proposal.kind} · {proposal.category} · {proposal.approval}</h4>
+              <h4 className="font-medium">{proposal.label} · {proposal.kind} · {proposal.category} · {proposal.epistemicKind ?? 'epistemic class unknown'} · {proposal.approval}</h4>
               {proposal.detail && <p className="text-sm">{proposal.detail}</p>}
               <p className="text-sm">{proposal.rationale}</p>
               <blockquote className="whitespace-pre-wrap break-words border-l-2 pl-3 text-sm">

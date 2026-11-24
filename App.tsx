@@ -73,7 +73,7 @@ import {
   type InFlightTicketsMap,
   type SerializedSaveOptions,
 } from './lib/projectController';
-import { synthesizeRefinedPrompt } from './lib/promptBuilder';
+import { resolveProviderPrompt, synthesizeRefinedPrompt } from './lib/promptBuilder';
 import { transitionIssue } from './lib/narrative/issueRegistry';
 import {
   deleteProjectCompletely,
@@ -1091,12 +1091,27 @@ function App() {
       return localResult;
     }
 
+    const promptDecision = resolveProviderPrompt(targetProject, targetProject.snapshot.mode);
+    if (!promptDecision.ok) {
+      setStatusNotification(promptDecision.reason);
+      return {
+        instruction,
+        operations: [],
+        ambiguities: [],
+        warnings: [promptDecision.reason],
+        coverageComplete: false,
+        baseProjectId: targetProject.id,
+        baseRevision: targetProject.revision,
+      };
+    }
+    if (promptDecision.warning) setStatusNotification(promptDecision.warning);
+
     const ticket = createRequestTicket(targetProject, 'batch');
     setInFlightTickets((prev) => registerTicket(prev, ticket));
     try {
       const aiResult = await requestBatchEditInterpretation(instruction, {
-        prompt: targetProject.snapshot.refinedPrompt,
-        entities: targetProject.snapshot.entities.map((e) => ({
+        prompt: promptDecision.prompt,
+        entities: promptDecision.contextSnapshot.entities.map((e) => ({
           id: e.id,
           name: e.name,
           category: e.category,
@@ -1107,7 +1122,7 @@ function App() {
             status: a.status,
           })),
         })),
-        relationships: targetProject.snapshot.relationships.map((r) => ({
+        relationships: promptDecision.contextSnapshot.relationships.map((r) => ({
           id: r.id,
           source: r.source,
           target: r.target,
@@ -1157,6 +1172,15 @@ function App() {
     const trimmed = originSnap.originalIdea.trim();
     if (!trimmed) return;
 
+    const promptDecision = resolveProviderPrompt(originProject, originSnap.mode);
+    if (!promptDecision.ok) {
+      setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: promptDecision.reason }));
+      setClarificationErrors((prev) => ({ ...prev, [originProject.id]: promptDecision.reason }));
+      setStatusNotification(promptDecision.reason);
+      return;
+    }
+    if (promptDecision.warning) setStatusNotification(promptDecision.warning);
+
     const lengthCheck = validateEffectivePromptLength(trimmed, MAX_PROMPT_CHARS);
     if (!lengthCheck.ok) {
       const msg = lengthCheck.error ?? 'Prompt exceeds character limit.';
@@ -1176,10 +1200,10 @@ function App() {
     setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
 
     const confirmedFacts = [
-      ...Object.entries(originSnap.storyBible)
+      ...Object.entries(promptDecision.contextSnapshot.storyBible)
         .filter(([, f]) => f.status === 'confirmed' && f.value)
         .map(([k, f]) => `${k}: ${f.value}`),
-      ...originSnap.entities
+      ...promptDecision.contextSnapshot.entities
         .filter((e) => !e.excluded)
         .flatMap((e) =>
           e.attributes
@@ -1251,7 +1275,14 @@ function App() {
     async (preserveDrafts?: Record<string, string>) => {
       const originProject = activeProjectRef.current;
       const originSnap = originProject.snapshot;
-      const promptToUse = (originSnap.refinedPrompt || originSnap.originalIdea).trim();
+      const promptDecision = resolveProviderPrompt(originProject, originSnap.mode);
+      if (!promptDecision.ok) {
+        setClarificationErrors((prev) => ({ ...prev, [originProject.id]: promptDecision.reason }));
+        setStatusNotification(promptDecision.reason);
+        return;
+      }
+      if (promptDecision.warning) setStatusNotification(promptDecision.warning);
+      const promptToUse = promptDecision.prompt.trim();
 
       const lengthCheck = validateEffectivePromptLength(promptToUse, MAX_PROMPT_CHARS);
       if (!lengthCheck.ok) {
@@ -1270,7 +1301,7 @@ function App() {
       setInFlightTickets((prev) => registerTicket(prev, ticket));
       setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
 
-      const confirmedFacts = originSnap.entities
+      const confirmedFacts = promptDecision.contextSnapshot.entities
         .filter((e) => !e.excluded)
         .flatMap((e) =>
           e.attributes
@@ -1320,7 +1351,17 @@ function App() {
   const handleGenerateOutput = useCallback(async () => {
     const originProject = activeProjectRef.current;
     const originSnap = originProject.snapshot;
-    const promptToUse = (originSnap.refinedPrompt || originSnap.originalIdea).trim();
+    const promptDecision = resolveProviderPrompt(originProject, originSnap.mode);
+    if (!promptDecision.ok) {
+      setShowOutputDrawer(true);
+      setGalleryErrors((prev) => ({ ...prev, [originProject.id]: {
+        ...(prev[originProject.id] ?? { story: null, image: null }), [originSnap.mode]: promptDecision.reason,
+      } }));
+      setStatusNotification(promptDecision.reason);
+      return;
+    }
+    if (promptDecision.warning) setStatusNotification(promptDecision.warning);
+    const promptToUse = promptDecision.prompt.trim();
     if (!promptToUse) return;
 
     const requestMode = originSnap.mode;
@@ -1405,7 +1446,13 @@ function App() {
     const originProject = activeProjectRef.current;
     if (isProjectActionLoading(inFlightTickets, originProject.id, 'polish')) return;
 
-    const promptToPolish = originProject.snapshot.refinedPrompt.trim();
+    const promptDecision = resolveProviderPrompt(originProject, originProject.snapshot.mode);
+    if (!promptDecision.ok) {
+      setStatusNotification(promptDecision.reason);
+      return;
+    }
+    if (promptDecision.warning) setStatusNotification(promptDecision.warning);
+    const promptToPolish = promptDecision.prompt.trim();
     const lengthCheck = validateEffectivePromptLength(promptToPolish, MAX_PROMPT_CHARS);
     if (!lengthCheck.ok) {
       setStatusNotification(lengthCheck.error ?? 'Compiled prompt exceeds 8,000-character limit.');

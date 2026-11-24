@@ -5,6 +5,7 @@
 
 import { getEffectiveAttributeValue, isSceneEntityName } from './beliefGraphUtils.ts';
 import type { GenerationMode, ProjectSnapshot, StoryBibleFields } from '../shared/types.ts';
+import type { CreativeProject, EpistemicKind } from '../shared/types.ts';
 
 const STORY_FIELD_LABELS: Record<keyof StoryBibleFields, string> = {
   genre: 'Genre',
@@ -20,6 +21,75 @@ const STORY_FIELD_LABELS: Record<keyof StoryBibleFields, string> = {
   visualStyle: 'Visual Style',
   cameraAndLighting: 'Camera & Lighting',
 };
+
+const promptEligibleKind = (kind: EpistemicKind | undefined) => kind === 'explicit' || kind === 'user-authored';
+
+function hasUnknownImportedContext(snapshot: ProjectSnapshot): boolean {
+  return snapshot.storyBible && Object.values(snapshot.storyBible).some(field =>
+    field.status === 'confirmed' && field.sourceBacked && field.epistemicKind === undefined
+  ) || snapshot.entities.some(entity =>
+    (entity.status === 'confirmed' && entity.sourceBacked && entity.epistemicKind === undefined) ||
+    entity.attributes.some(attribute => attribute.status === 'confirmed' && attribute.sourceBacked && attribute.epistemicKind === undefined)
+  ) || snapshot.relationships.some(relationship =>
+    relationship.status === 'confirmed' && relationship.sourceBacked && relationship.epistemicKind === undefined
+  );
+}
+
+function withoutUnreviewedImportedContext(snapshot: ProjectSnapshot): ProjectSnapshot {
+  const filtered = structuredClone(snapshot);
+  for (const field of Object.values(filtered.storyBible)) {
+    if (field.status === 'confirmed' && field.sourceBacked && !promptEligibleKind(field.epistemicKind) ||
+      field.status === 'confirmed' && field.epistemicKind && !promptEligibleKind(field.epistemicKind) && field.provenance !== 'user-edit') field.status = 'pending';
+  }
+  filtered.entities = filtered.entities.flatMap(entity => {
+    if ((entity.sourceBacked && !promptEligibleKind(entity.epistemicKind)) ||
+      (entity.epistemicKind && !promptEligibleKind(entity.epistemicKind) && entity.provenance !== 'user-edit')) return [];
+    entity.attributes = entity.attributes.map(attribute => {
+      if (attribute.status === 'confirmed' && (attribute.sourceBacked && !promptEligibleKind(attribute.epistemicKind) ||
+        attribute.epistemicKind && !promptEligibleKind(attribute.epistemicKind) && attribute.provenance !== 'user-edit')) {
+        return { ...attribute, status: 'pending' as const, confirmedValue: undefined, presence_in_prompt: false };
+      }
+      return attribute;
+    });
+    return [entity];
+  });
+  filtered.relationships = filtered.relationships.map(relationship =>
+    relationship.status === 'confirmed' && (relationship.sourceBacked && !promptEligibleKind(relationship.epistemicKind) ||
+      relationship.epistemicKind && !promptEligibleKind(relationship.epistemicKind) && relationship.provenance !== 'user-edit')
+      ? { ...relationship, status: 'pending' as const, presence_in_prompt: false }
+      : relationship
+  );
+  return filtered;
+}
+
+function hasSuppressedImportedContext(snapshot: ProjectSnapshot): boolean {
+  return Object.values(snapshot.storyBible).some(field => field.status === 'confirmed' &&
+    (field.sourceBacked && !promptEligibleKind(field.epistemicKind) || field.epistemicKind && !promptEligibleKind(field.epistemicKind) && field.provenance !== 'user-edit')) ||
+    snapshot.entities.some(entity => entity.sourceBacked && !promptEligibleKind(entity.epistemicKind) ||
+      entity.attributes.some(attribute => attribute.status === 'confirmed' &&
+        (attribute.sourceBacked && !promptEligibleKind(attribute.epistemicKind) || attribute.epistemicKind && !promptEligibleKind(attribute.epistemicKind) && attribute.provenance !== 'user-edit'))) ||
+    snapshot.relationships.some(relationship => relationship.status === 'confirmed' &&
+      (relationship.sourceBacked && !promptEligibleKind(relationship.epistemicKind) || relationship.epistemicKind && !promptEligibleKind(relationship.epistemicKind) && relationship.provenance !== 'user-edit'));
+}
+
+export type ProviderPromptDecision =
+  | { ok: true; prompt: string; contextSnapshot: ProjectSnapshot; warning?: string }
+  | { ok: false; reason: string };
+
+export function resolveProviderPrompt(project: CreativeProject, targetMode: GenerationMode): ProviderPromptDecision {
+  if (hasUnknownImportedContext(project.snapshot)) {
+    return { ok: false, reason: 'Prompt review required: imported context has an unknown epistemic class. Review or edit it before using this AI operation.' };
+  }
+  const contextSnapshot = withoutUnreviewedImportedContext(project.snapshot);
+  const prompt = synthesizeRefinedPrompt(contextSnapshot, targetMode);
+  const withheld = hasSuppressedImportedContext(project.snapshot);
+  return {
+    ok: true,
+    prompt: withheld ? prompt : (project.snapshot.refinedPrompt || prompt),
+    contextSnapshot,
+    ...(withheld ? { warning: 'Unattributed or non-explicit imported claims were withheld from AI context; source evidence remains available in Review.' } : {}),
+  };
+}
 
 /**
  * Deterministic fast hash for comparing prompt + mode across revisions and artifacts.
@@ -48,6 +118,7 @@ export function synthesizeRefinedPrompt(
   snapshot: ProjectSnapshot,
   targetMode: GenerationMode = snapshot.mode
 ): string {
+  snapshot = withoutUnreviewedImportedContext(snapshot);
   const baseIdea = snapshot.originalIdea.trim();
   if (!baseIdea) return '';
 

@@ -909,6 +909,7 @@ export function setEntityAttribute(
     ? SCENE_ATTR_TO_BIBLE_FIELD[normAttr]
     : undefined;
   let attr = entity.attributes.find((a) => a.name.trim().toLowerCase() === normAttr);
+  if (attr && newValue === (attr.confirmedValue ?? '') && provenance === 'user-edit') return snapshot;
   const monotonicNow = Math.max(
     now,
     (attr?.updatedAt ?? 0) + 1,
@@ -933,6 +934,7 @@ export function setEntityAttribute(
     attr.status = isClearingSceneAttr ? 'pending' : 'confirmed';
     attr.provenance = provenance;
     attr.updatedAt = monotonicNow;
+    if (provenance === 'user-edit' && (attr.sourceBacked || attr.epistemicKind)) attr.epistemicKind = 'user-authored';
     if (isClearingSceneAttr) {
       attr.value = [];
     } else if (!attr.value.some((v) => v.name === newValue)) {
@@ -1277,7 +1279,9 @@ export function updateRelationshipById(
 
   if (updates.label !== undefined && updates.label.trim()) {
     const trimmed = updates.label.trim();
+    const changed = trimmed !== rel.label || Boolean(updates.reverseDirection);
     rel.label = trimmed;
+    if (changed && provenance === 'user-edit' && (rel.sourceBacked || rel.epistemicKind)) rel.epistemicKind = 'user-authored';
     if (!rel.alternatives?.some((a) => a.name === trimmed)) {
       rel.alternatives = [{ name: trimmed }, ...(rel.alternatives ?? [])];
     }
@@ -1428,11 +1432,14 @@ export function updateStoryBibleField(
 
   const storedValue = validation.normalized;
   const displayValue = storedValue.trim();
+  const priorField = next.storyBible[field];
+  if (priorField.value === storedValue && priorField.status === 'confirmed' && provenance === 'user-edit') return snapshot;
   next.storyBible[field] = {
     value: storedValue,
     status: 'confirmed',
     provenance,
     updatedAt: now,
+    ...(provenance === 'user-edit' && (priorField.sourceBacked || priorField.epistemicKind) ? { epistemicKind: 'user-authored' as const } : {}),
   };
 
   // Synchronize back to "The Story" / "The Image" scene entity and all mapped alias attributes

@@ -58,14 +58,19 @@ test('overlapping chunks deduplicate the same source-backed proposal without mer
   const quoteStart = text.indexOf(quote);
   const raw = NarrativeExtractionSchema.parse({
     ...empty,
+    findings: [{ id: 'other', title: 'Unclassified observation', value: 'The red lantern trembles.', category: 'other', kind: 'reported', rationale: 'A narrator reports this, but the claimant is not identified.', evidence: { start: quoteStart, end: quoteStart + quote.length, quote } }],
     relationships: [{ id: 'r', source: 'Ada', target: 'Mina', label: 'cousin of', kind: 'explicit', rationale: 'Direct.', evidence: { start: quoteStart, end: quoteStart + quote.length, quote } }],
   });
   const source = { id: 'source', version: 'v1', digest: 'd'.repeat(64) };
   const first = verifyExtractionEvidence(raw, { id: 'c1', index: 0, start: 0, end: text.length, text }, source);
-  const second = verifyExtractionEvidence({ ...raw, relationships: [{ ...raw.relationships[0], evidence: { ...raw.relationships[0].evidence, start: 0 } }] },
+  const second = verifyExtractionEvidence({ ...raw,
+    findings: [{ ...raw.findings[0], evidence: { ...raw.findings[0].evidence, start: 0 } }],
+    relationships: [{ ...raw.relationships[0], evidence: { ...raw.relationships[0].evidence, start: 0 } }] },
     { id: 'c2', index: 1, start: quoteStart, end: text.length, text: text.slice(quoteStart) }, source);
   const merged = deduplicateChunkProposals([first, second]);
   assert.equal(merged.relationships.length, 1);
+  assert.equal(merged.findings.length, 1, 'overlapping chunks retain one unique unclassified finding');
+  assert.equal(merged.findings[0].category, 'other');
   assert.equal(merged.relationships[0].evidence.excerpt, evidence.quote);
 });
 
@@ -74,7 +79,9 @@ test('selective continuity does not silently include unclassified findings and d
     ...empty,
     findings: [{ id: 'unknown', title: 'Unclassified', value: 'fact', category: 'other', kind: 'explicit', rationale: 'Not mapped.', evidence }],
   });
-  assert.deepEqual(filterExtractionScope(extraction, ['continuity']).findings, []);
+  assert.deepEqual(filterExtractionScope(extraction, { scope: 'selective', categories: ['continuity'] }).findings, []);
+  assert.equal(filterExtractionScope(extraction, { scope: 'complete', categories: ['characters', 'attributes', 'relationships', 'locations', 'objects', 'events', 'story-bible', 'themes-style', 'continuity'] }).findings.length, 1);
+  assert.equal(filterExtractionScope(extraction, { scope: 'selective', categories: ['characters'] }).findings.length, 0);
   assert.throws(() => NarrativeExtractionRequestSchema.parse({ sourceId: 's', sourceVersion: 'v1', digest: 'd'.repeat(64),
     chunkId: 'c', text: 'Source', scope: 'selective', categories: ['characters', 'characters'] }), /duplicate|unique/i);
 });
