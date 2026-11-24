@@ -21,7 +21,7 @@ import type {
   StoryBibleFields,
 } from '../shared/types';
 
-export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history' | 'timeline' | 'opportunities';
+export type RightPanelTab = 'inspector' | 'story-bible' | 'consistency' | 'history' | 'timeline' | 'opportunities' | 'mind-map';
 
 interface ContextualInspectorProps {
   activeTab: RightPanelTab;
@@ -377,7 +377,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       <div
         role="tablist"
         aria-label="Inspector views"
-        className="grid grid-cols-6 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
+        className="grid grid-cols-7 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
       >
         {(
           [
@@ -387,6 +387,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             ['history', 'History'],
             ['timeline', 'Timeline'],
             ['opportunities', 'Ideas'],
+            ['mind-map', 'Mind map'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -1523,6 +1524,54 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
           onTransition={onTransitionOpportunity}
         />
       )}
+
+      {activeTab === 'mind-map' && (() => {
+        const groups: Array<{ title: string; fields: Array<keyof StoryBibleFields>; entities?: boolean }> = [
+          { title: 'Topics & themes', fields: ['themes', 'genre', 'tone'] },
+          { title: 'Plot', fields: ['centralConflict', 'pacing', 'narrativePerspective'] },
+          { title: 'World', fields: ['setting', 'continuityRules', 'explicitExclusions'] },
+          { title: 'Visual style', fields: ['visualStyle', 'cameraAndLighting'] },
+          { title: 'Characters', fields: [], entities: true },
+        ];
+        return (
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+            <header>
+              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Narrative Mind Map</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Groups show topic association only; they do not assert causality. Values are read from the current project and are not edited here.</p>
+            </header>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {groups.map(group => {
+                const bibleEntries = group.fields.flatMap(field => {
+                  const item = project.snapshot.storyBible[field];
+                  return item.value.trim() ? [{ label: field.replace(/[A-Z]/gu, letter => ` ${letter}`).replace(/^./u, letter => letter.toUpperCase()), value: item.value, status: item.status, provenance: item.provenance }] : [];
+                });
+                const characters = group.entities ? project.snapshot.entities.filter(entity => entity.category === 'character') : [];
+                return (
+                  <section key={group.title} aria-label={`${group.title} group`} className="min-h-24 rounded border border-gray-200 p-3 dark:border-gray-700">
+                    <h4 className="mb-2 text-xs font-bold">{group.title}</h4>
+                    {bibleEntries.length === 0 && characters.length === 0 ? <p className="text-xs text-gray-500">No entries recorded.</p> : (
+                      <ul className="space-y-2">
+                        {bibleEntries.map(entry => (
+                          <li key={entry.label} className="rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
+                            <strong>{entry.label}</strong><p>{entry.value}</p>
+                            <span className="text-gray-500">{entry.status} · {entry.provenance}</span>
+                          </li>
+                        ))}
+                        {characters.map(entity => (
+                          <li key={entity.id ?? entity.name} className="rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
+                            <strong>{entity.name}</strong>{entity.description && <p>{entity.description}</p>}
+                            <span className="text-gray-500">{entity.status ?? 'status not recorded'} · {entity.provenance ?? 'provenance not recorded'}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {activeTab === 'timeline' && (() => {
         const sections = manuscriptSections(project);
