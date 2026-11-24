@@ -43,6 +43,7 @@ test('deduplicates only exact verified payload identities within project and des
   assert.deepEqual(result.candidates, [{ id: 'old', reasons: ['duplicate-content'] }]);
   assert.deepEqual(result.warnings, [
     '1 record(s) outside the internal vault were excluded.',
+    '1 non-project completeness record(s) were excluded.',
     '2 unverified or corrupt record(s) were excluded.',
   ]);
 });
@@ -128,4 +129,61 @@ test('keeps newest and count ranking isolated by project and destination scope',
   ], { enabled: true, maxBackups: 1 });
   assert.deepEqual(result.candidates, [{ id: 'a-old', reasons: ['exceeds-max-backups'] }]);
   assert.deepEqual(result.warnings, ['1 record(s) outside the internal vault were excluded.']);
+});
+
+test('excludes all-project and unknown completeness records before count or newest ranking', () => {
+  const result = planBackupRetention([
+    record('valid-old', { createdAt: 1, payloadSha256: 'a'.repeat(64) }),
+    record('valid-new', { createdAt: 2, payloadSha256: 'b'.repeat(64) }),
+    record('all-project-archive', { completeness: 'all-project', createdAt: 1000, payloadSha256: 'c'.repeat(64) }),
+    record('unknown-scope', { completeness: 'future-kind', createdAt: 2000, payloadSha256: 'd'.repeat(64) }),
+  ], { enabled: true, maxBackups: 1 });
+  assert.deepEqual(result.candidates, [{ id: 'valid-old', reasons: ['exceeds-max-backups'] }]);
+  assert.deepEqual(result.warnings, ['2 non-project completeness record(s) were excluded.']);
+});
+
+test('returns an empty plan for an empty inventory', () => {
+  assert.deepEqual(planBackupRetention([], { enabled: true, maxBackups: 1 }), {
+    candidates: [],
+    warnings: [],
+  });
+});
+
+test('rejects negative, fractional and unsafe count limits', () => {
+  for (const maxBackups of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => planBackupRetention([record('a')], { enabled: true, maxBackups }), /positive safe integer/);
+  }
+});
+
+test('returns no count candidates when inventory is within the exact limit', () => {
+  const result = planBackupRetention([
+    record('a', { createdAt: 1, payloadSha256: 'a'.repeat(64) }),
+    record('b', { createdAt: 2, payloadSha256: 'b'.repeat(64) }),
+  ], { enabled: true, maxBackups: 2 });
+  assert.deepEqual(result, { candidates: [], warnings: [] });
+});
+
+test('keeps candidate IDs and reason lists unique when duplicate and count rules both apply', () => {
+  const result = planBackupRetention([
+    record('dup-old', { createdAt: 1 }),
+    record('dup-new', { createdAt: 2 }),
+    record('unique-old', { createdAt: 3, payloadSha256: 'b'.repeat(64) }),
+    record('unique-new', { createdAt: 4, payloadSha256: 'c'.repeat(64) }),
+    record('latest', { createdAt: 5, payloadSha256: 'd'.repeat(64) }),
+  ], { enabled: true, maxBackups: 1 });
+  const ids = result.candidates.map(candidate => candidate.id);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const candidate of result.candidates) {
+    assert.equal(new Set(candidate.reasons).size, candidate.reasons.length);
+  }
+});
+
+test('does not mutate the input inventory or policy', () => {
+  const records = [record('old', { createdAt: 1 }), record('new', { createdAt: 2, payloadSha256: 'b'.repeat(64) })];
+  const policy = { enabled: true, maxBackups: 1 };
+  const recordsBefore = structuredClone(records);
+  const policyBefore = structuredClone(policy);
+  planBackupRetention(records, policy);
+  assert.deepEqual(records, recordsBefore);
+  assert.deepEqual(policy, policyBefore);
 });

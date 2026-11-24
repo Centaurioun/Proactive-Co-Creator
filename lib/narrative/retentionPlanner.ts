@@ -51,8 +51,11 @@ export function planBackupRetention(
   const internal = records.filter(record => record.destinationId === 'internal-vault');
   const outsideCount = records.length - internal.length;
   if (outsideCount > 0) warnings.push(`${outsideCount} record(s) outside the internal vault were excluded.`);
-  const verified = internal.filter(record => record.verification === 'verified');
-  const excludedCount = internal.length - verified.length;
+  const projectRecords = internal.filter(record => record.completeness === 'project');
+  const nonProjectCount = internal.length - projectRecords.length;
+  if (nonProjectCount > 0) warnings.push(`${nonProjectCount} non-project completeness record(s) were excluded.`);
+  const verified = projectRecords.filter(record => record.verification === 'verified');
+  const excludedCount = projectRecords.length - verified.length;
   if (excludedCount > 0) warnings.push(`${excludedCount} unverified or corrupt record(s) were excluded.`);
 
   const candidates = new Map<string, Set<string>>();
