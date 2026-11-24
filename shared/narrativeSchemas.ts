@@ -59,6 +59,22 @@ const sourceSchema = z.strictObject({
   }
 });
 
+const styleProfileSchema = z.strictObject({
+  projectId: id,
+  observations: z.array(z.strictObject({
+    id,
+    trait: z.enum(['pov', 'voice', 'tense', 'rhythm', 'dialogue', 'atmosphere']),
+    value: z.string().min(1).max(240),
+    interpretation: z.enum(['observation', 'interpretation']),
+    scope: z.union([
+      z.strictObject({ kind: z.literal('manuscript') }),
+      z.strictObject({ kind: z.literal('section'), sectionId: id }),
+    ]),
+    evidence: z.strictObject({ kind: z.literal('source'), recordId: id, version: id, digest: id, start: offset, end: offset, excerpt: z.string().max(2000) }),
+    status: z.enum(['pending', 'confirmed', 'rejected']),
+  })),
+});
+
 const evidenceSchema = z.strictObject({
   sourceId: id,
   version: id,
@@ -97,7 +113,7 @@ const opportunityProposalSchema = z.strictObject({
 });
 
 export const narrativeSchema = z.strictObject({
-  versions: z.array(z.strictObject({ id, sectionVersionIds: z.array(id) })),
+  versions: z.array(z.strictObject({ id, sectionVersionIds: z.array(id), styleProfile: styleProfileSchema.optional() })),
   sectionVersions: z.array(z.strictObject({ id, section: sectionSchema })),
   sources: z.array(sourceSchema),
   claims: z.array(z.strictObject({

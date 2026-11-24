@@ -30,6 +30,7 @@ export function validateNarrativeRecords(project: CreativeProject): void {
   assertUnique(records.issues.map(({ fingerprint }) => fingerprint), 'issue fingerprint');
   assertUnique(records.audit.map(({ id }) => id), 'audit');
   assertUnique(records.sectionVersions.map(({ id }) => id), 'section version');
+  const allSectionIds = new Set(records.sectionVersions.map(({ section }) => section.id));
   const sectionByVersionId = new Map(records.sectionVersions.map(({ id, section }) => [id, section]));
   for (const version of records.versions) {
     const sections = version.sectionVersionIds.map(id => {
@@ -42,6 +43,21 @@ export function validateNarrativeRecords(project: CreativeProject): void {
     for (const section of sections) {
       if (section.chapterId && (section.kind !== 'scene' || !chapters.has(section.chapterId))) {
         throw new Error('Missing manuscript chapter.');
+      }
+    }
+    if (version.styleProfile) {
+      if (version.styleProfile.projectId !== project.id) throw new Error('Style profile belongs to a different project.');
+      assertUnique(version.styleProfile.observations.map(({ id }) => id), 'style observation');
+      for (const observation of version.styleProfile.observations) {
+        if (observation.scope.kind === 'section' && !allSectionIds.has(observation.scope.sectionId)) {
+          throw new Error('Style observation references an unknown manuscript section.');
+        }
+        const source = records.sources.find(({ id, version: sourceVersion, digest }) =>
+          id === observation.evidence.recordId && sourceVersion === observation.evidence.version && digest === observation.evidence.digest);
+        if (!source || observation.evidence.end - observation.evidence.start !== observation.evidence.excerpt.length ||
+          source.text.slice(observation.evidence.start, observation.evidence.end) !== observation.evidence.excerpt) {
+          throw new Error('Invalid style observation source evidence.');
+        }
       }
     }
   }

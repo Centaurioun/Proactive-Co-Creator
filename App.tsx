@@ -8,6 +8,7 @@ import ProjectHub from './components/workspace/ProjectHub';
 import NarrativeReview from './components/workspace/NarrativeReview';
 import ImportWorkflow from './components/narrativeImport/ImportWorkflow';
 import { manuscriptSections, manuscriptText, prepareManuscriptChange, type NarrativeBase } from './lib/narrative/manuscriptModel';
+import type { StyleProfile } from './lib/narrative/context/styleProfile';
 import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplacement, registryReport, safeFilename, saveBackup } from './lib/narrative/recovery';
 import { projectContentExport, type ContentExportSelection } from './lib/narrative/recovery/contentExport';
 import { projectContentBundle } from './lib/narrative/recovery/bundleExporter';
@@ -610,7 +611,7 @@ function App() {
     return () => window.removeEventListener('beforeunload', warn);
   }, []);
 
-  const saveManuscript = async (base: NarrativeBase, sections: ManuscriptSection[], artifact?: ArtifactAnchor) => {
+  const saveManuscript = async (base: NarrativeBase, sections: ManuscriptSection[], artifact?: ArtifactAnchor, styleProfile?: StyleProfile) => {
     if (hydrationGateRef.current !== 'ready' || !window.indexedDB) {
       throw new Error('IndexedDB must be available and the workspace must finish loading.');
     }
@@ -618,7 +619,7 @@ function App() {
     if (Object.values(inFlightTickets).some(ticket => ticket.projectId === before.id)) {
       throw new Error('Wait for the current project operation to finish before saving.');
     }
-    const prepared = prepareManuscriptChange(before, undoStateRef.current, base, sections, artifact);
+    const prepared = prepareManuscriptChange(before, undoStateRef.current, base, sections, artifact, styleProfile);
     if (!prepared) return;
     if (storageAlert?.type === 'conflict' && storageAlert.projectId === before.id) {
       throw new Error('The project has a storage conflict. Copy the open text before reloading.');
