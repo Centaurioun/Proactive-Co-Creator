@@ -222,6 +222,23 @@ export function isSnapshotSemanticallyEqual(a: ProjectSnapshot, b: ProjectSnapsh
 }
 
 /**
+ * Deterministic lightweight digest of a normalized ProjectSnapshot for CAS exact-base validation.
+ */
+export function computeSnapshotDigest(snapshot: ProjectSnapshot): string {
+  const serialized = JSON.stringify(normalizeSnapshotForComparison(snapshot));
+  let h1 = 0x811c9dc5;
+  let h2 = 0x811c9dc5;
+  for (let i = 0; i < serialized.length; i += 1) {
+    const code = serialized.charCodeAt(i);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+    h2 ^= code ^ ((i + 1) & 0xff);
+    h2 = Math.imul(h2, 0x01000193) >>> 0;
+  }
+  return `snap_${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+}
+
+/**
  * Commits a new confirmed snapshot onto the Undo/Redo stack and invalidates any incompatible redo branch.
  * Skips no-op commits when nextSnapshot is semantically identical to state.present.
  */

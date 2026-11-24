@@ -1377,6 +1377,9 @@ export function reconcileAsyncSaveAcknowledgement(params: {
 export interface SerializedSaveOptions {
   requireExactBase?: boolean;
   expectedPersistedRevision?: number;
+  expectedManuscriptVersionId?: string;
+  expectedBaseSnapshotDigest?: string;
+  intentId?: string;
   forceOverwrite?: boolean;
   allowDeleted?: boolean;
 }

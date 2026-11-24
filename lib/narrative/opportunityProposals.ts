@@ -3,7 +3,8 @@ import type { CreativeProject } from '../../shared/types.ts';
 import { recordProjectRevision } from '../historyEngine.ts';
 
 export type OpportunityProposalInput = Pick<OpportunityProposal,
-  'description' | 'sourceRefs' | 'rationale' | 'benefit' | 'tradeOff' | 'assumptions'>;
+  'description' | 'sourceRefs' | 'rationale' | 'benefit' | 'tradeOff' | 'assumptions'> &
+  Partial<Pick<OpportunityProposal, 'origin' | 'category' | 'targetKind' | 'targetId' | 'options'>>;
 export type OpportunityProposalStatus = OpportunityProposal['status'];
 
 function narrativeRecords(project: CreativeProject): NonNullable<CreativeProject['narrative']> {
@@ -35,17 +36,24 @@ export function createOpportunityProposal(
     tradeOff: requiredText(input.tradeOff, 'Trade-off'),
     assumptions: input.assumptions.map(item => item.trim()).filter(Boolean),
     status: 'pending',
+    ...(input.origin ? { origin: input.origin } : { origin: 'user' as const }),
+    ...(input.category ? { category: input.category } : {}),
+    ...(input.targetKind ? { targetKind: input.targetKind } : {}),
+    ...(input.targetId ? { targetId: input.targetId } : {}),
+    ...(input.options?.length ? { options: input.options } : {}),
     createdAt: now,
     updatedAt: now,
   };
   const records = narrativeRecords(project);
   const next = recordProjectRevision({
     ...project,
+    schemaVersion: 4,
     narrative: { ...records, opportunities: [...(records.opportunities ?? []), proposal] },
   }, 'Save creative opportunity', proposal.description);
   const persistedProposal = { ...proposal, lifecycleRevision: next.revision };
   return {
     ...next,
+    schemaVersion: 4,
     narrative: { ...narrativeRecords(next), opportunities: [...(records.opportunities ?? []), persistedProposal] },
   };
 }
@@ -73,9 +81,10 @@ export function transitionOpportunityProposal(
     throw new Error('This opportunity is stale because the project changed. Create a fresh proposal before staging or accepting it.');
   }
   const now = Date.now();
-  const next = recordProjectRevision(project, `Opportunity ${status}`, `${proposal.description} — ${status}`);
+  const next = recordProjectRevision({ ...project, schemaVersion: 4 }, `Opportunity ${status}`, `${proposal.description} — ${status}`);
   return {
     ...next,
+    schemaVersion: 4,
     narrative: {
       ...records,
       opportunities: proposals.map(item => item.id === proposal.id

@@ -96,6 +96,16 @@ const importProposalSchema = z.strictObject({
   evidence: evidenceSchema,
 });
 
+const issueDispositionSchema = z.enum([
+  'open',
+  'deferred',
+  'needs-clarification',
+  'proposed-fix',
+  'resolved',
+  'dismissed',
+  'intentional',
+]);
+
 const opportunityProposalSchema = z.strictObject({
   id,
   projectId: id,
@@ -108,8 +118,39 @@ const opportunityProposalSchema = z.strictObject({
   tradeOff: z.string().min(1),
   assumptions: z.array(z.string()),
   status: z.enum(['pending', 'deferred', 'staged', 'accepted', 'rejected']),
+  origin: z.enum(['user', 'ai']).optional(),
+  category: z.string().optional(),
+  targetKind: z.enum(['project', 'section', 'entity']).optional(),
+  targetId: id.optional(),
+  options: z.array(z.string()).optional(),
   createdAt: offset,
   updatedAt: offset,
+});
+
+const syncStateSchema = z.strictObject({
+  lastReviewedRevision: offset.optional(),
+  lastReviewedAt: offset.optional(),
+  lastDirection: z.enum(['manuscript-to-model', 'model-to-manuscript']).optional(),
+  pendingSectionIds: z.array(id).optional(),
+  pendingModelTargetIds: z.array(id).optional(),
+  coverageNote: z.string().optional(),
+});
+
+const writingAlternativeSchema = z.strictObject({
+  id,
+  sectionId: id,
+  label: z.string().min(1),
+  text: z.string().min(1),
+  rationale: z.string(),
+  createdAt: offset,
+});
+
+const automationPreferencesSchema = z.strictObject({
+  semanticAutoAnalysisEnabled: z.boolean(),
+  scope: z.enum(['changed', 'scene', 'full']),
+  maxCallsPerSession: z.number().int().min(1).max(20),
+  maxTokensPerRun: z.number().int().min(1000).max(14000),
+  paused: z.boolean().optional(),
 });
 
 export const narrativeSchema = z.strictObject({
@@ -129,21 +170,28 @@ export const narrativeSchema = z.strictObject({
   })),
   proposals: z.array(importProposalSchema).optional(),
   opportunities: z.array(opportunityProposalSchema).optional(),
+  syncState: syncStateSchema.optional(),
+  writingAlternatives: z.array(writingAlternativeSchema).optional(),
+  automationPreferences: automationPreferencesSchema.optional(),
   issues: z.array(z.strictObject({
     id,
     fingerprint: id,
     title: z.string(),
-    disposition: z.enum(['open', 'deferred', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed']),
+    disposition: issueDispositionSchema,
     freshness: z.enum(['current', 'needs-recheck', 'historical']),
     reason: z.string(),
     anchors: z.array(evidenceSchema),
     affectedTargetIds: z.array(id).default([]),
     severity: z.enum(['info', 'low', 'medium', 'high']).default('medium'),
     certainty: z.enum(['uncertain', 'possible', 'likely', 'confirmed']).default('possible'),
+    source: z.enum(['local', 'semantic-ai']).optional(),
+    category: z.string().optional(),
+    detectedAtRevision: offset.optional(),
+    scopeLabel: z.string().optional(),
     dispositionReason: z.string().optional(),
     updatedAt: offset.optional(),
     history: z.array(z.strictObject({
-      disposition: z.enum(['open', 'deferred', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed']),
+      disposition: issueDispositionSchema,
       time: offset,
       reason: z.string(),
       projectRevision: offset,
@@ -151,14 +199,14 @@ export const narrativeSchema = z.strictObject({
   })),
   audit: z.array(z.strictObject({
     id,
-    action: z.enum(['write', 'adopt', 'undo', 'redo', 'restore', 'issue']),
+    action: z.enum(['write', 'adopt', 'undo', 'redo', 'restore', 'issue', 'fix', 'sync', 'append', 'writing']),
     time: offset,
     baseRevision: offset,
     resultRevision: offset,
     before: id.optional(),
     after: id.optional(),
     issueId: id.optional(),
-    issueDisposition: z.enum(['open', 'deferred', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed']).optional(),
+    issueDisposition: issueDispositionSchema.optional(),
     reason: z.string(),
     artifact: artifactAnchorSchema.optional(),
   })),

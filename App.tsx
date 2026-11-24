@@ -12,7 +12,32 @@ import type { StyleProfile } from './lib/narrative/context/styleProfile';
 import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplacement, registryReport, safeFilename, saveBackup } from './lib/narrative/recovery';
 import { projectContentExport, type ContentExportSelection } from './lib/narrative/recovery/contentExport';
 import { projectContentBundle } from './lib/narrative/recovery/bundleExporter';
-import type { ArtifactAnchor, ManuscriptSection } from './shared/narrativeTypes';
+import { buildDeterministicExportFilename, buildManuscriptDocxBytes } from './lib/narrative/recovery/docxExport';
+import {
+  applyDiagnosticFixAlternative,
+  collectLocalDiagnosticFindings,
+  convertSemanticFindingsToDiagnosticFindings,
+  ensureNarrativeEnvelope,
+  syncDiagnosticFindingsIntoProject,
+} from './lib/narrative/diagnostics/engine';
+import {
+  applyManuscriptSyncPatch,
+  applyModelSyncProposal,
+  recordSyncReviewCheckpoint,
+} from './lib/narrative/sync/syncProposals';
+import {
+  applyAppendToExistingProject,
+  type AppendInsertPosition,
+  type CrossProjectIdentityDecision,
+} from './lib/narrative/import/appendApply';
+import type { ArtifactAnchor, ManuscriptSection, NarrativeRecords, OpportunityProposal } from './shared/narrativeTypes';
+import type {
+  DiagnosticFixAlternative,
+  SemanticDiagnosticFinding,
+  SyncManuscriptPatch,
+  SyncModelProposal,
+  WritingAssistAction,
+} from './shared/narrativeAiSchemas';
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import BeliefGraph from './components/BeliefGraph';
 import ContextualInspector, { type RightPanelTab } from './components/ContextualInspector';
@@ -41,6 +66,7 @@ import {
   resolveConsistencyIssueTarget,
 } from './lib/consistencyChecker';
 import {
+  computeSnapshotDigest,
   createUndoRedoState,
   recordProjectRevision,
   restoreProjectRevision,
@@ -98,12 +124,14 @@ import {
 import {
   analyzePromptToBeliefGraph,
   ClientApiError,
+  fetchAiCapabilities,
   generateClarifications,
   generateImagesFromPrompt,
   generateStoryFromPrompt,
   isAbortError,
   refinePromptWithAllUpdates,
   requestBatchEditInterpretation,
+  requestSemanticDiagnostics,
 } from './services/apiClient';
 import {
   MAX_PROMPT_CHARS,
@@ -129,7 +157,10 @@ interface StorageConflictAlert {
   type: 'conflict' | 'quota' | 'error';
   message: string;
   projectId: string;
+  conflictingProject?: CreativeProject;
 }
+
+const AUTO_BACKUP_PREF_KEY = 'pcc_auto_backup_pref_v1';
 
 function getReadableErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ClientApiError) return error.message;
@@ -189,8 +220,19 @@ function App() {
   const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('inspector');
   const [adoptArtifactId, setAdoptArtifactId] = useState<string>();
+  const [focusedSectionId, setFocusedSectionId] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<{ id: string; sequence: number } | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects' | 'import'>('plan');
+  const [aiConfigured, setAiConfigured] = useState<boolean>(false);
+  const [autoAnalysisCallsUsed, setAutoAnalysisCallsUsed] = useState<number>(0);
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState<boolean>(() => {
+    try {
+      return window.localStorage?.getItem(AUTO_BACKUP_PREF_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const lastAutoBackupRevisionRef = useRef<Record<string, number>>({});
   const draftDirtyRef = useRef(false);
   const restorePendingRef = useRef(false);
   const creatingImportedProjectRef = useRef(false);
@@ -307,6 +349,7 @@ function App() {
           setStorageAlert({
             type: 'conflict',
             projectId: targetProject.id,
+            conflictingProject: res.storedProject,
             message:
               res.error ??
               'Storage conflict: a newer or divergent project revision exists in durable storage.',
@@ -415,6 +458,7 @@ function App() {
           activeProject: activeProjectRef.current,
           activeUndoState: undoStateRef.current,
           hasLocalEditsSinceMount: hasLocalEditsSinceMountRef.current,
+          localWasAutoSeededSample: initialData.autoSeededSample,
         });
         setSavedProjects(reconciled.savedProjects);
 
@@ -430,6 +474,7 @@ function App() {
           setStorageAlert({
             type: 'conflict',
             projectId: reconciled.activeProject.id,
+            conflictingProject: reconciled.conflictWithHydrated,
             message: `Storage hydration conflict: IndexedDB holds revision #${reconciled.conflictWithHydrated.revision} ("${idbBibleSummary}") while this tab has revision #${reconciled.activeProject.revision} ("${localBibleSummary}"). Both versions are preserved until you choose which to keep.`,
           });
         } else {
@@ -470,7 +515,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [updateHydrationGate]);
+  }, [updateHydrationGate, initialData.autoSeededSample]);
 
   // Persist active project via serialized durable IndexedDB CAS + non-authoritative localStorage cache
   useEffect(() => {
@@ -486,6 +531,7 @@ function App() {
       return;
     }
 
+    if (activeProject.persistedRevision === activeProject.revision && !hasLocalEditsSinceMountRef.current) return;
     if (activeProject.narrative && activeProject.persistedRevision === activeProject.revision) return;
     const timer = setTimeout(() => {
       autosaveTimerRef.current = null;
@@ -589,6 +635,108 @@ function App() {
     return () => window.removeEventListener('storage', handleStorageEvent);
   }, []);
 
+  // Read-only AI capabilities probe on mount (never invokes an LLM/provider call)
+  useEffect(() => {
+    let cancelled = false;
+    void fetchAiCapabilities()
+      .then((cap) => {
+        if (!cancelled) setAiConfigured(Boolean(cap.configured));
+      })
+      .catch(() => {
+        if (!cancelled) setAiConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Opt-in managed browser backup while app is open (off by default, never deletes existing backups)
+  useEffect(() => {
+    if (!autoBackupEnabled || hydrationGate !== 'ready') return;
+    if (activeProject.persistedRevision !== activeProject.revision) return;
+    const lastRev = lastAutoBackupRevisionRef.current[activeProject.id] ?? 0;
+    if (activeProject.revision - lastRev < 5) return;
+    lastAutoBackupRevisionRef.current[activeProject.id] = activeProject.revision;
+    void saveBackup(activeProject, `Auto-backup at rev ${activeProject.revision}`).catch(() => {
+      // Non-fatal; manual backups remain available.
+    });
+  }, [autoBackupEnabled, hydrationGate, activeProject]);
+
+  // Optional bounded semantic auto-analysis (strictly OFF by default, debounced, capped per session)
+  useEffect(() => {
+    const prefs = activeProject.narrative?.automationPreferences;
+    if (!aiConfigured || !prefs?.semanticAutoAnalysisEnabled || prefs.paused) return;
+    if (!hasLocalEditsSinceMountRef.current) return;
+    if (autoAnalysisCallsUsed >= (prefs.maxCallsPerSession ?? 4)) return;
+    if (hydrationGate !== 'ready') return;
+
+    const timer = window.setTimeout(() => {
+      const current = activeProjectRef.current;
+      const sections = manuscriptSections(current).slice(0, 4).map((s) => ({
+        id: s.id,
+        title: s.title || s.kind,
+        kind: s.kind,
+        text: s.text.slice(0, 3_000),
+      }));
+      const entities = current.snapshot.entities
+        .filter((e) => e.category !== 'scene' && e.epistemicKind !== 'belief' && e.epistemicKind !== 'reported')
+        .slice(0, 30)
+        .map((e) => ({
+          id: e.id ?? e.name,
+          name: e.name,
+          category: e.category,
+          excluded: e.excluded,
+          status: e.status,
+          attributes: e.attributes.slice(0, 10).map((a) => ({
+            id: a.id,
+            name: a.name,
+            value: a.confirmedValue ?? a.value[0]?.name ?? '',
+            status: a.status,
+          })),
+        }));
+      const relationships = current.snapshot.relationships.slice(0, 40).map((r) => ({
+        id: r.id,
+        sourceId: r.sourceId,
+        targetId: r.targetId,
+        source: r.source,
+        target: r.target,
+        label: r.label,
+        status: r.status,
+      }));
+      const storyBible: Record<string, string> = {};
+      for (const [k, f] of Object.entries(current.snapshot.storyBible)) {
+        if (f.value.trim()) storyBible[k] = f.value.trim().slice(0, 400);
+      }
+
+      setAutoAnalysisCallsUsed((c) => c + 1);
+      void requestSemanticDiagnostics({
+        projectId: current.id,
+        baseRevision: current.revision,
+        scope: prefs.scope,
+        entities,
+        relationships,
+        storyBible,
+        sections,
+      })
+        .then((res) => {
+          if (activeProjectRef.current.id !== current.id) return;
+          const mapped = convertSemanticFindingsToDiagnosticFindings(res.findings);
+          const merged = syncDiagnosticFindingsIntoProject(activeProjectRef.current, mapped, {
+            source: 'semantic-ai',
+            scopeLabel: `Auto (${prefs.scope})`,
+            fullScan: false,
+          });
+          activeProjectRef.current = merged;
+          setProject(merged);
+        })
+        .catch(() => {
+          // Non-fatal background check; manual diagnostics stay available.
+        });
+    }, 3500);
+
+    return () => window.clearTimeout(timer);
+  }, [aiConfigured, activeProject.revision, activeProject.narrative?.automationPreferences, autoAnalysisCallsUsed, hydrationGate]);
+
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
@@ -627,9 +775,11 @@ function App() {
     }
 
     if (!before.narrative) {
-      const written = await flushProjectDurably(before, { expectedPersistedRevision: before.persistedRevision });
-      if (!written.saved || written.authoritativeStore !== 'indexeddb') {
-        throw new Error(written.error ?? 'The prior project could not be saved before the manuscript upgrade.');
+      if (before.persistedRevision !== before.revision || before.persistedRevision === undefined) {
+        const written = await flushProjectDurably(before, { expectedPersistedRevision: before.persistedRevision });
+        if (!written.saved || written.authoritativeStore !== 'indexeddb') {
+          throw new Error(written.error ?? 'The prior project could not be saved before the manuscript upgrade.');
+        }
       }
       const backups = await listBackups(before.id);
       if (!backups.some(backup => backup.pinned && backup.payload === JSON.stringify(before, null, 2))) {
@@ -667,11 +817,13 @@ function App() {
         autosaveTimerRef.current = null;
       }
       const previous = activeProjectRef.current;
-      const previousSave = await flushProjectDurably(previous, {
-        expectedPersistedRevision: previous.persistedRevision ?? previous.revision,
-      });
-      if (!previousSave.saved) {
-        throw new Error(previousSave.error ?? 'The current project could not be saved before import. Existing projects were not changed.');
+      if (previous.persistedRevision !== previous.revision || previous.persistedRevision === undefined) {
+        const previousSave = await flushProjectDurably(previous, {
+          expectedPersistedRevision: previous.persistedRevision ?? previous.revision,
+        });
+        if (!previousSave.saved) {
+          throw new Error(previousSave.error ?? 'The current project could not be saved before import. Existing projects were not changed.');
+        }
       }
       if (activeProjectRef.current.id !== previous.id || activeProjectRef.current.revision !== previous.revision) {
         throw new Error('The current project changed while preparing the import. The reviewed project remains available.');
@@ -771,6 +923,286 @@ function App() {
         : `Opportunity marked ${status}.`);
     } catch (cause) {
       setStatusNotification(cause instanceof Error ? cause.message : 'Could not update this opportunity.');
+    }
+  };
+
+  // --- Package C, D, E, F, G, H Narrative Workspace Handlers ---
+
+  const handleRunLocalDiagnostics = () => {
+    const before = activeProjectRef.current;
+    const localFindings = collectLocalDiagnosticFindings(before);
+    const next = syncDiagnosticFindingsIntoProject(before, localFindings, {
+      source: 'local',
+      scopeLabel: 'Full local check',
+      fullScan: true,
+    });
+    activeProjectRef.current = next;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(next);
+    setStatusNotification(`Synced ${localFindings.length} local diagnostic finding(s) into tracked issues.`);
+  };
+
+  const handleMergeSemanticFindings = (findings: readonly SemanticDiagnosticFinding[], scopeLabel: string) => {
+    const before = activeProjectRef.current;
+    const mapped = convertSemanticFindingsToDiagnosticFindings(findings);
+    const next = syncDiagnosticFindingsIntoProject(before, mapped, {
+      source: 'semantic-ai',
+      scopeLabel,
+      fullScan: false,
+    });
+    activeProjectRef.current = next;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(next);
+  };
+
+  const handleApplyDiagnosticFix = async (
+    issueId: string,
+    alternative: DiagnosticFixAlternative,
+    expectedBaseRevision: number
+  ): Promise<{ ok: boolean; message: string }> => {
+    try {
+      const before = activeProjectRef.current;
+      const result = applyDiagnosticFixAlternative(before, undoStateRef.current, issueId, alternative, expectedBaseRevision);
+      const saved = await flushProjectDurably(result.project, {
+        expectedPersistedRevision: before.revision,
+        requireExactBase: true,
+        intentId: `fix_${before.id}_${issueId}_${alternative.id}_r${expectedBaseRevision}`,
+        clearConflictOnSuccess: true,
+      });
+      if (!saved.saved) {
+        return { ok: false, message: saved.error ?? 'Could not durably save the applied fix.' };
+      }
+      const committed = { ...result.project, persistedRevision: saved.persistedRevision ?? result.project.revision };
+      activeProjectRef.current = committed;
+      undoStateRef.current = result.undoState;
+      hasLocalEditsSinceMountRef.current = true;
+      setProject(committed);
+      setUndoState(result.undoState);
+      const note = result.issueResolved
+        ? `${result.appliedSummary} Issue resolved after post-apply recheck.`
+        : `${result.appliedSummary} Post-apply recheck kept residual issue open (${result.residualOpenCount} open).`;
+      setStatusNotification(note);
+      return { ok: true, message: note };
+    } catch (cause) {
+      return { ok: false, message: cause instanceof Error ? cause.message : 'Fix could not be applied.' };
+    }
+  };
+
+  const handleApplyModelSyncProposal = async (
+    proposal: SyncModelProposal,
+    expectedBaseRevision: number
+  ): Promise<{ ok: boolean; message: string }> => {
+    try {
+      const before = activeProjectRef.current;
+      const applied = applyModelSyncProposal(before, undoStateRef.current, proposal, expectedBaseRevision);
+      const saved = await flushProjectDurably(applied.project, {
+        expectedPersistedRevision: before.revision,
+        requireExactBase: true,
+        intentId: `sync_model_${before.id}_${proposal.id}_r${expectedBaseRevision}`,
+        clearConflictOnSuccess: true,
+      });
+      if (!saved.saved) return { ok: false, message: saved.error ?? 'Could not save sync model update.' };
+      const committed = { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
+      activeProjectRef.current = committed;
+      undoStateRef.current = applied.undoState;
+      hasLocalEditsSinceMountRef.current = true;
+      setProject(committed);
+      setUndoState(applied.undoState);
+      setStatusNotification(applied.summary);
+      return { ok: true, message: applied.summary };
+    } catch (cause) {
+      return { ok: false, message: cause instanceof Error ? cause.message : 'Sync model update failed.' };
+    }
+  };
+
+  const handleApplyManuscriptSyncPatch = async (
+    patch: SyncManuscriptPatch,
+    expectedBaseRevision: number,
+    expectedManuscriptVersionId?: string
+  ): Promise<{ ok: boolean; message: string }> => {
+    try {
+      const before = activeProjectRef.current;
+      const applied = applyManuscriptSyncPatch(
+        before,
+        undoStateRef.current,
+        patch,
+        expectedBaseRevision,
+        expectedManuscriptVersionId
+      );
+      const saved = await flushProjectDurably(applied.project, {
+        expectedPersistedRevision: before.revision,
+        expectedManuscriptVersionId,
+        requireExactBase: true,
+        intentId: `sync_ms_${before.id}_${patch.id}_r${expectedBaseRevision}`,
+        clearConflictOnSuccess: true,
+      });
+      if (!saved.saved) return { ok: false, message: saved.error ?? 'Could not save manuscript sync patch.' };
+      const committed = { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
+      activeProjectRef.current = committed;
+      undoStateRef.current = applied.undoState;
+      hasLocalEditsSinceMountRef.current = true;
+      setProject(committed);
+      setUndoState(applied.undoState);
+      setStatusNotification(applied.summary);
+      return { ok: true, message: applied.summary };
+    } catch (cause) {
+      return { ok: false, message: cause instanceof Error ? cause.message : 'Manuscript sync patch failed.' };
+    }
+  };
+
+  const handleRecordSyncCheckpoint = (direction: 'manuscript-to-model' | 'model-to-manuscript', coverageNote: string) => {
+    const next = recordSyncReviewCheckpoint(activeProjectRef.current, direction, coverageNote);
+    activeProjectRef.current = next;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(next);
+  };
+
+  const handleSaveWritingAlternative = (alt: {
+    sectionId: string;
+    action: WritingAssistAction;
+    label: string;
+    text: string;
+    rationale: string;
+    assumptions: string[];
+  }) => {
+    const ensured = ensureNarrativeEnvelope(activeProjectRef.current);
+    const now = Date.now();
+    const next: CreativeProject = {
+      ...ensured,
+      narrative: {
+        ...ensured.narrative!,
+        writingAlternatives: [
+          ...(ensured.narrative!.writingAlternatives ?? []),
+          {
+            id: makeStableId('walt'),
+            sectionId: alt.sectionId,
+            action: alt.action,
+            label: alt.label,
+            text: alt.text,
+            rationale: alt.rationale,
+            assumptions: alt.assumptions,
+            createdAt: now,
+            baseRevision: ensured.revision,
+          },
+        ].slice(-30),
+      },
+    };
+    activeProjectRef.current = next;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(next);
+    setStatusNotification(`Saved "${alt.label}" as a non-mutating alternative.`);
+  };
+
+  const handleSendOpportunityToReview = (proposal: OpportunityProposal) => {
+    setWorkspaceMode('plan');
+    setIsReviewModalOpen(true);
+    setStatusNotification(`Opened Change Review for idea: "${proposal.description.slice(0, 70)}". Apply changes explicitly via Decision Inbox or Batch Edit.`);
+  };
+
+  const handleUpdateAutomationPreferences = (prefs: NonNullable<NarrativeRecords['automationPreferences']>) => {
+    const ensured = ensureNarrativeEnvelope(activeProjectRef.current);
+    const next: CreativeProject = {
+      ...ensured,
+      narrative: {
+        ...ensured.narrative!,
+        automationPreferences: prefs,
+      },
+    };
+    activeProjectRef.current = next;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(next);
+    setStatusNotification(prefs.semanticAutoAnalysisEnabled ? 'Bounded semantic auto-analysis preference updated.' : 'Semantic auto-analysis disabled.');
+  };
+
+  const handleToggleAutoBackup = (enabled: boolean) => {
+    setAutoBackupEnabled(enabled);
+    try {
+      window.localStorage?.setItem(AUTO_BACKUP_PREF_KEY, enabled ? 'true' : 'false');
+    } catch {
+      // Ignore storage quota for preference
+    }
+    setStatusNotification(enabled ? 'Opt-in browser auto-backup enabled while app is open.' : 'Opt-in browser auto-backup disabled.');
+  };
+
+  const handleAppendToExistingProject = async (params: {
+    targetProjectId: string;
+    incomingProject: CreativeProject;
+    insertPosition: AppendInsertPosition;
+    identityDecisions: Record<string, CrossProjectIdentityDecision>;
+    allowDuplicateSource: boolean;
+  }) => {
+    if (hydrationGateRef.current !== 'ready' || !window.indexedDB) {
+      throw new Error('IndexedDB must be available and workspace loading must finish before appending.');
+    }
+    const target =
+      activeProjectRef.current.id === params.targetProjectId
+        ? activeProjectRef.current
+        : savedProjectsRef.current.find((p) => p.id === params.targetProjectId);
+    if (!target) throw new Error('Selected target project no longer exists.');
+
+    // Save a verified pinned safety checkpoint before mutating the target project
+    await saveBackup(target, `Safety checkpoint before appending "${params.incomingProject.name}"`, true);
+
+    const baseDigest = computeSnapshotDigest(target.snapshot);
+    const applied = applyAppendToExistingProject({
+      targetProject: target,
+      incomingProject: params.incomingProject,
+      insertPosition: params.insertPosition,
+      identityDecisions: params.identityDecisions,
+      expectedBaseRevision: target.revision,
+      expectedManuscriptVersionId: target.snapshot.manuscriptVersionId ?? '',
+      expectedBaseSnapshotDigest: baseDigest,
+      allowDuplicateSource: params.allowDuplicateSource,
+    });
+
+    const saved = await flushProjectDurably(applied.candidateProject, {
+      expectedPersistedRevision: target.revision,
+      expectedManuscriptVersionId: target.snapshot.manuscriptVersionId ?? '',
+      expectedBaseSnapshotDigest: baseDigest,
+      requireExactBase: true,
+      intentId: applied.intentId,
+      clearConflictOnSuccess: true,
+    });
+    if (!saved.saved || saved.authoritativeStore !== 'indexeddb') {
+      throw new Error(saved.error ?? 'Appended project could not be saved durably.');
+    }
+    const committed = { ...applied.candidateProject, persistedRevision: saved.persistedRevision ?? applied.candidateProject.revision };
+    const nextUndo = createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory);
+    const nextSaved = upsertProjectInSavedList(savedProjectsRef.current, committed);
+    savedProjectsRef.current = nextSaved;
+    activeProjectRef.current = committed;
+    undoStateRef.current = nextUndo;
+    hasLocalEditsSinceMountRef.current = true;
+    setSavedProjects(nextSaved);
+    setProject(committed);
+    setUndoState(nextUndo);
+    setWorkspaceMode('write');
+    setStatusNotification(
+      `Appended ${applied.addedSectionCount} section(s) into "${committed.name}" (${applied.addedEntityCount} new, ${applied.linkedEntityCount} linked entities).`
+    );
+  };
+
+  const handleRestoreArchiveProjects = async (
+    restoredProjects: CreativeProject[]
+  ): Promise<{ ok: boolean; count: number; error?: string }> => {
+    try {
+      let nextSaved = [...savedProjectsRef.current];
+      let savedCount = 0;
+      for (const candidate of restoredProjects) {
+        const res = await flushProjectDurably(candidate, { expectedPersistedRevision: 0 });
+        if (!res.saved) {
+          throw new Error(res.error ?? `Could not restore "${candidate.name}".`);
+        }
+        const committed = { ...candidate, persistedRevision: res.persistedRevision ?? candidate.revision };
+        nextSaved = upsertProjectInSavedList(nextSaved, committed);
+        savedCount += 1;
+      }
+      savedProjectsRef.current = nextSaved;
+      setSavedProjects(nextSaved);
+      setStatusNotification(`Restored ${savedCount} verified project(s) from portable archive.`);
+      return { ok: true, count: savedCount };
+    } catch (cause) {
+      return { ok: false, count: 0, error: cause instanceof Error ? cause.message : 'Archive restore failed.' };
     }
   };
 
@@ -1095,12 +1527,19 @@ function App() {
   };
 
   const handleNavigateConsistencyTarget = (target: ConsistencyIssueTarget) => {
+    if (target.kind === 'section' && target.sectionId) {
+      if (!allowNavigation()) return;
+      setFocusedSectionId(target.sectionId);
+      setWorkspaceMode('write');
+      return;
+    }
     const resolved = resolveConsistencyIssueTarget(snapshot, target);
     if (!resolved.ok) {
       setStatusNotification(resolved.reason);
       return;
     }
     if (resolved.kind === 'story_bible') {
+      setWorkspaceMode('plan');
       setRightPanelTab('story-bible');
       setMobileTab('inspector');
       setFocusedStoryBibleField((prev) => ({
@@ -1110,6 +1549,7 @@ function App() {
       return;
     }
     if (resolved.kind === 'relationship') {
+      setWorkspaceMode('plan');
       setSelectedEntityId(null);
       setSelectedRelationshipId(resolved.relationship.id ?? null);
       setRightPanelTab('inspector');
@@ -1117,6 +1557,7 @@ function App() {
       return;
     }
     if (resolved.kind === 'entity') {
+      setWorkspaceMode('plan');
       setSelectedRelationshipId(null);
       setSelectedEntityId(resolved.entity.id ?? resolved.entity.name);
       setRightPanelTab('inspector');
@@ -2012,13 +2453,38 @@ function App() {
   }
 
   function exportManuscript() {
-    const file = projectContentExport(activeProject, { kind: 'manuscript' });
+    const file = projectContentExport(activeProject, { kind: 'manuscript', format: 'md' });
     downloadTextFile(file.name, file.text, file.mediaType);
+  }
+
+  function exportManuscriptText() {
+    const file = projectContentExport(activeProject, { kind: 'manuscript', format: 'txt' });
+    downloadTextFile(file.name, file.text, file.mediaType);
+  }
+
+  function exportManuscriptDocx() {
+    const sections = manuscriptSections(activeProject);
+    const bytes = buildManuscriptDocxBytes(activeProject.name, sections);
+    const filename = buildDeterministicExportFilename({
+      projectName: activeProject.name,
+      projectId: activeProject.id,
+      kind: 'manuscript',
+      revision: activeProject.revision,
+      ext: 'docx',
+    });
+    downloadBinaryFile(
+      filename,
+      bytes,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    );
   }
 
   const contentExports: Array<{ id: string; label: string; selection: ContentExportSelection }> = [
     ...(activeProject.snapshot.manuscriptVersionId
-      ? [{ id: 'manuscript:full', label: 'Working manuscript · Markdown', selection: { kind: 'manuscript' } as const }]
+      ? [
+          { id: 'manuscript:full', label: 'Working manuscript · Markdown', selection: { kind: 'manuscript', format: 'md' } as const },
+          { id: 'manuscript:txt', label: 'Working manuscript · Plain Text', selection: { kind: 'manuscript', format: 'txt' } as const },
+        ]
       : []),
     ...manuscriptSections(activeProject).map(section => ({
       id: `manuscript-section:${section.id}`,
@@ -2034,6 +2500,9 @@ function App() {
       label: `Original source text · ${source.id} / ${source.version}`,
       selection: { kind: 'source-text', sourceId: source.id, version: source.version } as const,
     })),
+    { id: 'story-bible:md', label: 'Story Bible · Markdown', selection: { kind: 'story-bible' } },
+    { id: 'prompt:txt', label: 'Refined Prompt · Text', selection: { kind: 'prompt' } },
+    { id: 'issues-audit:md', label: 'Issues & Audit · Markdown', selection: { kind: 'issues-audit', format: 'md' } },
     { id: 'evidence-report:md', label: 'Evidence report · Markdown', selection: { kind: 'evidence-report', format: 'md' } },
     { id: 'evidence-report:json', label: 'Evidence report · JSON', selection: { kind: 'evidence-report', format: 'json' } },
   ];
@@ -2199,6 +2668,22 @@ function App() {
             >
               Export Backup JSON
             </button>
+            {storageAlert.conflictingProject && (
+              <button
+                type="button"
+                onClick={() => {
+                  const conflictProj = storageAlert.conflictingProject!;
+                  downloadTextFile(
+                    safeFilename(conflictProj.name, `r${conflictProj.revision}-stored-copy`, 'json'),
+                    exportProjectToJson(conflictProj),
+                    'application/json;charset=utf-8'
+                  );
+                }}
+                className="px-2.5 py-1 rounded font-medium bg-white dark:bg-gray-800 border border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100"
+              >
+                Export Stored Copy
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setStorageAlert(null)}
@@ -2239,27 +2724,95 @@ function App() {
       </nav>
 
       {workspaceMode === 'write' && (
-        <ManuscriptEditor key={activeProject.id} project={activeProject} onSave={saveManuscript} initialArtifactId={adoptArtifactId}
+        <ManuscriptEditor
+          key={activeProject.id}
+          project={activeProject}
+          onSave={saveManuscript}
+          initialArtifactId={adoptArtifactId}
+          focusedSectionId={focusedSectionId}
+          aiConfigured={aiConfigured}
+          onSaveWritingAlternative={handleSaveWritingAlternative}
           onExportDraft={sections => downloadTextFile(safeFilename(activeProject.name, 'unsaved-draft', 'md'), manuscriptText(sections), 'text/markdown;charset=utf-8')}
           onDirty={dirty => { draftDirtyRef.current = dirty; }}
-          onUndo={handleUndo} onRedo={handleRedo} canUndo={undoState.past.length > 0} canRedo={undoState.future.length > 0}
-          enabled={hydrationGate === 'ready' && typeof window !== 'undefined' && Boolean(window.indexedDB)} />
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          canUndo={undoState.past.length > 0}
+          canRedo={undoState.future.length > 0}
+          enabled={hydrationGate === 'ready' && typeof window !== 'undefined' && Boolean(window.indexedDB)}
+        />
       )}
       {workspaceMode === 'review' && (
-        <NarrativeReview project={activeProject} checks={consistencyIssues}
-          openChecks={() => openPlan('consistency')} openHistory={() => openPlan('history', 'revision-history')}
+        <NarrativeReview
+          project={activeProject}
+          checks={consistencyIssues}
+          aiConfigured={aiConfigured}
+          openChecks={() => openPlan('consistency')}
+          openHistory={() => openPlan('history', 'revision-history')}
           openOutput={() => handleSelectHeaderSection('output')}
-          exportReport={format => downloadTextFile(safeFilename(activeProject.name, 'evidence-audit', format),
-            registryReport(activeProject, format), format === 'json' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8')}
-          onIssueDisposition={handleIssueDisposition} />
+          openOpportunities={() => openPlan('opportunities')}
+          exportReport={format =>
+            downloadTextFile(
+              safeFilename(activeProject.name, 'evidence-audit', format),
+              registryReport(activeProject, format),
+              format === 'json' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8'
+            )
+          }
+          onIssueDisposition={handleIssueDisposition}
+          onRunLocalDiagnostics={handleRunLocalDiagnostics}
+          onMergeSemanticFindings={handleMergeSemanticFindings}
+          onApplyDiagnosticFix={handleApplyDiagnosticFix}
+          onNavigateTarget={handleNavigateConsistencyTarget}
+          onApplyModelSyncProposal={handleApplyModelSyncProposal}
+          onApplyManuscriptSyncPatch={handleApplyManuscriptSyncPatch}
+          onRecordSyncCheckpoint={handleRecordSyncCheckpoint}
+          onUpdateAutomationPreferences={handleUpdateAutomationPreferences}
+          autoAnalysisCallsUsed={autoAnalysisCallsUsed}
+        />
       )}
-      {workspaceMode === 'import' && <ImportWorkflow onCreateProject={handleCreateImportedProject} onCancelImport={() => setWorkspaceMode('plan')} />}
+      {workspaceMode === 'import' && (
+        <ImportWorkflow
+          existingProjects={savedProjects}
+          activeProjectId={activeProject.id}
+          aiConfigured={aiConfigured}
+          onCreateProject={handleCreateImportedProject}
+          onAppendToExistingProject={handleAppendToExistingProject}
+          onCancelImport={() => setWorkspaceMode('plan')}
+        />
+      )}
       {workspaceMode === 'projects' && (
-        <ProjectHub key={activeProject.id} project={activeProject}
-          openProjects={() => openPlan('history', 'project-management')} openExport={() => openPlan('history', 'export-content')}
+        <ProjectHub
+          key={activeProject.id}
+          project={activeProject}
+          savedProjects={savedProjects}
+          openProjects={() => openPlan('history', 'project-management')}
+          openExport={() => openPlan('history', 'export-content')}
+          openImport={() => {
+            if (allowNavigation()) setWorkspaceMode('import');
+          }}
           restore={handleImportProjectJson}
-          downloadBackup={backup => downloadTextFile(safeFilename(activeProject.name, `r${backup.revision}-${backup.id.slice(0, 8)}-backup`, 'json'),
-            JSON.stringify(backup, null, 2), 'application/json;charset=utf-8')} />
+          restoreArchiveProjects={handleRestoreArchiveProjects}
+          downloadBackup={backup =>
+            downloadTextFile(
+              safeFilename(activeProject.name, `r${backup.revision}-${backup.id.slice(0, 8)}-backup`, 'json'),
+              JSON.stringify(backup, null, 2),
+              'application/json;charset=utf-8'
+            )
+          }
+          onExportManuscriptDocx={manuscriptSections(activeProject).length > 0 ? exportManuscriptDocx : undefined}
+          onExportManuscriptText={manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined}
+          onExportStoryBible={handleExportStoryBibleMarkdown}
+          onExportPrompt={handleExportPromptText}
+          onExportIssuesAudit={() =>
+            downloadTextFile(
+              safeFilename(activeProject.name, 'issues-audit', 'md'),
+              registryReport(activeProject, 'md'),
+              'text/markdown;charset=utf-8'
+            )
+          }
+          onDownloadAllProjectsArchive={(filename, bytes) => downloadBinaryFile(filename, bytes, 'application/zip')}
+          autoBackupEnabled={autoBackupEnabled}
+          onToggleAutoBackup={handleToggleAutoBackup}
+        />
       )}
 
       <div className={workspaceMode === 'plan' ? 'contents' : 'hidden'}>
@@ -2339,6 +2892,10 @@ function App() {
               }}
               onRelationshipChange={handleUpsertRelationship}
               onAttributeChange={handleAttributeChange}
+              onOpenChecks={() => {
+                setRightPanelTab('consistency');
+                setMobileTab('inspector');
+              }}
               currentPrompt={snapshot.originalIdea}
               consistencyIssues={consistencyIssues}
               relationshipProjection={relationshipProjection}
@@ -2427,6 +2984,18 @@ function App() {
             onExportStoryBibleMarkdown={handleExportStoryBibleMarkdown}
             onExportPromptText={handleExportPromptText}
             onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
+            onExportManuscriptDocx={manuscriptSections(activeProject).length > 0 ? exportManuscriptDocx : undefined}
+            onExportManuscriptText={manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined}
+            onOpenReviewDiagnostics={() => {
+              if (allowNavigation()) setWorkspaceMode('review');
+            }}
+            onJumpToSection={(sectionId) => {
+              if (!allowNavigation()) return;
+              setFocusedSectionId(sectionId);
+              setWorkspaceMode('write');
+            }}
+            aiConfigured={aiConfigured}
+            onSendOpportunityToReview={handleSendOpportunityToReview}
             contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
             onExportContent={exportContent}
             onExportContentBundle={exportContentBundle}

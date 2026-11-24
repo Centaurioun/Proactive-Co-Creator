@@ -290,11 +290,12 @@ export interface ReviewDiffItem {
 
 export interface ConsistencyIssueTarget {
   id: string;
-  kind: 'entity' | 'relationship' | 'story_bible';
+  kind: 'entity' | 'relationship' | 'story_bible' | 'section';
   label: string;
   entityId?: string;
   relationshipId?: string;
   storyField?: keyof StoryBibleFields;
+  sectionId?: string;
 }
 
 export interface ConsistencyIssue {
@@ -378,6 +379,7 @@ export interface CreativeProject {
   artifacts: GenerationArtifact[];
   revisions: ProjectRevision[];
   undoHistory?: PersistedUndoHistory;
+  recentIntentIds?: string[];
 }
 
 export type AiRequestAction =
@@ -388,7 +390,12 @@ export type AiRequestAction =
   | 'polish'
   | 'generate'
   | 'story'
-  | 'image';
+  | 'image'
+  | 'diagnostics'
+  | 'sync'
+  | 'writing'
+  | 'opportunities'
+  | 'import-enhance';
 
 export interface AiRequestTicket {
   requestId: string;

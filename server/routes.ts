@@ -24,6 +24,27 @@ import type {
   ImageGenerationResult,
 } from '../shared/types.ts';
 import {
+  DiagnosticsAnalyzeRequestSchema,
+  DiagnosticsSuggestFixesRequestSchema,
+  ImportEnhanceRequestSchema,
+  OpportunitiesExploreRequestSchema,
+  SyncAnalyzeRequestSchema,
+  WritingAssistRequestSchema,
+  type DiagnosticsAnalyzeRequest,
+  type DiagnosticsAnalyzeResponse,
+  type DiagnosticsSuggestFixesRequest,
+  type DiagnosticsSuggestFixesResponse,
+  type ImportEnhanceRequest,
+  type ImportEnhanceResponse,
+  type OpportunitiesExploreRequest,
+  type OpportunitiesExploreResponse,
+  type SyncAnalyzeRequest,
+  type SyncAnalyzeResponse,
+  type WritingAssistRequest,
+  type WritingAssistResponse,
+} from '../shared/narrativeAiSchemas.ts';
+import { getAiCapabilitiesSnapshot } from './aiBudget.ts';
+import {
   analyzeBeliefGraph,
   generateClarificationsList,
   generateImagesBatch,
@@ -35,6 +56,14 @@ import { AppApiError, classifyGeminiError } from './errors.ts';
 import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
 import { extractNarrativeChunk } from './narrative/extractionService.ts';
+import {
+  analyzeNarrativeSync,
+  analyzeSemanticDiagnostics,
+  exploreCreativeOpportunities,
+  proposeImportEnhancements,
+  runWritingAssistant,
+  suggestDiagnosticFixes,
+} from './narrative/narrativeAiService.ts';
 
 export interface AiServiceHandlers {
   analyzeBeliefGraph: (
@@ -74,6 +103,12 @@ export interface AiServiceHandlers {
   generateImagesBatch: (prompt: string, signal?: AbortSignal) => Promise<ImageGenerationResult>;
   hasConfiguredGeminiKey: () => boolean;
   extractNarrativeChunk?: (request: NarrativeExtractionRequest, signal?: AbortSignal) => Promise<NarrativeExtraction>;
+  analyzeSemanticDiagnostics?: (request: DiagnosticsAnalyzeRequest, signal?: AbortSignal) => Promise<DiagnosticsAnalyzeResponse>;
+  suggestDiagnosticFixes?: (request: DiagnosticsSuggestFixesRequest, signal?: AbortSignal) => Promise<DiagnosticsSuggestFixesResponse>;
+  analyzeNarrativeSync?: (request: SyncAnalyzeRequest, signal?: AbortSignal) => Promise<SyncAnalyzeResponse>;
+  runWritingAssistant?: (request: WritingAssistRequest, signal?: AbortSignal) => Promise<WritingAssistResponse>;
+  exploreCreativeOpportunities?: (request: OpportunitiesExploreRequest, signal?: AbortSignal) => Promise<OpportunitiesExploreResponse>;
+  proposeImportEnhancements?: (request: ImportEnhanceRequest, signal?: AbortSignal) => Promise<ImportEnhanceResponse>;
 }
 
 const defaultHandlers: AiServiceHandlers = {
@@ -85,6 +120,12 @@ const defaultHandlers: AiServiceHandlers = {
   generateImagesBatch,
   hasConfiguredGeminiKey,
   extractNarrativeChunk,
+  analyzeSemanticDiagnostics,
+  suggestDiagnosticFixes,
+  analyzeNarrativeSync,
+  runWritingAssistant,
+  exploreCreativeOpportunities,
+  proposeImportEnhancements,
 };
 
 function attachRequestAbortSignal(_req: Request, res: Response): AbortController {
@@ -333,6 +374,106 @@ export function createApiRouter(
         controller.signal
       );
       res.json({ story });
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.get('/ai/capabilities', (_req, res) => {
+    res.json(getAiCapabilitiesSnapshot(handlers.hasConfiguredGeminiKey()));
+  });
+
+  router.post('/narrative/diagnostics/analyze', async (req, res) => {
+    const parsed = DiagnosticsAnalyzeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid diagnostics analysis request.', 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const fn = handlers.analyzeSemanticDiagnostics ?? analyzeSemanticDiagnostics;
+      res.json(await fn(parsed.data, controller.signal));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.post('/narrative/diagnostics/suggest-fixes', async (req, res) => {
+    const parsed = DiagnosticsSuggestFixesRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid fix suggestion request.', 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const fn = handlers.suggestDiagnosticFixes ?? suggestDiagnosticFixes;
+      res.json(await fn(parsed.data, controller.signal));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.post('/narrative/sync/analyze', async (req, res) => {
+    const parsed = SyncAnalyzeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid sync analysis request.', 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const fn = handlers.analyzeNarrativeSync ?? analyzeNarrativeSync;
+      res.json(await fn(parsed.data, controller.signal));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.post('/narrative/writing/assist', async (req, res) => {
+    const parsed = WritingAssistRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid writing assistant request.', 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const fn = handlers.runWritingAssistant ?? runWritingAssistant;
+      res.json(await fn(parsed.data, controller.signal));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.post('/narrative/opportunities/explore', async (req, res) => {
+    const parsed = OpportunitiesExploreRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid opportunity exploration request.', 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const fn = handlers.exploreCreativeOpportunities ?? exploreCreativeOpportunities;
+      res.json(await fn(parsed.data, controller.signal));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  router.post('/narrative/import/enhance', async (req, res) => {
+    const parsed = ImportEnhanceRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid import enhancement request.', 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      const fn = handlers.proposeImportEnhancements ?? proposeImportEnhancements;
+      res.json(await fn(parsed.data, controller.signal));
     } catch (err) {
       sendErrorResponse(res, err);
     }

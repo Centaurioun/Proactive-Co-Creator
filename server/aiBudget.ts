@@ -1,3 +1,5 @@
+import { GEMINI_MODELS } from './models.ts';
+
 export type AiOperation =
   | 'analyze'
   | 'clarify'
@@ -5,61 +7,56 @@ export type AiOperation =
   | 'story'
   | 'image'
   | 'batch-edit'
-  | 'narrative-import';
-
-export type AiModality = 'text' | 'image' | 'audio' | 'video' | 'document';
-export type CapabilityProvenanceState =
-  | 'verified'
-  | 'documented-conservative-bound'
-  | 'legacy-only'
-  | 'unverified'
-  | 'unsupported';
+  | 'narrative-import'
+  | 'diagnostics'
+  | 'sync'
+  | 'writing'
+  | 'opportunities'
+  | 'import-enhance';
 
 export type CapabilityProvenance =
   | { state: 'verified' | 'documented-conservative-bound'; evidenceRef: string }
-  | { state: 'legacy-only'; legacyGuardId: string }
-  | { state: 'unverified' | 'unsupported'; evidenceRef?: string };
+  | { state: 'unverified' | 'unsupported' }
+  | { state: 'legacy-only'; legacyGuardId: string };
 
-export interface AiCapability {
-  model: string;
-  operation: AiOperation;
-  modalities: readonly AiModality[];
-  provenance: CapabilityProvenance;
-}
-
-export interface AiBudgetReserves {
-  schema?: { tokens: number; evidenceRef: string };
-  reasoning?: { tokens: number; evidenceRef: string };
-  contents?: { tokens: number; evidenceRef: string };
-  systemInstruction?: { tokens: number; evidenceRef: string };
-}
-
-export interface AiBudgetLimits {
-  maxContextTokens: number;
-  maxInputTokens: number;
-  maxAggregateInputTokens: number;
-  maxOutputTokens: number;
-  maxRequestBytes: number;
-  countTimeoutMs: number;
-  maxRequests: number;
-  maxChunks: number;
-  maxRetries: number;
-  maxElapsedMs: number;
-  maxConcurrency: number;
+export interface TokenReserve {
+  tokens: number;
+  evidenceRef: string;
 }
 
 export interface AiBudgetPolicy {
-  capability: AiCapability;
-  reserves?: AiBudgetReserves;
-  limits: AiBudgetLimits;
+  capability: {
+    model: string;
+    operation: AiOperation;
+    modalities: readonly string[];
+    provenance: CapabilityProvenance;
+  };
+  reserves?: {
+    schema?: TokenReserve;
+    reasoning?: TokenReserve;
+    systemInstruction?: TokenReserve;
+  };
+  limits: {
+    maxContextTokens: number;
+    maxOutputTokens: number;
+    maxRequestBytes: number;
+    countTimeoutMs: number;
+    maxRequests: number;
+    maxInputTokens: number;
+    maxAggregateInputTokens: number;
+    maxChunks: number;
+    maxRetries: number;
+    maxElapsedMs: number;
+    maxConcurrency: number;
+  };
 }
 
 export interface AiTransportPayload {
   contents: unknown;
   systemInstruction?: unknown;
-  generationConfig: {
-    maxOutputTokens: number;
+  generationConfig?: {
     responseSchema?: unknown;
+    maxOutputTokens?: number;
     [key: string]: unknown;
   };
   [key: string]: unknown;
@@ -68,55 +65,44 @@ export interface AiTransportPayload {
 export interface AiBudgetRequest {
   model: string;
   operation: AiOperation;
-  modalities: readonly AiModality[];
+  modalities: readonly string[];
   transportPayload: AiTransportPayload;
-  legacyGuard?: { id: string; accepted: true };
+  legacyGuard?: { id: string; accepted: boolean };
 }
 
 export type TokenMeasurement =
   | {
       kind: 'provider-count';
       inputTokens: number;
-      covered: readonly ('contents' | 'systemInstruction')[];
+      covered: ReadonlyArray<'contents' | 'systemInstruction'>;
     }
   | { kind: 'estimate'; estimatedTokens: number; basis: string }
-  | { kind: 'actual-usage'; inputTokens?: number; outputTokens?: number; source: string };
-
-export type CountTokens = (
-  input: { model: string; contents: unknown; systemInstruction?: unknown },
-  signal: AbortSignal
-) => Promise<TokenMeasurement>;
+  | { kind: 'actual-usage'; inputTokens: number; outputTokens: number; source: string };
 
 export type AiBudgetRejectionReason =
+  | 'CANCELLED'
   | 'UNKNOWN_MODEL'
   | 'UNKNOWN_OPERATION'
   | 'UNSUPPORTED_MODALITY'
   | 'CAPABILITY_UNVERIFIED'
   | 'CAPABILITY_UNSUPPORTED'
   | 'LEGACY_GUARD_REQUIRED'
-  | 'MISSING_RESERVE'
-  | 'INVALID_POLICY'
   | 'INVALID_REQUEST'
+  | 'MISSING_RESERVE'
+  | 'BUDGET_EXCEEDED'
   | 'COUNT_UNAVAILABLE'
-  | 'COUNT_TIMEOUT'
-  | 'CANCELLED'
-  | 'BUDGET_EXCEEDED';
+  | 'COUNT_TIMEOUT';
 
 export type AiBudgetDecision =
   | {
       kind: 'allowed';
-      requestBytes: number;
-      inputTokens: number;
       contextTokens: number;
-      transportPayload: Readonly<AiTransportPayload>;
-      serializedPayload: string;
-    }
-  | {
-      kind: 'legacy-allowed';
+      inputTokens: number;
       requestBytes: number;
       transportPayload: Readonly<AiTransportPayload>;
       serializedPayload: string;
     }
+  | { kind: 'legacy-allowed' }
   | { kind: 'rejected'; reason: AiBudgetRejectionReason };
 
 export interface AggregateUsage {
@@ -128,289 +114,581 @@ export interface AggregateUsage {
   concurrency: number;
 }
 
+export type AggregateRejectionReason =
+  | 'INVALID_USAGE'
+  | 'REQUEST_LIMIT'
+  | 'INPUT_TOKEN_LIMIT'
+  | 'CHUNK_LIMIT'
+  | 'RETRY_LIMIT'
+  | 'TIME_LIMIT'
+  | 'CONCURRENCY_LIMIT';
+
 export type AggregateBudgetDecision =
   | { kind: 'allowed' }
-  | {
-      kind: 'rejected';
-      reason:
-        | 'INVALID_POLICY'
-        | 'INVALID_USAGE'
-        | 'REQUEST_LIMIT'
-        | 'INPUT_TOKEN_LIMIT'
-        | 'CHUNK_LIMIT'
-        | 'RETRY_LIMIT'
-        | 'TIME_LIMIT'
-        | 'CONCURRENCY_LIMIT';
-    };
+  | { kind: 'rejected'; reason: AggregateRejectionReason };
 
-function rejected(reason: AiBudgetRejectionReason): AiBudgetDecision {
-  return { kind: 'rejected', reason };
-}
-
-function isFiniteNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function hasFiniteBounds(policy: AiBudgetPolicy): boolean {
-  if (!policy?.limits || !policy?.capability) return false;
-  const bounds = [
-    policy.limits.maxContextTokens,
-    policy.limits.maxInputTokens,
-    policy.limits.maxAggregateInputTokens,
-    policy.limits.maxOutputTokens,
-    policy.limits.maxRequestBytes,
-    policy.limits.countTimeoutMs,
-    policy.limits.maxRequests,
-    policy.limits.maxChunks,
-    policy.limits.maxRetries,
-    policy.limits.maxElapsedMs,
-    policy.limits.maxConcurrency,
-  ];
-  return bounds.every(isFiniteNonNegativeInteger) && policy.limits.countTimeoutMs > 0;
-}
-
-function sameValues(left: readonly string[], right: readonly string[]): boolean {
-  const sortedLeft = [...left].sort();
-  const sortedRight = [...right].sort();
-  return sortedLeft.length === sortedRight.length && sortedLeft.every((value, index) => value === sortedRight[index]);
-}
-
-const supportedModalities = new Set<AiModality>(['text', 'image', 'audio', 'video', 'document']);
-const supportedOperations = new Set<AiOperation>([
-  'analyze', 'clarify', 'polish', 'story', 'image', 'batch-edit', 'narrative-import',
-]);
-
-function isEvidenceBackedReserve(reserve: AiBudgetReserves[keyof AiBudgetReserves]): boolean {
-  return reserve !== undefined && isFiniteNonNegativeInteger(reserve.tokens) &&
-    typeof reserve.evidenceRef === 'string' && reserve.evidenceRef.trim().length > 0;
-}
+const utf8Encoder = new TextEncoder();
 
 export function measureJsonBytes(value: unknown): number {
-  const serialized = JSON.stringify(value);
-  if (serialized === undefined) throw new TypeError('Value is not JSON serializable.');
-  return Buffer.byteLength(serialized, 'utf8');
+  return utf8Encoder.encode(JSON.stringify(value)).byteLength;
 }
 
-function classifyCapability(
-  request: AiBudgetRequest,
-  policy: AiBudgetPolicy
-): AiBudgetRejectionReason | 'LEGACY_ALLOWED' | undefined {
-  const capability = policy.capability;
-  if (!capability || !Array.isArray(capability.modalities) || !capability.modalities.length ||
-      !Array.isArray(request.modalities) || !request.modalities.length) return 'INVALID_POLICY';
-  if (!capability.provenance || typeof capability.provenance.state !== 'string') return 'INVALID_POLICY';
-  if (typeof capability.model !== 'string' || !capability.model.trim() ||
-      !supportedOperations.has(capability.operation) ||
-      capability.modalities.some((modality) => !supportedModalities.has(modality))) return 'INVALID_POLICY';
-  if (request.modalities.some((modality) => !supportedModalities.has(modality))) return 'UNSUPPORTED_MODALITY';
-  if (!capability.model || request.model !== capability.model) return 'UNKNOWN_MODEL';
-  if (request.operation !== capability.operation) return 'UNKNOWN_OPERATION';
-  if (!sameValues(request.modalities, capability.modalities)) return 'UNSUPPORTED_MODALITY';
-
-  switch (capability.provenance.state) {
-    case 'verified':
-    case 'documented-conservative-bound':
-      return typeof capability.provenance.evidenceRef === 'string' && capability.provenance.evidenceRef.trim()
-        ? undefined
-        : 'CAPABILITY_UNVERIFIED';
-    case 'legacy-only':
-      return typeof capability.provenance.legacyGuardId === 'string' &&
-        request.legacyGuard?.accepted === true &&
-        request.legacyGuard.id === capability.provenance.legacyGuardId
-        ? 'LEGACY_ALLOWED'
-        : 'LEGACY_GUARD_REQUIRED';
-    case 'unverified':
-      return 'CAPABILITY_UNVERIFIED';
-    case 'unsupported':
-      return 'CAPABILITY_UNSUPPORTED';
-    default:
-      return 'CAPABILITY_UNVERIFIED';
-  }
-}
-
-function validReserves(
-  payload: AiTransportPayload,
-  reserves: AiBudgetReserves,
-  covered: ReadonlySet<'contents' | 'systemInstruction'>
-): boolean {
-  if (!isEvidenceBackedReserve(reserves.reasoning)) return false;
-  if (payload.generationConfig.responseSchema !== undefined && !isEvidenceBackedReserve(reserves.schema)) return false;
-  if (payload.contents !== undefined && !covered.has('contents') &&
-      !isEvidenceBackedReserve(reserves.contents)) return false;
-  if (payload.systemInstruction !== undefined && !covered.has('systemInstruction') &&
-      !isEvidenceBackedReserve(reserves.systemInstruction)) return false;
-  return true;
-}
-
-function freezeJson(value: unknown): void {
-  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
-  Object.freeze(value);
-  for (const nested of Object.values(value)) freezeJson(nested);
-}
-
-function snapshotTransportPayload(value: unknown): {
-  payload: Readonly<AiTransportPayload>;
-  serialized: string;
-  bytes: number;
-} | undefined {
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) return undefined;
-    const snapshot: unknown = JSON.parse(serialized);
-    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
-    const candidate = snapshot as Partial<AiTransportPayload>;
-    if (!Object.prototype.hasOwnProperty.call(candidate, 'contents') ||
-        !candidate.generationConfig || typeof candidate.generationConfig !== 'object' ||
-        Array.isArray(candidate.generationConfig) ||
-        !isFiniteNonNegativeInteger(candidate.generationConfig.maxOutputTokens)) return undefined;
-    freezeJson(snapshot);
-    return {
-      payload: snapshot as Readonly<AiTransportPayload>,
-      serialized,
-      bytes: Buffer.byteLength(serialized, 'utf8'),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function countWithDeadline(
-  countTokens: CountTokens,
-  input: { model: string; contents: unknown; systemInstruction?: unknown },
-  externalSignal: AbortSignal | undefined,
-  timeoutMs: number
-): Promise<TokenMeasurement> {
-  return new Promise((resolve, reject) => {
-    if (externalSignal?.aborted) {
-      reject(new CountFailure('CANCELLED'));
-      return;
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(child);
     }
-
-    const controller = new AbortController();
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      externalSignal?.removeEventListener('abort', onAbort);
-      fn();
-    };
-    const timer = setTimeout(() => {
-      controller.abort();
-      finish(() => reject(new CountFailure('COUNT_TIMEOUT')));
-    }, timeoutMs);
-    const onAbort = () => {
-      controller.abort(externalSignal?.reason);
-      finish(() => reject(new CountFailure('CANCELLED')));
-    };
-    externalSignal?.addEventListener('abort', onAbort, { once: true });
-
-    Promise.resolve()
-      .then(() => settled ? undefined : countTokens(input, controller.signal))
-      .then((measurement) => {
-        if (measurement !== undefined) finish(() => resolve(measurement));
-      })
-      .catch(() => finish(() => reject(new Error('COUNT_UNAVAILABLE'))));
-  });
-}
-
-class CountFailure extends Error {
-  constructor(readonly reason: 'COUNT_TIMEOUT' | 'CANCELLED') {
-    super(reason);
   }
+  return value;
 }
 
-export async function evaluateAiBudget(args: {
+function isValidReserve(reserve: TokenReserve | undefined): reserve is TokenReserve {
+  return Boolean(
+    reserve &&
+      typeof reserve.tokens === 'number' &&
+      Number.isInteger(reserve.tokens) &&
+      reserve.tokens >= 0 &&
+      typeof reserve.evidenceRef === 'string' &&
+      reserve.evidenceRef.trim().length > 0
+  );
+}
+
+export async function evaluateAiBudget(params: {
   request: AiBudgetRequest;
   policy: AiBudgetPolicy;
-  countTokens: CountTokens;
+  countTokens: (
+    args: { model: string; contents: unknown; systemInstruction?: unknown },
+    signal: AbortSignal
+  ) => Promise<TokenMeasurement>;
   signal?: AbortSignal;
 }): Promise<AiBudgetDecision> {
-  const { request, policy, countTokens, signal } = args;
-  if (!request || typeof request !== 'object' || typeof countTokens !== 'function') {
-    return rejected('INVALID_REQUEST');
+  const { request, policy, countTokens, signal } = params;
+  if (signal?.aborted) return { kind: 'rejected', reason: 'CANCELLED' };
+
+  if (request.model !== policy.capability.model) {
+    return { kind: 'rejected', reason: 'UNKNOWN_MODEL' };
   }
-  if (!hasFiniteBounds(policy)) return rejected('INVALID_POLICY');
-
-  const capabilityResult = classifyCapability(request, policy);
-  if (capabilityResult && capabilityResult !== 'LEGACY_ALLOWED') return rejected(capabilityResult);
-
-  const snapshot = snapshotTransportPayload(request.transportPayload);
-  if (!snapshot) return rejected('INVALID_REQUEST');
-  const { payload, serialized, bytes: requestBytes } = snapshot;
-
-  if (requestBytes > policy.limits.maxRequestBytes ||
-      payload.generationConfig.maxOutputTokens > policy.limits.maxOutputTokens) {
-    return rejected('BUDGET_EXCEEDED');
+  if (request.operation !== policy.capability.operation) {
+    return { kind: 'rejected', reason: 'UNKNOWN_OPERATION' };
   }
-  if (capabilityResult === 'LEGACY_ALLOWED') {
-    return { kind: 'legacy-allowed', requestBytes, transportPayload: payload, serializedPayload: serialized };
+  if (request.modalities.some((m) => !policy.capability.modalities.includes(m))) {
+    return { kind: 'rejected', reason: 'UNSUPPORTED_MODALITY' };
   }
 
-  const { reserves } = policy;
-  if (!reserves || !isEvidenceBackedReserve(reserves.reasoning) ||
-      (payload.generationConfig.responseSchema !== undefined && !isEvidenceBackedReserve(reserves.schema))) {
-    return rejected('MISSING_RESERVE');
+  const provenance = policy.capability.provenance;
+  if (provenance.state === 'unverified') {
+    return { kind: 'rejected', reason: 'CAPABILITY_UNVERIFIED' };
   }
-  if (signal?.aborted) return rejected('CANCELLED');
+  if (provenance.state === 'unsupported') {
+    return { kind: 'rejected', reason: 'CAPABILITY_UNSUPPORTED' };
+  }
+  if (provenance.state === 'legacy-only') {
+    if (
+      request.legacyGuard?.accepted === true &&
+      request.legacyGuard.id === provenance.legacyGuardId
+    ) {
+      return { kind: 'legacy-allowed' };
+    }
+    return { kind: 'rejected', reason: 'LEGACY_GUARD_REQUIRED' };
+  }
+
+  // Synchronously snapshot ONLY transportPayload so caller mutations cannot skew counting or sending
+  let serializedPayload: string;
+  let frozenPayload: AiTransportPayload;
+  try {
+    serializedPayload = JSON.stringify(request.transportPayload);
+    if (!serializedPayload) return { kind: 'rejected', reason: 'INVALID_REQUEST' };
+    frozenPayload = deepFreeze(JSON.parse(serializedPayload) as AiTransportPayload);
+  } catch {
+    return { kind: 'rejected', reason: 'INVALID_REQUEST' };
+  }
+
+  const maxOutputTokens = frozenPayload.generationConfig?.maxOutputTokens;
+  if (
+    typeof maxOutputTokens !== 'number' ||
+    !Number.isInteger(maxOutputTokens) ||
+    maxOutputTokens <= 0
+  ) {
+    return { kind: 'rejected', reason: 'INVALID_REQUEST' };
+  }
+  if (maxOutputTokens > policy.limits.maxOutputTokens) {
+    return { kind: 'rejected', reason: 'BUDGET_EXCEEDED' };
+  }
+
+  const requestBytes = utf8Encoder.encode(serializedPayload).byteLength;
+  if (requestBytes > policy.limits.maxRequestBytes) {
+    return { kind: 'rejected', reason: 'BUDGET_EXCEEDED' };
+  }
+
+  const hasSchema = frozenPayload.generationConfig?.responseSchema !== undefined;
+  if (hasSchema && !isValidReserve(policy.reserves?.schema)) {
+    return { kind: 'rejected', reason: 'MISSING_RESERVE' };
+  }
+  if (!isValidReserve(policy.reserves?.reasoning)) {
+    return { kind: 'rejected', reason: 'MISSING_RESERVE' };
+  }
+
+  const countController = new AbortController();
+  let timedOut = false;
+  let cancelled = false;
+  const onExternalAbort = () => {
+    cancelled = true;
+    countController.abort();
+  };
+  if (signal) {
+    if (signal.aborted) {
+      return { kind: 'rejected', reason: 'CANCELLED' };
+    }
+    signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    countController.abort();
+  }, Math.max(1, policy.limits.countTimeoutMs));
 
   let measurement: TokenMeasurement;
   try {
-    measurement = await countWithDeadline(
-      countTokens,
-      {
-        model: request.model,
-        contents: payload.contents,
-        ...(payload.systemInstruction !== undefined ? { systemInstruction: payload.systemInstruction } : {}),
-      },
-      signal,
-      policy.limits.countTimeoutMs
-    );
-  } catch (error) {
-    if (error instanceof CountFailure) return rejected(error.reason);
-    return rejected('COUNT_UNAVAILABLE');
+    measurement = await new Promise<TokenMeasurement>((resolve, reject) => {
+      const onAbort = () => reject(new Error(cancelled ? 'cancelled' : 'timeout'));
+      countController.signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(
+        countTokens(
+          {
+            model: request.model,
+            contents: frozenPayload.contents,
+            ...(frozenPayload.systemInstruction !== undefined
+              ? { systemInstruction: frozenPayload.systemInstruction }
+              : {}),
+          },
+          countController.signal
+        )
+      ).then(
+        (res) => {
+          countController.signal.removeEventListener('abort', onAbort);
+          resolve(res);
+        },
+        (err) => {
+          countController.signal.removeEventListener('abort', onAbort);
+          reject(err);
+        }
+      );
+    });
+  } catch {
+    if (cancelled || signal?.aborted) return { kind: 'rejected', reason: 'CANCELLED' };
+    if (timedOut) return { kind: 'rejected', reason: 'COUNT_TIMEOUT' };
+    return { kind: 'rejected', reason: 'COUNT_UNAVAILABLE' };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
 
-  if (signal?.aborted) return rejected('CANCELLED');
-  if (!measurement || typeof measurement !== 'object' || measurement.kind !== 'provider-count' ||
-      !isFiniteNonNegativeInteger(measurement.inputTokens) || !Array.isArray(measurement.covered)) {
-    return rejected('COUNT_UNAVAILABLE');
+  if (cancelled || signal?.aborted) return { kind: 'rejected', reason: 'CANCELLED' };
+  if (timedOut) return { kind: 'rejected', reason: 'COUNT_TIMEOUT' };
+
+  if (
+    !measurement ||
+    measurement.kind !== 'provider-count' ||
+    typeof measurement.inputTokens !== 'number' ||
+    !Number.isInteger(measurement.inputTokens) ||
+    measurement.inputTokens < 0 ||
+    !Array.isArray(measurement.covered) ||
+    !measurement.covered.includes('contents')
+  ) {
+    return { kind: 'rejected', reason: 'COUNT_UNAVAILABLE' };
   }
 
-  const covered = new Set(measurement.covered);
-  if ([...covered].some((part) => part !== 'contents' && part !== 'systemInstruction')) {
-    return rejected('COUNT_UNAVAILABLE');
+  let systemInstructionReserve = 0;
+  if (
+    frozenPayload.systemInstruction !== undefined &&
+    !measurement.covered.includes('systemInstruction')
+  ) {
+    if (!isValidReserve(policy.reserves?.systemInstruction)) {
+      return { kind: 'rejected', reason: 'MISSING_RESERVE' };
+    }
+    systemInstructionReserve = policy.reserves.systemInstruction.tokens;
   }
-  if (!validReserves(payload, reserves, covered)) return rejected('MISSING_RESERVE');
-  const inputTokens = measurement.inputTokens +
-    (covered.has('contents') ? 0 : reserves.contents!.tokens) +
-    (payload.systemInstruction === undefined || covered.has('systemInstruction') ? 0 : reserves.systemInstruction!.tokens);
-  const schemaTokens = payload.generationConfig.responseSchema === undefined ? 0 : reserves.schema!.tokens;
-  const contextTokens = inputTokens + schemaTokens + reserves.reasoning!.tokens + payload.generationConfig.maxOutputTokens;
 
-  if (inputTokens > policy.limits.maxInputTokens || contextTokens > policy.limits.maxContextTokens) {
-    return rejected('BUDGET_EXCEEDED');
+  const schemaReserve = hasSchema ? (policy.reserves?.schema?.tokens ?? 0) : 0;
+  const reasoningReserve = policy.reserves?.reasoning?.tokens ?? 0;
+  const contextTokens =
+    measurement.inputTokens +
+    maxOutputTokens +
+    schemaReserve +
+    reasoningReserve +
+    systemInstructionReserve;
+
+  if (
+    measurement.inputTokens > policy.limits.maxInputTokens ||
+    contextTokens > policy.limits.maxContextTokens
+  ) {
+    return { kind: 'rejected', reason: 'BUDGET_EXCEEDED' };
   }
-  return { kind: 'allowed', requestBytes, inputTokens, contextTokens, transportPayload: payload, serializedPayload: serialized };
+
+  return {
+    kind: 'allowed',
+    contextTokens,
+    inputTokens: measurement.inputTokens,
+    requestBytes,
+    transportPayload: frozenPayload,
+    serializedPayload,
+  };
 }
 
 export function evaluateAggregateBudget(
   policy: AiBudgetPolicy,
   usage: AggregateUsage
 ): AggregateBudgetDecision {
-  if (!hasFiniteBounds(policy)) return { kind: 'rejected', reason: 'INVALID_POLICY' };
-  if (!usage || typeof usage !== 'object' || ![
-    usage.requests, usage.inputTokens, usage.chunks, usage.retries, usage.elapsedMs, usage.concurrency,
-  ].every(isFiniteNonNegativeInteger)) {
-    return { kind: 'rejected', reason: 'INVALID_USAGE' };
+  const fields: Array<keyof AggregateUsage> = [
+    'requests',
+    'inputTokens',
+    'chunks',
+    'retries',
+    'elapsedMs',
+    'concurrency',
+  ];
+  for (const field of fields) {
+    const val = usage?.[field];
+    if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) {
+      return { kind: 'rejected', reason: 'INVALID_USAGE' };
+    }
   }
-  if (usage.requests > policy.limits.maxRequests) return { kind: 'rejected', reason: 'REQUEST_LIMIT' };
+  if (usage.requests > policy.limits.maxRequests) {
+    return { kind: 'rejected', reason: 'REQUEST_LIMIT' };
+  }
   if (usage.inputTokens > policy.limits.maxAggregateInputTokens) {
     return { kind: 'rejected', reason: 'INPUT_TOKEN_LIMIT' };
   }
-  if (usage.chunks > policy.limits.maxChunks) return { kind: 'rejected', reason: 'CHUNK_LIMIT' };
-  if (usage.retries > policy.limits.maxRetries) return { kind: 'rejected', reason: 'RETRY_LIMIT' };
-  if (usage.elapsedMs > policy.limits.maxElapsedMs) return { kind: 'rejected', reason: 'TIME_LIMIT' };
-  if (usage.concurrency > policy.limits.maxConcurrency) return { kind: 'rejected', reason: 'CONCURRENCY_LIMIT' };
+  if (usage.chunks > policy.limits.maxChunks) {
+    return { kind: 'rejected', reason: 'CHUNK_LIMIT' };
+  }
+  if (usage.retries > policy.limits.maxRetries) {
+    return { kind: 'rejected', reason: 'RETRY_LIMIT' };
+  }
+  if (usage.elapsedMs > policy.limits.maxElapsedMs) {
+    return { kind: 'rejected', reason: 'TIME_LIMIT' };
+  }
+  if (usage.concurrency > policy.limits.maxConcurrency) {
+    return { kind: 'rejected', reason: 'CONCURRENCY_LIMIT' };
+  }
   return { kind: 'allowed' };
+}
+
+// ---------------------------------------------------------------------------
+// Application-level per-operation policies, rate/concurrency slots & usage reports
+// ---------------------------------------------------------------------------
+
+export interface AiOperationPolicy {
+  operation: AiOperation;
+  model: string;
+  maxInputChars: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  timeoutMs: number;
+  maxConcurrent: number;
+  maxCallsPerMinute: number;
+  maxAggregateCalls: number;
+  maxAggregateTokens: number;
+  maxAggregateElapsedMs: number;
+  description: string;
+}
+
+export const AI_OPERATION_POLICIES: Readonly<Record<AiOperation, AiOperationPolicy>> = Object.freeze({
+  analyze: {
+    operation: 'analyze',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 8_000,
+    maxInputTokens: 4_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 45_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 20,
+    maxAggregateCalls: 4,
+    maxAggregateTokens: 16_000,
+    maxAggregateElapsedMs: 120_000,
+    description: 'Belief graph extraction from idea prompt',
+  },
+  clarify: {
+    operation: 'clarify',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 8_000,
+    maxInputTokens: 4_000,
+    maxOutputTokens: 2_048,
+    timeoutMs: 45_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 20,
+    maxAggregateCalls: 4,
+    maxAggregateTokens: 16_000,
+    maxAggregateElapsedMs: 120_000,
+    description: 'Clarifying questions generation',
+  },
+  polish: {
+    operation: 'polish',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 8_000,
+    maxInputTokens: 4_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 45_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 20,
+    maxAggregateCalls: 4,
+    maxAggregateTokens: 16_000,
+    maxAggregateElapsedMs: 120_000,
+    description: 'Refined prompt polish',
+  },
+  story: {
+    operation: 'story',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 8_000,
+    maxInputTokens: 4_000,
+    maxOutputTokens: 8_192,
+    timeoutMs: 60_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 12,
+    maxAggregateCalls: 2,
+    maxAggregateTokens: 20_000,
+    maxAggregateElapsedMs: 120_000,
+    description: 'Story draft generation',
+  },
+  image: {
+    operation: 'image',
+    model: GEMINI_MODELS.image,
+    maxInputChars: 8_000,
+    maxInputTokens: 2_500,
+    maxOutputTokens: 1_024,
+    timeoutMs: 60_000,
+    maxConcurrent: 1,
+    maxCallsPerMinute: 10,
+    maxAggregateCalls: 4,
+    maxAggregateTokens: 10_000,
+    maxAggregateElapsedMs: 120_000,
+    description: 'Image batch generation',
+  },
+  'batch-edit': {
+    operation: 'batch-edit',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 16_000,
+    maxInputTokens: 6_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 45_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 20,
+    maxAggregateCalls: 4,
+    maxAggregateTokens: 24_000,
+    maxAggregateElapsedMs: 120_000,
+    description: 'Natural-language batch edit interpretation',
+  },
+  'narrative-import': {
+    operation: 'narrative-import',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 32_000,
+    maxInputTokens: 12_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 60_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 30,
+    maxAggregateCalls: 12,
+    maxAggregateTokens: 120_000,
+    maxAggregateElapsedMs: 240_000,
+    description: 'Faithful narrative extraction chunk',
+  },
+  diagnostics: {
+    operation: 'diagnostics',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 40_000,
+    maxInputTokens: 14_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 55_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 15,
+    maxAggregateCalls: 6,
+    maxAggregateTokens: 60_000,
+    maxAggregateElapsedMs: 180_000,
+    description: 'Semantic consistency analysis and fix suggestions',
+  },
+  sync: {
+    operation: 'sync',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 40_000,
+    maxInputTokens: 14_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 55_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 15,
+    maxAggregateCalls: 6,
+    maxAggregateTokens: 60_000,
+    maxAggregateElapsedMs: 180_000,
+    description: 'Manuscript and canonical model synchronization proposals',
+  },
+  writing: {
+    operation: 'writing',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 24_000,
+    maxInputTokens: 9_000,
+    maxOutputTokens: 3_072,
+    timeoutMs: 50_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 20,
+    maxAggregateCalls: 8,
+    maxAggregateTokens: 48_000,
+    maxAggregateElapsedMs: 180_000,
+    description: 'Contextual manuscript writing assistant',
+  },
+  opportunities: {
+    operation: 'opportunities',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 36_000,
+    maxInputTokens: 12_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 55_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 15,
+    maxAggregateCalls: 4,
+    maxAggregateTokens: 48_000,
+    maxAggregateElapsedMs: 180_000,
+    description: 'Creative opportunities exploration',
+  },
+  'import-enhance': {
+    operation: 'import-enhance',
+    model: GEMINI_MODELS.text,
+    maxInputChars: 28_000,
+    maxInputTokens: 10_000,
+    maxOutputTokens: 4_096,
+    timeoutMs: 55_000,
+    maxConcurrent: 2,
+    maxCallsPerMinute: 12,
+    maxAggregateCalls: 4,
+    maxAggregateTokens: 40_000,
+    maxAggregateElapsedMs: 180_000,
+    description: 'Post-faithful import enhancement proposals',
+  },
+});
+
+export interface AiUsageReport {
+  inputChars: number;
+  estimatedInputTokens: number;
+  providerInputTokens?: number;
+  actualPromptTokens?: number;
+  actualOutputTokens?: number;
+  actualTotalTokens?: number;
+  maxInputChars: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  model: string;
+  operation: AiOperation;
+}
+
+export function estimateTokensFromText(text: string): number {
+  if (!text) return 0;
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+export function evaluateOperationBudget(input: {
+  operation: AiOperation;
+  model: string;
+  inputChars: number;
+  countedInputTokens?: number;
+  estimatedInputTokens?: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+}): {
+  ok: boolean;
+  inputTokens: number;
+  tokenSource: 'provider-count' | 'estimate';
+  reason?: string;
+} {
+  const tokenSource = typeof input.countedInputTokens === 'number' ? 'provider-count' : 'estimate';
+  const inputTokens =
+    input.countedInputTokens ?? input.estimatedInputTokens ?? Math.ceil(input.inputChars / 4);
+  if (!Number.isFinite(inputTokens) || inputTokens < 0 || !Number.isFinite(input.maxInputTokens) || input.maxInputTokens <= 0) {
+    return { ok: false, inputTokens: 0, tokenSource, reason: 'Invalid AI budget parameters.' };
+  }
+  if (inputTokens > input.maxInputTokens) {
+    return {
+      ok: false,
+      inputTokens,
+      tokenSource,
+      reason: `Input (${inputTokens} ${tokenSource === 'provider-count' ? 'counted' : 'estimated'} tokens) exceeds the ${input.maxInputTokens}-token budget for ${input.operation}.`,
+    };
+  }
+  return { ok: true, inputTokens, tokenSource };
+}
+
+const activeInFlightByOp = new Map<AiOperation, number>();
+const recentTimestampsByOp = new Map<AiOperation, number[]>();
+
+export function acquireAiSlot(
+  operation: AiOperation,
+  nowMs: number = Date.now()
+):
+  | { ok: true; policy: AiOperationPolicy; release: () => void }
+  | { ok: false; policy: AiOperationPolicy; retryAfterMs: number; reason: string } {
+  const policy = AI_OPERATION_POLICIES[operation];
+  const currentInFlight = activeInFlightByOp.get(operation) ?? 0;
+  if (currentInFlight >= policy.maxConcurrent) {
+    return {
+      ok: false,
+      policy,
+      retryAfterMs: 1_500,
+      reason: `Too many concurrent ${operation} requests (limit: ${policy.maxConcurrent}). Wait for the current request to finish.`,
+    };
+  }
+  const windowStart = nowMs - 60_000;
+  const recent = (recentTimestampsByOp.get(operation) ?? []).filter((t) => t > windowStart);
+  if (recent.length >= policy.maxCallsPerMinute) {
+    const oldest = recent[0] ?? nowMs;
+    return {
+      ok: false,
+      policy,
+      retryAfterMs: Math.max(1_000, oldest + 60_000 - nowMs),
+      reason: `Rate budget reached for ${operation} (${policy.maxCallsPerMinute} calls/minute). Please wait briefly before retrying.`,
+    };
+  }
+  recent.push(nowMs);
+  recentTimestampsByOp.set(operation, recent);
+  activeInFlightByOp.set(operation, currentInFlight + 1);
+  let released = false;
+  return {
+    ok: true,
+    policy,
+    release: () => {
+      if (released) return;
+      released = true;
+      const count = activeInFlightByOp.get(operation) ?? 1;
+      activeInFlightByOp.set(operation, Math.max(0, count - 1));
+    },
+  };
+}
+
+export function resetAiSlotsForTests(): void {
+  activeInFlightByOp.clear();
+  recentTimestampsByOp.clear();
+}
+
+export function getAiCapabilitiesSnapshot(configured: boolean) {
+  return {
+    configured,
+    textModel: GEMINI_MODELS.text,
+    imageModel: GEMINI_MODELS.image,
+    providerLimitsVerifiedLive: false,
+    note: configured
+      ? 'Conservative application budgets are enforced server-side. Exact provider token counts are requested via countTokens before model execution.'
+      : 'GEMINI_API_KEY is not configured on the server. Deterministic local tools remain available; AI features require a server-side key.',
+    operations: Object.fromEntries(
+      Object.values(AI_OPERATION_POLICIES).map((p) => [
+        p.operation,
+        {
+          model: p.model,
+          maxInputChars: p.maxInputChars,
+          maxInputTokens: p.maxInputTokens,
+          maxOutputTokens: p.maxOutputTokens,
+          timeoutMs: p.timeoutMs,
+          maxConcurrent: p.maxConcurrent,
+          maxCallsPerMinute: p.maxCallsPerMinute,
+          description: p.description,
+        },
+      ])
+    ),
+  };
 }

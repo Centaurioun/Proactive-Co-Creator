@@ -22,6 +22,26 @@ import {
   GenerateMediaRequestSchema,
   RefineRequestSchema,
 } from '../shared/schemas';
+import {
+  DiagnosticsAnalyzeRequestSchema,
+  DiagnosticsSuggestFixesRequestSchema,
+  ImportEnhanceRequestSchema,
+  OpportunitiesExploreRequestSchema,
+  SyncAnalyzeRequestSchema,
+  WritingAssistRequestSchema,
+  type DiagnosticsAnalyzeRequest,
+  type DiagnosticsAnalyzeResponse,
+  type DiagnosticsSuggestFixesRequest,
+  type DiagnosticsSuggestFixesResponse,
+  type ImportEnhanceRequest,
+  type ImportEnhanceResponse,
+  type OpportunitiesExploreRequest,
+  type OpportunitiesExploreResponse,
+  type SyncAnalyzeRequest,
+  type SyncAnalyzeResponse,
+  type WritingAssistRequest,
+  type WritingAssistResponse,
+} from '../shared/narrativeAiSchemas';
 
 type RequestParseResult<T> =
   | { success: true; data: T }
@@ -197,4 +217,81 @@ export async function generateStoryFromPrompt(
   const request = enforceOperationRequestBounds(value => GenerateMediaRequestSchema.safeParse(value), { prompt });
   const data = await postJson<{ story: string }>('/api/generate/story', request, signal);
   return data.story;
+}
+
+export interface AiCapabilitiesResponse {
+  configured: boolean;
+  textModel: string;
+  imageModel: string;
+  providerLimitsVerifiedLive: boolean;
+  note: string;
+  operations: Record<
+    string,
+    {
+      model: string;
+      maxInputChars: number;
+      maxInputTokens: number;
+      maxOutputTokens: number;
+      timeoutMs: number;
+      maxConcurrent: number;
+      maxCallsPerMinute: number;
+      description: string;
+    }
+  >;
+}
+
+export async function fetchAiCapabilities(signal?: AbortSignal): Promise<AiCapabilitiesResponse> {
+  const res = await fetch('/api/ai/capabilities', { signal });
+  if (!res.ok) {
+    throw new ClientApiError('INTERNAL_ERROR', 'Could not fetch AI capabilities.', true, res.status);
+  }
+  return (await res.json()) as AiCapabilitiesResponse;
+}
+
+export async function requestSemanticDiagnostics(
+  payload: DiagnosticsAnalyzeRequest,
+  signal?: AbortSignal
+): Promise<DiagnosticsAnalyzeResponse> {
+  const validated = enforceOperationRequestBounds((v) => DiagnosticsAnalyzeRequestSchema.safeParse(v), payload);
+  return postJson<DiagnosticsAnalyzeResponse>('/api/narrative/diagnostics/analyze', validated, signal);
+}
+
+export async function requestDiagnosticFixSuggestions(
+  payload: DiagnosticsSuggestFixesRequest,
+  signal?: AbortSignal
+): Promise<DiagnosticsSuggestFixesResponse> {
+  const validated = enforceOperationRequestBounds((v) => DiagnosticsSuggestFixesRequestSchema.safeParse(v), payload);
+  return postJson<DiagnosticsSuggestFixesResponse>('/api/narrative/diagnostics/suggest-fixes', validated, signal);
+}
+
+export async function requestNarrativeSyncAnalysis(
+  payload: SyncAnalyzeRequest,
+  signal?: AbortSignal
+): Promise<SyncAnalyzeResponse> {
+  const validated = enforceOperationRequestBounds((v) => SyncAnalyzeRequestSchema.safeParse(v), payload);
+  return postJson<SyncAnalyzeResponse>('/api/narrative/sync/analyze', validated, signal);
+}
+
+export async function requestWritingAssist(
+  payload: WritingAssistRequest,
+  signal?: AbortSignal
+): Promise<WritingAssistResponse> {
+  const validated = enforceOperationRequestBounds((v) => WritingAssistRequestSchema.safeParse(v), payload);
+  return postJson<WritingAssistResponse>('/api/narrative/writing/assist', validated, signal);
+}
+
+export async function requestCreativeOpportunities(
+  payload: OpportunitiesExploreRequest,
+  signal?: AbortSignal
+): Promise<OpportunitiesExploreResponse> {
+  const validated = enforceOperationRequestBounds((v) => OpportunitiesExploreRequestSchema.safeParse(v), payload);
+  return postJson<OpportunitiesExploreResponse>('/api/narrative/opportunities/explore', validated, signal);
+}
+
+export async function requestImportEnhancements(
+  payload: ImportEnhanceRequest,
+  signal?: AbortSignal
+): Promise<ImportEnhanceResponse> {
+  const validated = enforceOperationRequestBounds((v) => ImportEnhanceRequestSchema.safeParse(v), payload);
+  return postJson<ImportEnhanceResponse>('/api/narrative/import/enhance', validated, signal);
 }

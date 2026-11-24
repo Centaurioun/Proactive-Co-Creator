@@ -5,6 +5,8 @@ import { applyManuscriptOperation, manuscriptSections, narrativeBase, type Narra
 import { filterManuscriptSections } from '../../lib/narrative/manuscriptNavigation';
 import { createStyleObservation, createStyleProfile, reviewStyleObservation, selectStyleContext, type StyleProfile, type StyleTrait } from '../../lib/narrative/context/styleProfile';
 import AdoptArtifactDialog from './AdoptArtifactDialog';
+import WritingAssistantPanel from './WritingAssistantPanel';
+import type { WritingAssistAction } from '../../shared/narrativeAiSchemas';
 
 export const workspaceButton = 'rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800 disabled:opacity-45';
 const field = 'w-full rounded-md border border-gray-300 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-950';
@@ -19,12 +21,38 @@ interface Props {
   canRedo: boolean;
   enabled: boolean;
   initialArtifactId?: string;
+  focusedSectionId?: string;
+  aiConfigured?: boolean;
+  onSaveWritingAlternative?: (alternative: {
+    sectionId: string;
+    action: WritingAssistAction;
+    label: string;
+    text: string;
+    rationale: string;
+    assumptions: string[];
+  }) => void;
   onExportDraft: (sections: ManuscriptSection[]) => void;
 }
 
-export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onRedo, canUndo, canRedo, enabled, initialArtifactId, onExportDraft }: Props) {
+export default function ManuscriptEditor({
+  project,
+  onSave,
+  onDirty,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  enabled,
+  initialArtifactId,
+  focusedSectionId,
+  aiConfigured = false,
+  onSaveWritingAlternative,
+  onExportDraft,
+}: Props) {
   const [draft, setDraft] = useState<{ base: NarrativeBase; sections: ManuscriptSection[]; artifact?: ArtifactAnchor } | null>(null);
-  const [selectedId, setSelectedId] = useState('');
+  const [selectedId, setSelectedId] = useState(focusedSectionId ?? '');
+  const [prevFocusedSectionId, setPrevFocusedSectionId] = useState(focusedSectionId);
+  const [selectionRange, setSelectionRange] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
   const [isComposing, setIsComposing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -70,6 +98,13 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
     setStyleProfile(profileForCurrentVersion);
     setStyleSourceId('');
     setStyleError('');
+  }
+
+  if (focusedSectionId !== prevFocusedSectionId) {
+    setPrevFocusedSectionId(focusedSectionId);
+    if (focusedSectionId) {
+      setSelectedId(focusedSectionId);
+    }
   }
 
   function resolveStyleSource(ref: { recordId: string; version: string; digest: string }) {
@@ -351,6 +386,25 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
               </section>
             )}
           </details>
+          <WritingAssistantPanel
+            project={project}
+            section={selected}
+            selectionStart={selectionRange.start}
+            selectionEnd={selectionRange.end}
+            aiConfigured={aiConfigured}
+            disabled={!enabled || saving || adopting}
+            onReplaceOrInsert={(nextText) => {
+              if (selected) {
+                update({ text: nextText });
+              }
+            }}
+            onCreateSceneFromProposal={(title, text) => {
+              const newSec: ManuscriptSection = { id: crypto.randomUUID(), kind: 'scene', title, text };
+              operate({ kind: 'add', section: newSec });
+              setSelectedId(newSec.id);
+            }}
+            onSaveAlternative={(alt) => onSaveWritingAlternative?.(alt)}
+          />
           <fieldset className="min-w-0 space-y-3" disabled={!enabled || adopting}>
             {selected ? (
               <label className="block text-sm">
@@ -371,7 +425,11 @@ export default function ManuscriptEditor({ project, onSave, onDirty, onUndo, onR
               ) : (
                 <textarea ref={textarea} aria-describedby="manuscript-markdown-hint" className={`${field} mt-2 min-h-[40vh] resize-y font-serif text-lg leading-relaxed`}
                   value={selected?.text ?? ''} readOnly={saving} placeholder="Start writing here…"
+                  onSelect={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
+                  onKeyUp={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
+                  onMouseUp={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
                   onChange={event => {
+                    setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 });
                     if (selected) {
                       update({ text: event.target.value });
                     } else {

@@ -8,8 +8,10 @@ import AttributeEditor from './AttributeEditor';
 import { getEffectiveAttributeValue, isSceneEntityName } from '../lib/beliefGraphUtils';
 import { resolveConsistencyIssueTarget } from '../lib/consistencyChecker';
 import { manuscriptSections } from '../lib/narrative/manuscriptModel';
+import { splitReadinessAndIssues } from '../lib/narrative/diagnostics/engine';
 import OpportunityCenter from './opportunities/OpportunityCenter';
 import type { OpportunityProposalInput, OpportunityProposalStatus } from '../lib/narrative/opportunityProposals';
+import type { OpportunityProposal } from '../shared/narrativeTypes';
 import { computePromptDigest } from '../lib/promptBuilder';
 import type {
   ConsistencyIssue,
@@ -58,6 +60,12 @@ interface ContextualInspectorProps {
   onExportStoryBibleMarkdown: () => void;
   onExportPromptText: () => void;
   onExportManuscript?: () => void;
+  onExportManuscriptDocx?: () => void;
+  onExportManuscriptText?: () => void;
+  onOpenReviewDiagnostics?: () => void;
+  onJumpToSection?: (sectionId: string) => void;
+  aiConfigured?: boolean;
+  onSendOpportunityToReview?: (proposal: OpportunityProposal) => void;
   historyTarget?: { id: string; sequence: number } | null;
   contentExports: { id: string; label: string }[];
   onExportContent: (id: string) => void;
@@ -255,6 +263,12 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   onImportProjectJson,
   onPreviewProjectJson,
   onExportManuscript,
+  onExportManuscriptDocx,
+  onExportManuscriptText,
+  onOpenReviewDiagnostics,
+  onJumpToSection,
+  aiConfigured = false,
+  onSendOpportunityToReview,
   historyTarget,
   contentExports,
   onExportContent,
@@ -332,6 +346,13 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   const [importMessage, setImportMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [newProjName, setNewProjName] = useState('');
   const [newProjIdea, setNewProjIdea] = useState('');
+  const [timelineView, setTimelineView] = useState<'narrative' | 'chronology'>('narrative');
+  const [mindMapFilter, setMindMapFilter] = useState<'all' | 'confirmed' | 'pending'>('all');
+
+  const { readiness: readinessItems, consistencyIssues: actualConsistencyIssues } = useMemo(
+    () => splitReadinessAndIssues(consistencyIssues),
+    [consistencyIssues]
+  );
 
   const objectEntities = snapshot.entities.filter(
     (e) => !isSceneEntityName(e.name) && e.category !== 'scene'
@@ -373,39 +394,53 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       aria-label="Contextual Inspector and Story Bible"
       className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg flex flex-col h-full min-h-0 overflow-hidden"
     >
-      {/* Top Segmented Mode Selector */}
-      <div
-        role="tablist"
-        aria-label="Inspector views"
-        className="grid grid-cols-7 gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
-      >
-        {(
-          [
-            ['inspector', 'Inspector'],
-            ['story-bible', 'Story Bible'],
-            ['consistency', `Checks (${consistencyIssues.length})`],
-            ['history', 'History'],
-            ['timeline', 'Timeline'],
-            ['opportunities', 'Ideas'],
-            ['mind-map', 'Mind map'],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === key}
-            onClick={() => onSelectTab(key)}
-            className={`px-1.5 py-1.5 text-[11px] font-semibold rounded transition-colors whitespace-nowrap text-center ${
-              activeTab === key
-                ? 'bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-xs'
-                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-            }`}
+      {/* Top Segmented Mode Selector — non-overlapping horizontally scrollable tablist */}
+      {(() => {
+        const tabs: ReadonlyArray<readonly [RightPanelTab, string]> = [
+          ['inspector', 'Inspector'],
+          ['story-bible', 'Story Bible'],
+          ['consistency', `Checks (${actualConsistencyIssues.length})`],
+          ['history', 'History'],
+          ['timeline', 'Timeline'],
+          ['opportunities', 'Ideas'],
+          ['mind-map', 'Mind map'],
+        ];
+        return (
+          <div
+            role="tablist"
+            aria-label="Inspector views"
+            onKeyDown={(e) => {
+              const currentIdx = tabs.findIndex(([k]) => k === activeTab);
+              if (currentIdx < 0) return;
+              if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                onSelectTab(tabs[(currentIdx + 1) % tabs.length][0]);
+              } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                onSelectTab(tabs[(currentIdx - 1 + tabs.length) % tabs.length][0]);
+              }
+            }}
+            className="flex flex-wrap items-center gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
           >
-            {label}
-          </button>
-        ))}
-      </div>
+            {tabs.map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === key}
+                onClick={() => onSelectTab(key)}
+                className={`shrink-0 px-2.5 py-1.5 text-[11px] font-semibold rounded transition-colors whitespace-nowrap text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+                  activeTab === key
+                    ? 'bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Tab 1: Contextual Entity / Relationship Inspector */}
       {activeTab === 'inspector' && (
@@ -1375,22 +1410,67 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
         );
       })()}
 
-      {/* Tab 3: Consistency Checker */}
+      {/* Tab 3: Consistency Checker & Readiness */}
       {activeTab === 'consistency' && (
         <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
-          <div>
-            <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
-              Continuity &amp; Consistency Review
-            </h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              Detects contradicting character traits, incompatible settings, and violated exclusions without silently rewriting your story.
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
+                Continuity &amp; Consistency Review
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Separates project readiness prompts from real continuity conflicts without silently rewriting your story.
+              </p>
+            </div>
+            {onOpenReviewDiagnostics && (
+              <button
+                type="button"
+                onClick={onOpenReviewDiagnostics}
+                className="px-2.5 py-1 text-[11px] font-semibold rounded bg-blue-600 hover:bg-blue-700 text-white whitespace-nowrap"
+              >
+                Open Full Diagnostics &amp; Fixes
+              </button>
+            )}
           </div>
 
-          {consistencyIssues.length === 0 ? (
-            <div className="p-6 text-center rounded-md border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-emerald-950/20">
+          {readinessItems.length > 0 && (
+            <section aria-label="Project readiness checklist" className="rounded-md border border-blue-200 dark:border-blue-900/60 bg-blue-50/40 dark:bg-blue-950/20 p-3 space-y-1.5 text-xs">
+              <h4 className="font-semibold text-blue-900 dark:text-blue-200">
+                Project Readiness ({readinessItems.length})
+              </h4>
+              <p className="text-[11px] text-blue-800/80 dark:text-blue-300/80">
+                Readiness reminders are optional setup items and are kept separate from continuity conflicts.
+              </p>
+              <ul className="space-y-1">
+                {readinessItems.map((item) => (
+                  <li key={item.id} className="flex items-center justify-between gap-2">
+                    <span>{item.title}</span>
+                    {item.storyField && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onNavigateConsistencyTarget?.({
+                            id: item.id,
+                            kind: 'story_bible',
+                            label: `Open ${item.storyField}`,
+                            storyField: item.storyField,
+                          })
+                        }
+                        className="text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:underline shrink-0"
+                      >
+                        Open field
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {actualConsistencyIssues.length === 0 ? (
+            <div className="p-5 text-center rounded-md border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-emerald-950/20">
               <p className="text-xs font-semibold text-emerald-800 dark:text-emerald-300">
-                No consistency conflicts detected.
+                No local consistency conflicts detected.
               </p>
               <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1">
                 All confirmed entities, exclusions, and Story Bible properties are aligned.
@@ -1398,7 +1478,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             </div>
           ) : (
             <div className="space-y-2.5">
-              {consistencyIssues.map((issue) => (
+              {actualConsistencyIssues.map((issue) => (
                 <div
                   key={issue.id}
                   className={`p-3 rounded-md border text-xs space-y-1.5 ${
@@ -1517,11 +1597,14 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
 
       {activeTab === 'opportunities' && (
         <OpportunityCenter
+          project={project}
           projectId={project.id}
           projectRevision={project.revision}
           proposals={project.narrative?.opportunities ?? []}
+          aiConfigured={aiConfigured}
           onCreate={onCreateOpportunity}
           onTransition={onTransitionOpportunity}
+          onSendToChangeReview={onSendOpportunityToReview}
         />
       )}
 
@@ -1533,36 +1616,101 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
           { title: 'Visual style', fields: ['visualStyle', 'cameraAndLighting'] },
           { title: 'Characters', fields: [], entities: true },
         ];
+        const issueCountForEntity = (entityId?: string) =>
+          entityId ? actualConsistencyIssues.filter((i) => i.affectedEntityIds.includes(entityId)).length : 0;
+
         return (
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
-            <header>
-              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Narrative Mind Map</h3>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Groups show topic association only; they do not assert causality. Values are read from the current project and are not edited here.</p>
+            <header className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Narrative Mind Map</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Groups show topic association only; click any card to inspect or edit it in the Story Bible or Inspector.</p>
+              </div>
+              <div role="group" aria-label="Filter mind map status" className="flex rounded bg-gray-100 p-0.5 text-[11px] dark:bg-gray-800">
+                {(['all', 'confirmed', 'pending'] as const).map((statusOpt) => (
+                  <button
+                    key={statusOpt}
+                    type="button"
+                    aria-pressed={mindMapFilter === statusOpt}
+                    onClick={() => setMindMapFilter(statusOpt)}
+                    className={`rounded px-2 py-0.5 font-semibold capitalize ${
+                      mindMapFilter === statusOpt
+                        ? 'bg-white text-blue-600 shadow-xs dark:bg-gray-900 dark:text-blue-400'
+                        : 'text-gray-600 dark:text-gray-400'
+                    }`}
+                  >
+                    {statusOpt}
+                  </button>
+                ))}
+              </div>
             </header>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {groups.map(group => {
                 const bibleEntries = group.fields.flatMap(field => {
                   const item = project.snapshot.storyBible[field];
-                  return item.value.trim() ? [{ label: field.replace(/[A-Z]/gu, letter => ` ${letter}`).replace(/^./u, letter => letter.toUpperCase()), value: item.value, status: item.status, provenance: item.provenance }] : [];
+                  if (!item.value.trim()) return [];
+                  if (mindMapFilter !== 'all' && item.status !== mindMapFilter) return [];
+                  return [{ key: field, label: field.replace(/[A-Z]/gu, letter => ` ${letter}`).replace(/^./u, letter => letter.toUpperCase()), value: item.value, status: item.status, provenance: item.provenance }];
                 });
-                const characters = group.entities ? project.snapshot.entities.filter(entity => entity.category === 'character') : [];
+                const characters = group.entities
+                  ? project.snapshot.entities.filter(entity => {
+                      if (entity.category !== 'character' || entity.excluded) return false;
+                      if (mindMapFilter === 'confirmed') return (entity.status ?? 'confirmed') === 'confirmed';
+                      if (mindMapFilter === 'pending') return entity.status === 'pending';
+                      return true;
+                    })
+                  : [];
                 return (
                   <section key={group.title} aria-label={`${group.title} group`} className="min-h-24 rounded border border-gray-200 p-3 dark:border-gray-700">
                     <h4 className="mb-2 text-xs font-bold">{group.title}</h4>
-                    {bibleEntries.length === 0 && characters.length === 0 ? <p className="text-xs text-gray-500">No entries recorded.</p> : (
+                    {bibleEntries.length === 0 && characters.length === 0 ? <p className="text-xs text-gray-500">No matching entries.</p> : (
                       <ul className="space-y-2">
                         {bibleEntries.map(entry => (
                           <li key={entry.label} className="rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
-                            <strong>{entry.label}</strong><p>{entry.value}</p>
-                            <span className="text-gray-500">{entry.status} · {entry.provenance}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onNavigateConsistencyTarget?.({
+                                  id: `mm_${entry.key}`,
+                                  kind: 'story_bible',
+                                  label: entry.label,
+                                  storyField: entry.key,
+                                })
+                              }
+                              className="w-full text-left hover:text-blue-600 dark:hover:text-blue-400"
+                            >
+                              <strong>{entry.label}</strong>
+                              <p className="text-gray-700 dark:text-gray-300">{entry.value}</p>
+                              <span className="text-gray-500">{entry.status} · {entry.provenance}</span>
+                            </button>
                           </li>
                         ))}
-                        {characters.map(entity => (
-                          <li key={entity.id ?? entity.name} className="rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
-                            <strong>{entity.name}</strong>{entity.description && <p>{entity.description}</p>}
-                            <span className="text-gray-500">{entity.status ?? 'status not recorded'} · {entity.provenance ?? 'provenance not recorded'}</span>
-                          </li>
-                        ))}
+                        {characters.map(entity => {
+                          const issuesCount = issueCountForEntity(entity.id);
+                          return (
+                            <li key={entity.id ?? entity.name} className="rounded bg-gray-50 p-2 text-xs dark:bg-gray-800">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onSelectEntity(entity);
+                                  onSelectTab('inspector');
+                                }}
+                                className="w-full text-left hover:text-blue-600 dark:hover:text-blue-400"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-1">
+                                  <strong>{entity.name}</strong>
+                                  {issuesCount > 0 && (
+                                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                                      ⚠ {issuesCount} issue{issuesCount === 1 ? '' : 's'}
+                                    </span>
+                                  )}
+                                </div>
+                                {entity.description && <p className="text-gray-700 dark:text-gray-300">{entity.description}</p>}
+                                <span className="text-gray-500">{entity.status ?? 'confirmed'} · {entity.provenance ?? 'recorded'}</span>
+                              </button>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </section>
@@ -1575,42 +1723,96 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
 
       {activeTab === 'timeline' && (() => {
         const sections = manuscriptSections(project);
+        const chronologyRows = sections.map((section, idx) => {
+          const note = section.chronology?.trim() ?? '';
+          const isFlashback = /\b(flashback|earlier|prior|years?\s+ago|before|memory|prologue)\b/i.test(note);
+          const isUncertain = /\b(uncertain|unknown|approx|maybe|tbd|\?)\b/i.test(note);
+          return { section, narrativeIndex: idx + 1, note, isFlashback, isUncertain };
+        });
+        const sortedByChronology = [
+          ...chronologyRows.filter((r) => r.note).sort((a, b) => a.note.localeCompare(b.note)),
+          ...chronologyRows.filter((r) => !r.note),
+        ];
+        const displayedRows = timelineView === 'narrative' ? chronologyRows : sortedByChronology;
+
         return (
           <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
-            <div>
-              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Story Timeline</h3>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Rows follow the current manuscript order. Chronology notes are shown as authored; no dates or event order are inferred.
-              </p>
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">Story Timeline</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Switch between Narrative Order (manuscript reading order) and Authored Story Chronology. No dates or hidden event order are invented.
+                </p>
+              </div>
+              <div role="group" aria-label="Timeline ordering" className="flex rounded bg-gray-100 p-0.5 text-[11px] dark:bg-gray-800">
+                <button
+                  type="button"
+                  aria-pressed={timelineView === 'narrative'}
+                  onClick={() => setTimelineView('narrative')}
+                  className={`rounded px-2 py-0.5 font-semibold ${
+                    timelineView === 'narrative' ? 'bg-white text-blue-600 shadow-xs dark:bg-gray-900 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400'
+                  }`}
+                >
+                  Narrative Order
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={timelineView === 'chronology'}
+                  onClick={() => setTimelineView('chronology')}
+                  className={`rounded px-2 py-0.5 font-semibold ${
+                    timelineView === 'chronology' ? 'bg-white text-blue-600 shadow-xs dark:bg-gray-900 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400'
+                  }`}
+                >
+                  Story Chronology
+                </button>
+              </div>
             </div>
             {sections.length === 0 ? (
               <p className="rounded border border-gray-200 p-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                No current manuscript sections are available. The timeline is empty.
+                No current manuscript sections are available. Add scenes in Write or import a story to inspect the timeline.
               </p>
             ) : (
               <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
                 <table className="w-full border-collapse text-left text-xs">
-                  <caption className="sr-only">Current manuscript order and authored chronology notes</caption>
+                  <caption className="sr-only">Manuscript order and authored chronology notes</caption>
                   <thead className="bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                     <tr>
-                      <th scope="col" className="px-3 py-2">Authored order</th>
-                      <th scope="col" className="px-3 py-2">Section</th>
-                      <th scope="col" className="px-3 py-2">Chronology note</th>
-                      <th scope="col" className="px-3 py-2">Temporal status</th>
+                      <th scope="col" className="px-2.5 py-2">Order</th>
+                      <th scope="col" className="px-2.5 py-2">Section</th>
+                      <th scope="col" className="px-2.5 py-2">Chronology note</th>
+                      <th scope="col" className="px-2.5 py-2">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                    {sections.map((section, index) => {
-                      const note = section.chronology?.trim();
-                      return (
-                        <tr key={section.id}>
-                          <td className="px-3 py-2 font-mono">{index + 1}</td>
-                          <th scope="row" className="px-3 py-2 font-semibold">{section.title || `Untitled ${section.kind}`}</th>
-                          <td className="px-3 py-2">{note ? `Authored note: ${note}` : 'No chronology note recorded.'}</td>
-                          <td className="px-3 py-2">{note ? 'Authored; not date-verified' : 'Undated / unspecified'}</td>
-                        </tr>
-                      );
-                    })}
+                    {displayedRows.map(({ section, narrativeIndex, note, isFlashback, isUncertain }) => (
+                      <tr key={section.id}>
+                        <td className="px-2.5 py-2 font-mono">#{narrativeIndex}</td>
+                        <th scope="row" className="px-2.5 py-2 font-semibold">
+                          <div className="flex flex-col items-start gap-1">
+                            <span>{section.title || `Untitled ${section.kind}`}</span>
+                            {onJumpToSection && (
+                              <button
+                                type="button"
+                                onClick={() => onJumpToSection(section.id)}
+                                className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                              >
+                                Jump to scene →
+                              </button>
+                            )}
+                          </div>
+                        </th>
+                        <td className="px-2.5 py-2">{note ? note : 'No chronology note recorded.'}</td>
+                        <td className="px-2.5 py-2">
+                          {isFlashback
+                            ? 'Flashback / non-linear'
+                            : isUncertain
+                              ? 'Uncertain chronology'
+                              : note
+                                ? 'Authored; not date-verified'
+                                : 'Undated / unspecified'}
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -1652,7 +1854,9 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
             </div>
 
             <div className="flex flex-wrap gap-2 text-xs underline">
-              {onExportManuscript && <button onClick={onExportManuscript}>Download Working Manuscript (.md)</button>}
+              {onExportManuscript && <button type="button" onClick={onExportManuscript}>Download Working Manuscript (.md)</button>}
+              {onExportManuscriptDocx && <button type="button" onClick={onExportManuscriptDocx}>Download Working Manuscript (.docx)</button>}
+              {onExportManuscriptText && <button type="button" onClick={onExportManuscriptText}>Download Working Manuscript (.txt)</button>}
             </div>
             {contentExports.length > 0 && (
               <div className="flex flex-col gap-2 text-xs">

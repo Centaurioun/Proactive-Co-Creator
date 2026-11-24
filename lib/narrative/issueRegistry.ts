@@ -4,10 +4,11 @@ type Issue = NarrativeRecords['issues'][number];
 type Disposition = Issue['disposition'];
 
 const transitions: Record<Disposition, readonly Disposition[]> = {
-  open: ['deferred', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed'],
-  deferred: ['open', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed'],
-  'needs-clarification': ['open', 'deferred', 'proposed-fix', 'resolved', 'dismissed'],
-  'proposed-fix': ['open', 'deferred', 'needs-clarification', 'resolved', 'dismissed'],
+  open: ['deferred', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed', 'intentional'],
+  deferred: ['open', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed', 'intentional'],
+  'needs-clarification': ['open', 'deferred', 'proposed-fix', 'resolved', 'dismissed', 'intentional'],
+  'proposed-fix': ['open', 'deferred', 'needs-clarification', 'resolved', 'dismissed', 'intentional'],
+  intentional: ['open', 'resolved', 'dismissed'],
   resolved: ['open'],
   dismissed: ['open'],
 };
@@ -25,7 +26,7 @@ export function transitionIssue(
   const issue = records.issues.find(({ id }) => id === issueId);
   if (!issue) throw new Error('Issue no longer exists.');
   const explanation = reason.trim();
-  if (['deferred', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed'].includes(disposition) && !explanation) {
+  if (['deferred', 'needs-clarification', 'proposed-fix', 'resolved', 'dismissed', 'intentional'].includes(disposition) && !explanation) {
     throw new Error('A reason is required for this issue disposition.');
   }
   if (issue.disposition !== disposition && !transitions[issue.disposition].includes(disposition)) {

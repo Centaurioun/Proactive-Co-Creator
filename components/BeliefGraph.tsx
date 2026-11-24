@@ -28,6 +28,10 @@ import type {
 } from '../shared/types';
 import RelationshipEditor from './RelationshipEditor';
 import type { RelationshipProjection } from '../lib/narrative/projections/relationshipProjection';
+import {
+  buildCharacterEgoNetwork,
+  buildVerifiedKinshipProjection,
+} from '../lib/narrative/projections/kinshipProjection';
 
 export interface BeliefGraphProps {
   data: BeliefState | null;
@@ -39,6 +43,7 @@ export interface BeliefGraphProps {
   onSelectRelationship?: (rel: Relationship | null) => void;
   onRelationshipChange: (source: string, target: string, newLabel: string, relationshipId?: string) => void;
   onAttributeChange?: (entityName: string, attributeName: string, newValue: string) => void;
+  onOpenChecks?: () => void;
   currentPrompt: string;
   consistencyIssues?: ConsistencyIssue[];
   relationshipProjection: RelationshipProjection;
@@ -53,6 +58,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
   onSelectEntity,
   onSelectRelationship,
   onRelationshipChange,
+  onOpenChecks,
   consistencyIssues = [],
   relationshipProjection,
 }) => {
@@ -63,7 +69,9 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
   const [showExcluded, setShowExcluded] = useState(false);
   const [highlightConnections, setHighlightConnections] = useState(true);
   const [collapseGuestGroup, setCollapseGuestGroup] = useState(false);
-  const [displayMode, setDisplayMode] = useState<'graph' | 'table'>('graph');
+  const [displayMode, setDisplayMode] = useState<'graph' | 'table' | 'ego' | 'kinship'>('graph');
+  const [egoFocusId, setEgoFocusId] = useState<string>('');
+  const [egoHops, setEgoHops] = useState<1 | 2>(1);
   const [selectedEntityRelationshipsOnly, setSelectedEntityRelationshipsOnly] = useState(false);
 
   const [hoveredEntity, setHoveredEntity] = useState<string | null>(null);
@@ -235,6 +243,36 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
     () => computeParallelEdgeOffsets(relationships),
     [relationships]
   );
+
+  const kinshipProjection = useMemo(
+    () => buildVerifiedKinshipProjection(rawObjectEntities, data?.relationships ?? []),
+    [rawObjectEntities, data?.relationships]
+  );
+
+  const resolvedEgoFocusId =
+    egoFocusId ||
+    selectedEntity?.id ||
+    rawObjectEntities.find((e) => !e.excluded && e.id)?.id ||
+    '';
+
+  const egoNetwork = useMemo(
+    () =>
+      resolvedEgoFocusId
+        ? buildCharacterEgoNetwork(rawObjectEntities, data?.relationships ?? [], resolvedEgoFocusId, egoHops)
+        : { nodeIds: new Set<string>(), edges: [] },
+    [rawObjectEntities, data?.relationships, resolvedEgoFocusId, egoHops]
+  );
+
+  const issueCountByEntityId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const issue of consistencyIssues) {
+      if (issue.category === 'unresolved_decision') continue;
+      for (const id of issue.affectedEntityIds) {
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [consistencyIssues]);
 
   // Structural signature for layout stability (only re-run full layout if entity names/edges change)
   const topologySignature = useMemo(() => {
@@ -492,36 +530,34 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
             Excluded
           </button>
 
-          {/* Graph vs Table Toggle for Large Projects */}
+          {/* Graph / Table / Ego Map / Family (Kinship) Switcher */}
           <div
             role="group"
             aria-label="Graph display mode"
-            className="flex bg-gray-200/70 dark:bg-gray-800 p-0.5 rounded-md"
+            className="flex flex-wrap bg-gray-200/70 dark:bg-gray-800 p-0.5 rounded-md"
           >
-            <button
-              type="button"
-              onClick={() => setDisplayMode('graph')}
-              aria-pressed={displayMode === 'graph'}
-              className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap ${
-                displayMode === 'graph'
-                  ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-xs'
-                  : 'text-gray-600 dark:text-gray-400'
-              }`}
-            >
-              Graph
-            </button>
-            <button
-              type="button"
-              onClick={() => setDisplayMode('table')}
-              aria-pressed={displayMode === 'table'}
-              className={`px-2.5 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap ${
-                displayMode === 'table'
-                  ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-xs'
-                  : 'text-gray-600 dark:text-gray-400'
-              }`}
-            >
-              Table
-            </button>
+            {(
+              [
+                ['graph', 'Graph'],
+                ['table', 'Table'],
+                ['ego', 'Ego Map'],
+                ['kinship', 'Family'],
+              ] as const
+            ).map(([modeKey, modeLabel]) => (
+              <button
+                key={modeKey}
+                type="button"
+                onClick={() => setDisplayMode(modeKey)}
+                aria-pressed={displayMode === modeKey}
+                className={`px-2 py-1 text-xs font-semibold rounded transition-colors whitespace-nowrap ${
+                  displayMode === modeKey
+                    ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-xs'
+                    : 'text-gray-600 dark:text-gray-400'
+                }`}
+              >
+                {modeLabel}
+              </button>
+            ))}
           </div>
         </div>
       </div>
@@ -590,8 +626,19 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
                       }`}
                     >
                       <td className="py-2.5 px-2.5 font-semibold text-gray-900 dark:text-gray-100">
-                        {ent.name}
-                        {ent.excluded ? ' (Excluded)' : ''}
+                        <span>{ent.name}{ent.excluded ? ' (Excluded)' : ''}</span>
+                        {ent.id && (issueCountByEntityId.get(ent.id) ?? 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              onOpenChecks?.();
+                            }}
+                            className="ml-1.5 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                          >
+                            ⚠ {issueCountByEntityId.get(ent.id)} issue{issueCountByEntityId.get(ent.id) === 1 ? '' : 's'}
+                          </button>
+                        )}
                       </td>
                       <td className="py-2.5 px-2.5 capitalize text-gray-600 dark:text-gray-300">
                         {ent.category ?? 'entity'}
@@ -719,6 +766,162 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
               </details>
             )}
           </div>
+        </div>
+      ) : displayMode === 'ego' ? (
+        <div className="flex-1 overflow-y-auto p-4 min-h-0 space-y-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-3 dark:border-gray-800">
+            <div>
+              <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
+                Character Ego Network
+              </h3>
+              <p className="text-gray-500 dark:text-gray-400">
+                Shows direct (1-hop) or extended (2-hop) canonical relationships centered on one selected entity.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Focus entity for ego map"
+                value={resolvedEgoFocusId}
+                onChange={(e) => setEgoFocusId(e.target.value)}
+                className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-800"
+              >
+                {rawObjectEntities
+                  .filter((e) => !e.excluded && e.id)
+                  .map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.name} ({e.category ?? 'entity'})
+                    </option>
+                  ))}
+              </select>
+              <div role="group" aria-label="Ego network depth" className="flex rounded bg-gray-200/70 p-0.5 dark:bg-gray-800">
+                {([1, 2] as const).map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    aria-pressed={egoHops === h}
+                    onClick={() => setEgoHops(h)}
+                    className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                      egoHops === h ? 'bg-white text-gray-900 shadow-xs dark:bg-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
+                    }`}
+                  >
+                    {h}-hop
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          {egoNetwork.edges.length === 0 ? (
+            <p className="rounded border border-gray-200 p-4 text-gray-600 dark:border-gray-800 dark:text-gray-400">
+              No canonical-ID relationships connect to this entity within {egoHops} hop{egoHops === 1 ? '' : 's'}.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                {rawObjectEntities
+                  .filter((e) => e.id && egoNetwork.nodeIds.has(e.id))
+                  .map((ent) => {
+                    const count = ent.id ? (issueCountByEntityId.get(ent.id) ?? 0) : 0;
+                    const isCenter = ent.id === resolvedEgoFocusId;
+                    return (
+                      <button
+                        key={ent.id}
+                        type="button"
+                        onClick={() => {
+                          onSelectEntity(ent);
+                          onSelectRelationship?.(null);
+                        }}
+                        className={`rounded border px-2.5 py-1.5 text-left transition-colors ${
+                          isCenter
+                            ? 'border-blue-500 bg-blue-50 font-bold text-blue-900 dark:bg-blue-950/60 dark:text-blue-200'
+                            : 'border-gray-200 bg-gray-50 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800'
+                        }`}
+                      >
+                        <span>{ent.name}</span>
+                        {isCenter && <span className="ml-1.5 text-[10px] uppercase text-blue-600 dark:text-blue-400">(Focus)</span>}
+                        {count > 0 && (
+                          <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                            ⚠ {count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+              </div>
+              <ul className="space-y-1.5">
+                {egoNetwork.edges.map((rel) => (
+                  <li key={rel.id ?? `${rel.source}-${rel.target}-${rel.label}`} className="flex flex-wrap items-center justify-between gap-2 rounded border border-gray-200 p-2 dark:border-gray-800">
+                    <button
+                      type="button"
+                      onClick={() => onSelectRelationship?.(rel)}
+                      className="text-left hover:underline"
+                    >
+                      <strong>{rel.source}</strong> → <span className="text-blue-700 dark:text-blue-300 font-medium">{rel.label}</span> → <strong>{rel.target}</strong>
+                    </button>
+                    <span className="capitalize text-gray-500">{rel.status ?? 'confirmed'}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      ) : displayMode === 'kinship' ? (
+        <div className="flex-1 overflow-y-auto p-4 min-h-0 space-y-4 text-xs">
+          <div className="border-b border-gray-200 pb-3 dark:border-gray-800">
+            <h3 className="font-display text-sm font-bold text-gray-900 dark:text-gray-100">
+              Verified Family &amp; Kinship View
+            </h3>
+            <p className="text-gray-500 dark:text-gray-400">
+              Displays only explicitly confirmed kinship predicates (parent, child, sibling, spouse, adoptive, step, extended kin). Generic social relationships are never inferred as family ties, and complex or cyclic kinship is never forced into a fake tree.
+            </p>
+          </div>
+          {kinshipProjection.hasCycles && (
+            <p role="alert" className="rounded border border-amber-400 bg-amber-50 p-2.5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
+              ⚠ Lineage cycle detected involving: {kinshipProjection.cycleEntityNames.join(', ')}. Rendered honestly as a directed kinship graph rather than a strict hierarchy.
+            </p>
+          )}
+          {kinshipProjection.edges.length === 0 ? (
+            <div className="rounded border border-gray-200 p-4 space-y-1.5 text-gray-600 dark:border-gray-800 dark:text-gray-300">
+              <p className="font-semibold text-gray-900 dark:text-gray-100">No verified kinship relationships recorded yet.</p>
+              <p>
+                {kinshipProjection.omittedNonKinshipCount} non-kinship relationship(s) and {kinshipProjection.omittedPendingCount} pending/unconfirmed kinship relationship(s) are intentionally excluded. Add and confirm explicit family predicates (e.g. &ldquo;mother of&rdquo;, &ldquo;sibling of&rdquo;, &ldquo;adoptive parent of&rdquo;) to populate this view.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              <p className="text-gray-500 dark:text-gray-400">
+                Showing {kinshipProjection.edges.length} verified kinship tie(s) across {kinshipProjection.nodes.length} character(s). Excluded: {kinshipProjection.omittedNonKinshipCount} non-kinship, {kinshipProjection.omittedPendingCount} unconfirmed.
+              </p>
+              <ul className="space-y-2">
+                {kinshipProjection.edges.map((edge) => (
+                  <li key={edge.relationship.id ?? `${edge.sourceEntity.id}-${edge.targetEntity.id}`} className="rounded border border-gray-200 p-2.5 space-y-1 dark:border-gray-800">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <button type="button" className="font-semibold hover:underline" onClick={() => onSelectEntity(edge.sourceEntity)}>
+                          {edge.sourceEntity.name}
+                        </button>{' '}
+                        →{' '}
+                        <button type="button" className="font-medium text-blue-700 hover:underline dark:text-blue-300" onClick={() => onSelectRelationship?.(edge.relationship)}>
+                          {edge.relationship.label}
+                        </button>{' '}
+                        →{' '}
+                        <button type="button" className="font-semibold hover:underline" onClick={() => onSelectEntity(edge.targetEntity)}>
+                          {edge.targetEntity.name}
+                        </button>
+                      </div>
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                        {edge.kinshipKind}
+                      </span>
+                    </div>
+                    {edge.isNonTreeQualification && edge.qualificationNote && (
+                      <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                        Note: {edge.qualificationNote}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       ) : (
         /* Interactive SVG Force-Directed Belief Graph Canvas */
