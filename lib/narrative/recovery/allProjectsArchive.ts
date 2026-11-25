@@ -1,4 +1,4 @@
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
+import { strFromU8, strToU8, Unzip, UnzipInflate, zipSync } from 'fflate';
 import type { CreativeProject } from '../../../shared/types.ts';
 import { makeStableId } from '../../canonicalModel.ts';
 import { migrateProjectPayload } from '../../storageEngine.ts';
@@ -52,6 +52,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 function isSafeArchivePath(path: string): boolean {
   if (!path || path.startsWith('/') || path.includes('\\') || path.includes('..')) return false;
+  if (path.split('/').some((part) => part.length === 0 || part === '.')) return false;
   return /^[a-z0-9._/-]+$/i.test(path);
 }
 
@@ -190,23 +191,54 @@ export async function parseAndVerifyAllProjectsArchive(
     throw new Error('The archive exceeds the maximum safe size limit (48 MiB).');
   }
 
-  let entriesMap: Record<string, Uint8Array>;
-  try {
-    entriesMap = unzipSync(zipBytes);
-  } catch {
-    throw new Error('The selected file is not a valid ZIP archive.');
-  }
-
+  const entriesMap: Record<string, Uint8Array> = Object.create(null) as Record<string, Uint8Array>;
   let totalExpanded = 0;
-  for (const [path, data] of Object.entries(entriesMap)) {
-    if (!isSafeArchivePath(path)) {
-      throw new Error(`Archive contains an unsafe path: "${path}".`);
+  let entryCount = 0;
+  const unzipper = new Unzip();
+  unzipper.register(UnzipInflate);
+  const extraction = new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } };
+    unzipper.onfile = (file) => {
+      const path = file.name;
+      entryCount += 1;
+      if (entryCount > MAX_ARCHIVE_PROJECTS + 1) return fail(new Error('Archive contains more entries than the supported project limit.'));
+      if (!isSafeArchivePath(path)) return fail(new Error(`Archive contains an unsafe path: "${path}".`));
+      if (Object.hasOwn(entriesMap, path)) return fail(new Error(`Archive contains a duplicate entry: "${path}".`));
+      if (typeof file.originalSize === 'number' && file.originalSize > MAX_ARCHIVE_EXPANDED_BYTES) {
+        return fail(new Error('Archive entry expands beyond the safe 48 MiB restoration limit.'));
+      }
+      const chunks: Uint8Array[] = [];
+      let entrySize = 0;
+      file.ondata = (error, chunk, final) => {
+        if (error) return fail(new Error('The selected file is not a valid ZIP archive.'));
+        entrySize += chunk.byteLength;
+        totalExpanded += chunk.byteLength;
+        if (entrySize > MAX_ARCHIVE_EXPANDED_BYTES || totalExpanded > MAX_ARCHIVE_EXPANDED_BYTES) {
+          return fail(new Error('Archive expands beyond the safe 48 MiB restoration limit.'));
+        }
+        chunks.push(chunk);
+        if (final && !settled) {
+          const data = new Uint8Array(entrySize);
+          let offset = 0;
+          for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
+          entriesMap[path] = data;
+        }
+      };
+      file.start();
+    };
+    try {
+      const inputChunkBytes = 64 * 1024;
+      for (let offset = 0; offset < zipBytes.byteLength && !settled; offset += inputChunkBytes) {
+        const end = Math.min(offset + inputChunkBytes, zipBytes.byteLength);
+        unzipper.push(zipBytes.subarray(offset, end), end === zipBytes.byteLength);
+      }
+      if (!settled) { settled = true; resolve(); }
+    } catch {
+      fail(new Error('The selected file is not a valid ZIP archive.'));
     }
-    totalExpanded += data.byteLength;
-    if (totalExpanded > MAX_ARCHIVE_EXPANDED_BYTES) {
-      throw new Error('Archive expands beyond the safe 48 MiB restoration limit.');
-    }
-  }
+  });
+  await extraction;
 
   const manifestBytes = entriesMap['manifest.json'];
   if (!manifestBytes) {
@@ -223,7 +255,11 @@ export async function parseAndVerifyAllProjectsArchive(
   if (manifest.formatVersion !== ARCHIVE_FORMAT_VERSION || !Array.isArray(manifest.entries)) {
     throw new Error('Unsupported or malformed archive manifest format.');
   }
-  if (manifest.entries.length === 0 || manifest.entries.length > MAX_ARCHIVE_PROJECTS) {
+  if (
+    manifest.entries.length === 0 ||
+    manifest.entries.length > MAX_ARCHIVE_PROJECTS ||
+    manifest.projectCount !== manifest.entries.length
+  ) {
     throw new Error('Archive project count is empty or exceeds the supported limit.');
   }
 
@@ -234,8 +270,21 @@ export async function parseAndVerifyAllProjectsArchive(
   const warnings: string[] = [];
 
   for (const entry of manifest.entries) {
-    if (!isSafeArchivePath(entry.filePath) || seenPaths.has(entry.filePath)) {
-      throw new Error(`Archive manifest contains an invalid or duplicate path: "${entry.filePath}".`);
+    if (
+      !entry ||
+      typeof entry.filePath !== 'string' ||
+      !isSafeArchivePath(entry.filePath) ||
+      seenPaths.has(entry.filePath) ||
+      typeof entry.projectId !== 'string' ||
+      typeof entry.name !== 'string' ||
+      !Number.isSafeInteger(entry.revision) || entry.revision < 1 ||
+      !Number.isSafeInteger(entry.schemaVersion) || entry.schemaVersion < 1 ||
+      !Number.isSafeInteger(entry.byteLength) || entry.byteLength < 0 ||
+      typeof entry.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(entry.sha256) ||
+      !Number.isSafeInteger(entry.extractedOnlySources) || entry.extractedOnlySources < 0 ||
+      !Number.isSafeInteger(entry.retainedOriginalSources) || entry.retainedOriginalSources < 0
+    ) {
+      throw new Error(`Archive manifest contains an invalid or duplicate path: "${typeof entry?.filePath === 'string' ? entry.filePath : '(unknown)'}".`);
     }
     seenPaths.add(entry.filePath);
 
@@ -257,6 +306,18 @@ export async function parseAndVerifyAllProjectsArchive(
     } catch {
       throw new Error(`Project file "${entry.filePath}" is not valid JSON.`);
     }
+    if (!rawProject || typeof rawProject !== 'object' || Array.isArray(rawProject)) {
+      throw new Error(`Project file "${entry.filePath}" is not a valid project object.`);
+    }
+    const archivedProject = rawProject as Record<string, unknown>;
+    if (
+      archivedProject.id !== entry.projectId ||
+      archivedProject.name !== entry.name ||
+      archivedProject.revision !== entry.revision ||
+      archivedProject.schemaVersion !== entry.schemaVersion
+    ) {
+      throw new Error(`Manifest metadata does not match project file "${entry.filePath}".`);
+    }
     const migrated = migrateProjectPayload(rawProject);
     const { project: safeProj, remapped, oldId } = remapProjectIdOnCollision(migrated, seenIds);
     seenIds.add(safeProj.id);
@@ -271,6 +332,13 @@ export async function parseAndVerifyAllProjectsArchive(
     projects.push(safeProj);
   }
 
+  const expectedArchivePaths = new Set(['manifest.json', ...seenPaths]);
+  for (const path of Object.keys(entriesMap)) {
+    if (!expectedArchivePaths.has(path)) {
+      throw new Error(`Archive contains an unlisted entry: "${path}".`);
+    }
+  }
+
   return {
     ok: true,
     manifest,
@@ -278,4 +346,28 @@ export async function parseAndVerifyAllProjectsArchive(
     remappedIds,
     warnings,
   };
+}
+
+export type ArchiveRestoreSequenceResult<T> =
+  | { ok: true; count: number }
+  | { ok: false; count: number; error: string; remainingProjects: T[] };
+
+/** Restore in archive order and return the uncommitted suffix so a retry skips completed projects. */
+export async function restoreArchiveProjectsSequentially<T>(
+  projects: T[],
+  persistProject: (project: T) => Promise<void>,
+): Promise<ArchiveRestoreSequenceResult<T>> {
+  for (let index = 0; index < projects.length; index += 1) {
+    try {
+      await persistProject(projects[index]);
+    } catch (cause) {
+      return {
+        ok: false,
+        count: index,
+        error: cause instanceof Error ? cause.message : 'Archive restore failed.',
+        remainingProjects: projects.slice(index),
+      };
+    }
+  }
+  return { ok: true, count: projects.length };
 }

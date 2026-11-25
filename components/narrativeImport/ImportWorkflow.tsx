@@ -18,6 +18,7 @@ import { manuscriptSections } from '../../lib/narrative/manuscriptModel';
 import { extractNarrativeChunk, isAbortError, requestImportEnhancements } from '../../services/apiClient';
 import { workspaceButton } from '../manuscript/ManuscriptEditor';
 
+const MAX_EXTRACTION_CALLS = 12;
 type Category = NarrativeExtractionRequest['categories'][number];
 interface AnalysisConfiguration {
   scope: 'complete' | 'selective';
@@ -130,7 +131,7 @@ export default function ImportWorkflow({
   );
   const hasIncompleteCoverage = Boolean(source && (!segmentationComplete || failedChunks.length > 0 || completedChunkIds.size !== chunks.length));
   const canAnalyze = Boolean(
-    source && !busy && sourceError === '' && (!parsedHasFileRetentionGap || confirmExtractedOnly) && (scope !== 'selective' || categories.length > 0)
+    aiConfigured && source && !busy && sourceError === '' && (!parsedHasFileRetentionGap || confirmExtractedOnly) && (scope !== 'selective' || categories.length > 0)
   );
 
   const targetProject = useMemo(
@@ -222,7 +223,6 @@ export default function ImportWorkflow({
     const controller = new AbortController();
     const readEpoch = ++sourceReadEpochRef.current;
     sourceReadAbortRef.current = controller;
-    abortRef.current = controller;
     setSourceError(''); setRequestError(''); setSource(null); resetAnalysis(); setConfirmExtractedOnly(false);
     try {
       let parsed: ParsedNarrativeSource;
@@ -241,7 +241,7 @@ export default function ImportWorkflow({
       if (error instanceof Error && error.name === 'AbortError') return;
       setSourceError(error instanceof Error ? error.message : 'The source could not be previewed.');
     } finally {
-      if (abortRef.current === controller) abortRef.current = null;
+      if (sourceReadAbortRef.current === controller) sourceReadAbortRef.current = null;
     }
   };
 
@@ -257,8 +257,8 @@ export default function ImportWorkflow({
   const startAnalysis = async (retry = false, smallerChunks = false) => {
     if (!source || inProgressRef.current) return;
     const nextCalls = callsUsed;
-    const callBudget = 30;
-    if (nextCalls >= callBudget) { setRequestError('This import reached its 30-call safety budget. Create an explicitly incomplete project or start a new scoped import.'); return; }
+    const callBudget = MAX_EXTRACTION_CALLS;
+    if (nextCalls >= callBudget) { setRequestError(`This import reached its ${callBudget}-call safety budget. Create an explicitly incomplete project or start a new scoped import.`); return; }
     inProgressRef.current = true;
     setBusy(true); setCancelled(false); setRequestError('');
     const runEpoch = epochRef.current;
@@ -633,12 +633,13 @@ export default function ImportWorkflow({
           <textarea id="import-instructions" className="min-h-20 w-full rounded border p-2 dark:bg-gray-950" maxLength={1000} value={instruction} onChange={(event) => { resetAnalysis(); setInstruction(event.target.value); }} />
           <p className="text-sm">Analysis sends selected source segments to the app’s configured Gemini model. No analysis request is made until Analyze source.</p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={workspaceButton} disabled={!canAnalyze || callsUsed >= 30} onClick={() => void startAnalysis(false)}>Analyze source</button>
+            <button type="button" className={workspaceButton} disabled={!canAnalyze || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false)}>Analyze source</button>
             {busy && <button type="button" className={workspaceButton} onClick={cancelAnalysis}>Cancel analysis</button>}
-            {failedChunks.length > 0 && !busy && <button type="button" className={workspaceButton} disabled={callsUsed >= 30} onClick={() => void startAnalysis(true)}>Retry failed segments ({failedChunks.length})</button>}
-            {requestError && !busy && <button type="button" className={workspaceButton} disabled={!source || callsUsed >= 30} onClick={() => void startAnalysis(false, true)}>Retry with smaller segments</button>}
+            {failedChunks.length > 0 && !busy && <button type="button" className={workspaceButton} disabled={callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(true)}>Retry failed segments ({failedChunks.length})</button>}
+            {requestError && !busy && <button type="button" className={workspaceButton} disabled={!source || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false, true)}>Retry with smaller segments</button>}
           </div>
-          {busy && <p role="status" aria-live="polite">{progress} · {callsUsed}/30 requests used</p>}
+          {!aiConfigured && <p role="status">Analysis is unavailable because the server Gemini API key is not configured. Local source preview remains available.</p>}
+          {busy && <p role="status" aria-live="polite">{progress} · {callsUsed}/{MAX_EXTRACTION_CALLS} requests used</p>}
           {cancelled && <p className="text-sm">Analysis was cancelled. Completed segment results remain available for review.</p>}
           {requestError && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{requestError}</p>}
           {hasIncompleteCoverage && !busy && chunks.length > 0 && (

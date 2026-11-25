@@ -13,6 +13,7 @@ import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplac
 import { projectContentExport, type ContentExportSelection } from './lib/narrative/recovery/contentExport';
 import { projectContentBundle } from './lib/narrative/recovery/bundleExporter';
 import { buildDeterministicExportFilename, buildManuscriptDocxBytes } from './lib/narrative/recovery/docxExport';
+import { restoreArchiveProjectsSequentially, type ArchiveRestoreSequenceResult } from './lib/narrative/recovery/allProjectsArchive';
 import {
   applyDiagnosticFixAlternative,
   collectLocalDiagnosticFindings,
@@ -368,6 +369,9 @@ function App() {
         }
 
         const ackRevision = res.persistedRevision ?? (targetProject.revision ?? 1);
+        const acknowledgedProject = res.idempotentHit && res.storedProject
+          ? res.storedProject
+          : targetProject;
         setProject((prev) => {
           if (prev.id !== targetProject.id) return prev;
           const nextPersisted = Math.max(prev.persistedRevision ?? 0, ackRevision);
@@ -377,7 +381,7 @@ function App() {
         });
         setSavedProjects((prev) => {
           const reconciled = reconcileAsyncSaveAcknowledgement({
-            acknowledgedProject: targetProject,
+            acknowledgedProject,
             acknowledgedRevision: ackRevision,
             currentActiveProject: activeProjectRef.current,
             savedProjects: prev,
@@ -972,12 +976,17 @@ function App() {
       if (!saved.saved) {
         return { ok: false, message: saved.error ?? 'Could not durably save the applied fix.' };
       }
-      const committed = { ...result.project, persistedRevision: saved.persistedRevision ?? result.project.revision };
+      const committed = saved.idempotentHit && saved.storedProject
+        ? saved.storedProject
+        : { ...result.project, persistedRevision: saved.persistedRevision ?? result.project.revision };
+      const committedUndo = saved.idempotentHit
+        ? createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory)
+        : result.undoState;
       activeProjectRef.current = committed;
-      undoStateRef.current = result.undoState;
+      undoStateRef.current = committedUndo;
       hasLocalEditsSinceMountRef.current = true;
       setProject(committed);
-      setUndoState(result.undoState);
+      setUndoState(committedUndo);
       const note = result.issueResolved
         ? `${result.appliedSummary} Issue resolved after post-apply recheck.`
         : `${result.appliedSummary} Post-apply recheck kept residual issue open (${result.residualOpenCount} open).`;
@@ -1002,12 +1011,17 @@ function App() {
         clearConflictOnSuccess: true,
       });
       if (!saved.saved) return { ok: false, message: saved.error ?? 'Could not save sync model update.' };
-      const committed = { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
+      const committed = saved.idempotentHit && saved.storedProject
+        ? saved.storedProject
+        : { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
+      const committedUndo = saved.idempotentHit
+        ? createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory)
+        : applied.undoState;
       activeProjectRef.current = committed;
-      undoStateRef.current = applied.undoState;
+      undoStateRef.current = committedUndo;
       hasLocalEditsSinceMountRef.current = true;
       setProject(committed);
-      setUndoState(applied.undoState);
+      setUndoState(committedUndo);
       setStatusNotification(applied.summary);
       return { ok: true, message: applied.summary };
     } catch (cause) {
@@ -1037,12 +1051,17 @@ function App() {
         clearConflictOnSuccess: true,
       });
       if (!saved.saved) return { ok: false, message: saved.error ?? 'Could not save manuscript sync patch.' };
-      const committed = { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
+      const committed = saved.idempotentHit && saved.storedProject
+        ? saved.storedProject
+        : { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
+      const committedUndo = saved.idempotentHit
+        ? createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory)
+        : applied.undoState;
       activeProjectRef.current = committed;
-      undoStateRef.current = applied.undoState;
+      undoStateRef.current = committedUndo;
       hasLocalEditsSinceMountRef.current = true;
       setProject(committed);
-      setUndoState(applied.undoState);
+      setUndoState(committedUndo);
       setStatusNotification(applied.summary);
       return { ok: true, message: applied.summary };
     } catch (cause) {
@@ -1166,7 +1185,9 @@ function App() {
     if (!saved.saved || saved.authoritativeStore !== 'indexeddb') {
       throw new Error(saved.error ?? 'Appended project could not be saved durably.');
     }
-    const committed = { ...applied.candidateProject, persistedRevision: saved.persistedRevision ?? applied.candidateProject.revision };
+    const committed = saved.idempotentHit && saved.storedProject
+      ? saved.storedProject
+      : { ...applied.candidateProject, persistedRevision: saved.persistedRevision ?? applied.candidateProject.revision };
     const nextUndo = createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory);
     const nextSaved = upsertProjectInSavedList(savedProjectsRef.current, committed);
     savedProjectsRef.current = nextSaved;
@@ -1184,26 +1205,30 @@ function App() {
 
   const handleRestoreArchiveProjects = async (
     restoredProjects: CreativeProject[]
-  ): Promise<{ ok: boolean; count: number; error?: string }> => {
-    try {
-      let nextSaved = [...savedProjectsRef.current];
-      let savedCount = 0;
-      for (const candidate of restoredProjects) {
-        const res = await flushProjectDurably(candidate, { expectedPersistedRevision: 0 });
-        if (!res.saved) {
-          throw new Error(res.error ?? `Could not restore "${candidate.name}".`);
-        }
-        const committed = { ...candidate, persistedRevision: res.persistedRevision ?? candidate.revision };
-        nextSaved = upsertProjectInSavedList(nextSaved, committed);
-        savedCount += 1;
-      }
+  ): Promise<ArchiveRestoreSequenceResult<CreativeProject>> => {
+    let nextSaved = [...savedProjectsRef.current];
+    const result = await restoreArchiveProjectsSequentially(restoredProjects, async (candidate) => {
+      const res = await flushProjectDurably(candidate, { expectedPersistedRevision: 0 });
+      if (!res.saved) throw new Error(res.error ?? `Could not restore "${candidate.name}".`);
+      const committed = res.idempotentHit && res.storedProject
+        ? res.storedProject
+        : { ...candidate, persistedRevision: res.persistedRevision ?? candidate.revision };
+      nextSaved = upsertProjectInSavedList(nextSaved, committed);
+    });
+    if (result.ok || result.count > 0) {
       savedProjectsRef.current = nextSaved;
       setSavedProjects(nextSaved);
-      setStatusNotification(`Restored ${savedCount} verified project(s) from portable archive.`);
-      return { ok: true, count: savedCount };
-    } catch (cause) {
-      return { ok: false, count: 0, error: cause instanceof Error ? cause.message : 'Archive restore failed.' };
     }
+    if (result.ok) {
+      setStatusNotification(`Restored ${result.count} verified project(s) from portable archive.`);
+      return result;
+    }
+    return {
+      ...result,
+      error: result.count > 0
+        ? `Partial archive restore: ${result.count} project(s) were durably restored. ${result.remainingProjects.length} remain and can be retried. ${result.error}`
+        : result.error,
+    };
   };
 
   // Keyboard shortcuts for Undo / Redo (F-04 / IA-08)

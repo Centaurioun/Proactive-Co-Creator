@@ -694,11 +694,39 @@ export function simulateBrowserProcessRestartForTesting(): void {
 
 const MAX_RECENT_INTENT_IDS = 50;
 
-function mergeIntentIds(existing: CreativeProject | undefined, candidate: CreativeProject, intentId?: string): string[] | undefined {
+function stableIntentSerialization(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableIntentSerialization).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().filter((key) => record[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${stableIntentSerialization(record[key])}`).join(',')}}`;
+}
+
+function intentOperationFingerprint(project: CreativeProject): string {
+  const operationContent = Object.fromEntries(
+    Object.entries(project).filter(([key]) => !['revision', 'persistedRevision', 'updatedAt', 'recentIntentIds'].includes(key))
+  );
+  const text = stableIntentSerialization(operationContent);
+  let a = 0x811c9dc5;
+  let b = 0x9e3779b9;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    a = Math.imul(a ^ code, 0x01000193);
+    b = Math.imul(b ^ code, 0x85ebca6b);
+  }
+  return `${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
+}
+
+function intentRecordId(project: CreativeProject, intentId?: string, expectedBaseRevision?: number): string | undefined {
+  const baseRevision = expectedBaseRevision ?? project.persistedRevision ?? 0;
+  return intentId ? `${intentId}:${baseRevision}:${intentOperationFingerprint(project)}` : undefined;
+}
+
+function mergeIntentIds(existing: CreativeProject | undefined, candidate: CreativeProject, intentId?: string, expectedBaseRevision?: number): string[] | undefined {
   const combined = [
     ...(existing?.recentIntentIds ?? []),
     ...(candidate.recentIntentIds ?? []),
-    ...(intentId ? [intentId] : []),
+    ...(intentRecordId(candidate, intentId, expectedBaseRevision) ? [intentRecordId(candidate, intentId, expectedBaseRevision)!] : []),
   ].filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
   if (combined.length === 0) return undefined;
   const deduped: string[] = [];
@@ -741,7 +769,11 @@ function evaluateCasConflict(params: {
     (existing.schemaVersion === NARRATIVE_SCHEMA_VERSION && candidate.schemaVersion < NARRATIVE_SCHEMA_VERSION))) {
     return { ok: false, saved: false, conflictDetected: true, error: 'Storage contains a newer project schema.' };
   }
-  if (existing && intentId && existing.recentIntentIds?.includes(intentId)) {
+  const existingIntent = intentId ? existing?.recentIntentIds?.find((id) => id.startsWith(`${intentId}:`) || id === intentId) : undefined;
+  if (existing && intentId && existingIntent) {
+    if (existingIntent !== intentRecordId(candidate, intentId, rawExpected)) {
+      return { ok: false, saved: false, conflictDetected: true, storedProject: safeMigrateExisting(existing), error: 'This intent ID was already used for different operation content.' };
+    }
     return {
       ok: true,
       saved: true,
@@ -924,7 +956,7 @@ export function saveProjectToLocalStorage(
     }
 
     const nextRevision = project.revision ?? 1;
-    const mergedIntents = mergeIntentIds(existing, project, opts?.intentId);
+    const mergedIntents = mergeIntentIds(existing, project, opts?.intentId, rawExpected);
     const projectToStore: CreativeProject = {
       ...project,
       revision: nextRevision,
@@ -1587,7 +1619,7 @@ export async function saveProjectToIndexedDb(
               }
 
               const nextRev = project.revision ?? 1;
-              const mergedIntents = mergeIntentIds(existing, project, opts?.intentId);
+              const mergedIntents = mergeIntentIds(existing, project, opts?.intentId, rawExpected);
               const putReq = store.put({
                 ...project,
                 revision: nextRev,
@@ -1786,11 +1818,20 @@ export async function persistProjectDurably(
     }
 
     if (idbRes.idempotentHit) {
+      const localRes = hasLocalStorage && idbRes.storedProject
+        ? saveProjectToLocalStorage(idbRes.storedProject, { forceOverwrite: true, allowDeleted })
+        : undefined;
+      const cacheSynced = Boolean(localRes?.saved);
       return {
         ...idbRes,
         authoritativeStore: 'indexeddb',
         idbSaved: true,
-        cacheSynced: true,
+        localSaved: cacheSynced,
+        cacheSynced,
+        ...(!cacheSynced && hasLocalStorage ? {
+          quotaExceeded: Boolean(localRes?.quotaExceeded),
+          cacheWarning: localRes?.error ?? 'The authoritative IndexedDB result could not be synchronized to the localStorage cache.',
+        } : {}),
       };
     }
 
@@ -1806,7 +1847,7 @@ export async function persistProjectDurably(
     }
 
     const committedRevision = idbRes.persistedRevision ?? (project.revision ?? 1);
-    const mergedIntents = mergeIntentIds(undefined, project, opts?.intentId);
+    const mergedIntents = mergeIntentIds(undefined, project, opts?.intentId, rawExpected);
 
     if (hasLocalStorage) {
       // Synchronize non-authoritative localStorage cache with the authoritative IndexedDB state

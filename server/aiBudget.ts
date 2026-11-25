@@ -394,6 +394,60 @@ export interface AiOperationPolicy {
   description: string;
 }
 
+interface AggregateOperationUsage {
+  startedAt: number;
+  lastUsedAt: number;
+  calls: number;
+  tokens: number;
+}
+
+const aggregateOperationUsage = new Map<string, AggregateOperationUsage>();
+const AGGREGATE_USAGE_RETENTION_MS = 10 * 60_000;
+
+/** Charge one provider attempt and its worst-case output allowance to a bounded operation key. */
+export function reserveAggregateOperationUsage(params: {
+  policy: AiOperationPolicy;
+  operationKey: string;
+  inputTokens: number;
+  now?: number;
+}): { ok: true } | { ok: false; reason: string } {
+  const { policy, operationKey, inputTokens } = params;
+  const now = params.now ?? Date.now();
+  if (!operationKey || !Number.isSafeInteger(inputTokens) || inputTokens < 0) {
+    return { ok: false, reason: 'A valid operation key and provider token count are required.' };
+  }
+  for (const [key, usage] of aggregateOperationUsage) {
+    if (now - usage.lastUsedAt > AGGREGATE_USAGE_RETENTION_MS) aggregateOperationUsage.delete(key);
+  }
+  let usage = aggregateOperationUsage.get(operationKey);
+  if (usage && now - usage.startedAt > policy.maxAggregateElapsedMs) {
+    aggregateOperationUsage.delete(operationKey);
+    usage = undefined;
+  }
+  if (!usage) {
+    if (aggregateOperationUsage.size >= 1_000) {
+      const oldestKey = aggregateOperationUsage.keys().next().value;
+      if (oldestKey !== undefined) aggregateOperationUsage.delete(oldestKey);
+    }
+    usage = { startedAt: now, lastUsedAt: now, calls: 0, tokens: 0 };
+    aggregateOperationUsage.set(operationKey, usage);
+  }
+  usage.lastUsedAt = now;
+  if (usage.calls >= policy.maxAggregateCalls) {
+    return { ok: false, reason: `This ${policy.operation} operation reached its ${policy.maxAggregateCalls}-call limit.` };
+  }
+  const reservedTokens = inputTokens + policy.maxOutputTokens;
+  if (usage.tokens + reservedTokens > policy.maxAggregateTokens) {
+    return { ok: false, reason: `This ${policy.operation} operation would exceed its ${policy.maxAggregateTokens.toLocaleString()}-token aggregate limit.` };
+  }
+  if (now - usage.startedAt >= policy.maxAggregateElapsedMs) {
+    return { ok: false, reason: `This ${policy.operation} operation exceeded its aggregate time limit.` };
+  }
+  usage.calls += 1;
+  usage.tokens += reservedTokens;
+  return { ok: true };
+}
+
 export const AI_OPERATION_POLICIES: Readonly<Record<AiOperation, AiOperationPolicy>> = Object.freeze({
   analyze: {
     operation: 'analyze',
@@ -582,6 +636,21 @@ export interface AiUsageReport {
 export function estimateTokensFromText(text: string): number {
   if (!text) return 0;
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+export function maxAttemptsWithinOperationBudget(
+  policy: AiOperationPolicy,
+  inputTokens: number,
+  preferredAttempts = 2
+): number {
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < 0) return 0;
+  const tokensPerAttempt = inputTokens + policy.maxOutputTokens;
+  if (tokensPerAttempt <= 0 || tokensPerAttempt > policy.maxAggregateTokens) return 0;
+  return Math.max(0, Math.min(
+    Math.trunc(preferredAttempts),
+    policy.maxAggregateCalls,
+    Math.floor(policy.maxAggregateTokens / tokensPerAttempt)
+  ));
 }
 
 export function evaluateOperationBudget(input: {

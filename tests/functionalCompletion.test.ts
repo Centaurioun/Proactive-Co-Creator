@@ -58,6 +58,7 @@ import { parseNarrativeSource } from '../lib/narrative/import/sourceParser.ts';
 import {
   buildAllProjectsArchiveZip,
   parseAndVerifyAllProjectsArchive,
+  restoreArchiveProjectsSequentially,
 } from '../lib/narrative/recovery/allProjectsArchive.ts';
 import {
   applyAppendToExistingProject,
@@ -235,6 +236,13 @@ describe('Package A — Storage conflict root-cause fix, CAS preconditions, and 
     );
     assert.equal(replay.ok, true);
     assert.equal(replay.idempotentHit, true);
+
+    const reusedId = saveProjectToLocalStorage(
+      { ...project, revision: project.revision + 1, snapshot: { ...project.snapshot, refinedPrompt: 'different operation content' } },
+      { expectedPersistedRevision: project.revision, intentId }
+    );
+    assert.equal(reusedId.ok, false);
+    assert.equal(reusedId.conflictDetected, true);
   });
 });
 
@@ -783,6 +791,48 @@ describe('Package G — DOCX Export round-trip and Verified All-Projects ZIP Arc
       () => parseAndVerifyAllProjectsArchive(traversalZip, new Set()),
       /unsafe path/i
     );
+  });
+
+  it('rejects inconsistent archive manifests and unlisted ZIP members before restore', async () => {
+    const { bytes } = await buildAllProjectsArchiveZip([createSampleProject()]);
+    const unpacked = unzipSync(bytes);
+    const manifest = JSON.parse(new TextDecoder().decode(unpacked['manifest.json'])) as Record<string, unknown>;
+
+    const wrongCount = { ...unpacked, 'manifest.json': strToU8(JSON.stringify({ ...manifest, projectCount: 2 })) };
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(zipSync(wrongCount), new Set()), /project count/i);
+
+    const wrongMetadata = JSON.parse(JSON.stringify(manifest)) as typeof manifest;
+    (wrongMetadata.entries as Array<Record<string, unknown>>)[0].name = 'Different project';
+    const mismatched = { ...unpacked, 'manifest.json': strToU8(JSON.stringify(wrongMetadata)) };
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(zipSync(mismatched), new Set()), /metadata does not match/i);
+
+    const extraMember = { ...unpacked, 'projects/unlisted.json': strToU8('{}') };
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(zipSync(extraMember), new Set()), /unlisted entry/i);
+  });
+
+  it('rejects an oversized project entry before retaining expanded archive contents', async () => {
+    const oversized = new Uint8Array(49 * 1024 * 1024);
+    const archive = zipSync({ 'projects/oversized.json': oversized });
+    await assert.rejects(() => parseAndVerifyAllProjectsArchive(archive, new Set()), /expands beyond|maximum safe size/i);
+  });
+
+  it('returns only uncommitted archive projects for a safe retry', async () => {
+    const firstAttempt: string[] = [];
+    const partial = await restoreArchiveProjectsSequentially(['one', 'two', 'three'], async (project) => {
+      firstAttempt.push(project);
+      if (project === 'two') throw new Error('synthetic persistence failure');
+    });
+    assert.deepEqual(firstAttempt, ['one', 'two']);
+    assert.deepEqual(partial, {
+      ok: false, count: 1, error: 'synthetic persistence failure', remainingProjects: ['two', 'three'],
+    });
+
+    const retryAttempt: string[] = [];
+    const completed = await restoreArchiveProjectsSequentially(partial.remainingProjects, async (project) => {
+      retryAttempt.push(project);
+    });
+    assert.deepEqual(retryAttempt, ['two', 'three']);
+    assert.deepEqual(completed, { ok: true, count: 2 });
   });
 });
 

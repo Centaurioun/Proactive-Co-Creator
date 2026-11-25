@@ -5,6 +5,7 @@ import { planBackupRetention, type RetentionRecord } from '../../lib/narrative/r
 import {
   buildAllProjectsArchiveZip,
   parseAndVerifyAllProjectsArchive,
+  type ArchiveRestoreSequenceResult,
   type VerifiedArchiveRestoreResult,
 } from '../../lib/narrative/recovery/allProjectsArchive';
 import {
@@ -20,7 +21,7 @@ interface Props {
   openExport: () => void;
   openImport: () => void;
   restore: (payload: string, replace?: boolean) => Promise<{ ok: boolean; error?: string }>;
-  restoreArchiveProjects?: (projects: CreativeProject[]) => Promise<{ ok: boolean; count: number; error?: string }>;
+  restoreArchiveProjects?: (projects: CreativeProject[]) => Promise<ArchiveRestoreSequenceResult<CreativeProject>>;
   downloadBackup: (backup: ProjectBackup) => void;
   onExportManuscriptDocx?: () => void;
   onExportManuscriptText?: () => void;
@@ -67,6 +68,7 @@ export default function ProjectHub({
   // All-projects archive restore preview
   const [archivePreview, setArchivePreview] = useState<VerifiedArchiveRestoreResult | null>(null);
   const [archiveError, setArchiveError] = useState('');
+  const [archiveRestoredCount, setArchiveRestoredCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -171,6 +173,7 @@ export default function ProjectHub({
     if (!file) return;
     setArchiveError('');
     setArchivePreview(null);
+    setArchiveRestoredCount(0);
     setBusy(true);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -247,7 +250,9 @@ export default function ProjectHub({
             {archivePreview && (
               <div className="rounded border border-amber-400 bg-amber-50/40 p-3 space-y-2 dark:bg-amber-950/30">
                 <p className="font-semibold">
-                  Verified archive: {archivePreview.projects.length} project(s) · Exported {new Date(archivePreview.manifest.exportedAt).toLocaleString()}
+                  {archiveRestoredCount > 0
+                    ? `Partial restore: ${archiveRestoredCount} project(s) restored; ${archivePreview.projects.length} remain.`
+                    : `Verified archive: ${archivePreview.projects.length} project(s) · Exported ${new Date(archivePreview.manifest.exportedAt).toLocaleString()}`}
                 </p>
                 {archivePreview.remappedIds.length > 0 && (
                   <p className="text-amber-900 dark:text-amber-200">
@@ -264,20 +269,34 @@ export default function ProjectHub({
                     onClick={async () => {
                       if (!restoreArchiveProjects) return;
                       setBusy(true);
+                      setArchiveError('');
                       const res = await restoreArchiveProjects(archivePreview.projects);
                       setBusy(false);
                       if (res.ok) {
                         setArchivePreview(null);
-                        setMessage(`Restored ${res.count} verified project(s) from portable archive.`);
+                        setMessage(`Restored ${archiveRestoredCount + res.count} verified project(s) from portable archive.`);
+                        setArchiveRestoredCount(0);
                       } else {
                         setArchiveError(res.error ?? 'Archive restore failed.');
+                        if (res.count > 0 && res.remainingProjects?.length) {
+                          setArchiveRestoredCount((count) => count + res.count);
+                          setArchivePreview((current) => current
+                            ? { ...current, projects: res.remainingProjects! }
+                            : current);
+                          setMessage(`${res.count} project(s) restored in this attempt; retry will process only the remaining archive projects.`);
+                        } else if (res.count > 0) {
+                          setArchivePreview(null);
+                          setArchiveRestoredCount(0);
+                        }
                       }
                     }}
                     className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-45"
                   >
-                    Confirm Verified Restore ({archivePreview.projects.length})
+                    {archiveRestoredCount > 0
+                      ? `Restore Remaining Projects (${archivePreview.projects.length})`
+                      : `Confirm Verified Restore (${archivePreview.projects.length})`}
                   </button>
-                  <button type="button" className={workspaceButton} onClick={() => setArchivePreview(null)}>
+                  <button type="button" className={workspaceButton} onClick={() => { setArchivePreview(null); setArchiveRestoredCount(0); }}>
                     Cancel
                   </button>
                 </div>
