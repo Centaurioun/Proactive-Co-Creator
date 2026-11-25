@@ -61,6 +61,8 @@ test('adaptive plan keeps decision inbox, graph, inspector and generated output 
       contextualInspector: React.createElement('div', null, 'live-inspector-slot'),
       generatedOutput: React.createElement('div', null, 'live-output-slot'),
       onOpenInspectorTab: () => undefined,
+    outputExpanded: false,
+    onToggleOutput: () => undefined,
     })
   );
 
@@ -91,6 +93,8 @@ test('narrative navigation exposes canonical status and epistemic distinctions',
       contextualInspector: React.createElement('div', null, 'Inspector'),
       generatedOutput: React.createElement('div', null, 'Output'),
       onOpenInspectorTab: () => undefined,
+    outputExpanded: false,
+    onToggleOutput: () => undefined,
     })
   );
 

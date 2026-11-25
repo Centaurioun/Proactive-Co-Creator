@@ -25,6 +25,7 @@ interface WorkspaceBottomBarProps {
   onToggleOutputDrawer: () => void;
   revisionCount: number;
   isOutdated: boolean;
+  compactOnMobile?: boolean;
 }
 
 const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
@@ -46,6 +47,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
   onToggleOutputDrawer,
   revisionCount,
   isOutdated,
+  compactOnMobile = false,
 }) => {
   return (
     <footer
@@ -106,7 +108,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
       </div>
 
       {/* Right: Mode Selector ('story' | 'image') & Primary Generation Action */}
-      <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 min-w-0">
+      <div className={`flex flex-wrap items-center gap-2 sm:gap-2.5 min-w-0 ${compactOnMobile ? 'hidden xl:flex' : ''}`}>
         <button
           type="button"
           onClick={onToggleOutputDrawer}

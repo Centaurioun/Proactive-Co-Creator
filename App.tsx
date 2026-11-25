@@ -6,6 +6,9 @@
 import ManuscriptEditor from './components/manuscript/ManuscriptEditor';
 import ProjectHub from './components/workspace/ProjectHub';
 import NarrativeReview from './components/workspace/NarrativeReview';
+import HistoryPanel from './components/inspector/HistoryPanel';
+import type { PendingProposalReview } from './components/workspace/review/proposalReviewContext';
+import AdaptivePlanWorkspace, { type PlanInspectorDestination } from './components/workspace/AdaptivePlanWorkspace';
 import ImportWorkflow from './components/narrativeImport/ImportWorkflow';
 import CreateProjectDialog from './components/projects/CreateProjectDialog';
 import { manuscriptSections, manuscriptText, prepareManuscriptChange, type NarrativeBase } from './lib/narrative/manuscriptModel';
@@ -203,6 +206,7 @@ function App() {
   const [adoptArtifactId, setAdoptArtifactId] = useState<string>();
   const [focusedSectionId, setFocusedSectionId] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<{ id: string; sequence: number } | null>(null);
+  const [resumedProposalReview, setResumedProposalReview] = useState<PendingProposalReview>();
   const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects' | 'import'>(readBrowserWorkspacePreference);
   const lastStableWorkspaceModeRef = useRef<'write' | 'plan' | 'review'>(workspaceMode === 'projects' || workspaceMode === 'import' ? 'write' : workspaceMode);
   const [aiConfigured, setAiConfigured] = useState<boolean>(false);
@@ -218,11 +222,12 @@ function App() {
   const lastAutoBackupRevisionRef = useRef<Record<string, number>>({});
   const pendingAutoBackups = useRef(new Set<string>());
   const draftDirtyRef = useRef(false);
+  const compositionPendingRef = useRef(false);
   const restorePendingRef = useRef(false);
   const creatingImportedProjectRef = useRef(false);
 
   const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
-  const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(true);
+  const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
@@ -241,8 +246,10 @@ function App() {
   }, [workspaceMode]);
 
   function allowNavigation(): boolean {
-    if (!draftDirtyRef.current && !restorePendingRef.current) return true;
-    setStatusNotification('Save the open manuscript draft or wait for the restore before leaving this workspace.');
+    if (!draftDirtyRef.current && !restorePendingRef.current && !compositionPendingRef.current) return true;
+    setStatusNotification(compositionPendingRef.current
+      ? 'Finish text composition before changing workspaces.'
+      : 'Save the open manuscript draft or wait for the restore before leaving this workspace.');
     return false;
   }
 
@@ -327,6 +334,8 @@ function App() {
   };
 
   const selectProject = (current: CreativeProject, undo: UndoRedoState) => {
+    draftDirtyRef.current = false;
+    setManuscriptDraftDirty(false);
     hasLocalEditsSinceMountRef.current = (current.persistedRevision ?? 0) < current.revision;
     publishCurrentProject(current, undo);
     setCachedProjectSelection(current.id);
@@ -441,7 +450,7 @@ function App() {
       undo: undoStateRef.current,
       projects: savedProjectsRef.current,
       edited: hasLocalEditsSinceMountRef.current,
-      draftPending: draftDirtyRef.current || restorePendingRef.current,
+      draftPending: draftDirtyRef.current || restorePendingRef.current || compositionPendingRef.current,
     }),
     publish: (next: { savedProjects: CreativeProject[]; activeProject: CreativeProject; activeUndoState: UndoRedoState }) => {
       savedProjectsRef.current = next.savedProjects;
@@ -2016,6 +2025,8 @@ function App() {
     setSavedProjects(nextSaved);
     setProject(sample);
     setUndoState(sampleUndo);
+    draftDirtyRef.current = false;
+    setManuscriptDraftDirty(false);
     setSelectedEntityId(null);
     setSelectedRelationshipId(null);
     setStoryBibleErrors({});
@@ -2141,6 +2152,8 @@ function App() {
       setSavedProjects(nextSaved);
       setProject(committed);
       setUndoState(newUndo);
+      draftDirtyRef.current = false;
+      setManuscriptDraftDirty(false);
       setSelectedEntityId(null);
       setSelectedRelationshipId(null);
       setStoryBibleErrors({});
@@ -2423,10 +2436,11 @@ function App() {
         </div>
       </nav>
 
-      {workspaceMode === 'write' && (
+      <div hidden={workspaceMode !== 'write'} className={workspaceMode === 'write' ? 'flex min-h-0 flex-1 flex-col' : undefined}>
         <ManuscriptEditor
           key={activeProject.id}
           project={activeProject}
+          isActive={workspaceMode === 'write'}
           onSave={saveManuscript}
           initialArtifactId={adoptArtifactId}
           focusedSectionId={focusedSectionId}
@@ -2434,13 +2448,14 @@ function App() {
           onSaveWritingAlternative={handleSaveWritingAlternative}
           onExportDraft={sections => downloadTextFile(safeFilename(activeProject.name, 'unsaved-draft', 'md'), manuscriptText(sections), 'text/markdown;charset=utf-8')}
           onDirty={dirty => { draftDirtyRef.current = dirty; setManuscriptDraftDirty(dirty); }}
+          onCompositionChange={composing => { compositionPendingRef.current = composing; }}
           onUndo={handleUndo}
           onRedo={handleRedo}
           canUndo={undoState.past.length > 0}
           canRedo={undoState.future.length > 0}
           enabled={hydrationGate === 'ready' && typeof window !== 'undefined' && Boolean(window.indexedDB)}
         />
-      )}
+      </div>
       {workspaceMode === 'review' && (
         <NarrativeReview
           key={activeProject.id}
@@ -2468,6 +2483,16 @@ function App() {
           onRecordSyncCheckpoint={handleRecordSyncCheckpoint}
           onUpdateAutomationPreferences={handleUpdateAutomationPreferences}
           autoAnalysisCallsUsed={autoAnalysisCallsUsed}
+          resumeProposalReview={resumedProposalReview?.projectId === activeProject.id ? resumedProposalReview : undefined}
+          onClearResumedProposalReview={() => setResumedProposalReview(undefined)}
+          onReturnToWriting={(target, review) => {
+            if (!allowNavigation()) return;
+            setResumedProposalReview(review?.projectId === activeProject.id ? review : undefined);
+            if (target?.sectionId && manuscriptSections(activeProject).some(section => section.id === target.sectionId)) {
+              setFocusedSectionId(target.sectionId);
+            }
+            setWorkspaceMode('write');
+          }}
         />
       )}
       {workspaceMode === 'import' && (
@@ -2485,6 +2510,37 @@ function App() {
           key={activeProject.id}
           project={activeProject}
           savedProjects={savedProjects}
+          onResumeWorkspace={() => {
+            if (allowNavigation()) setWorkspaceMode(lastStableWorkspaceModeRef.current);
+          }}
+          onOpenProject={projectId => {
+            if (!allowNavigation()) return;
+            handleSwitchProject(projectId);
+            setWorkspaceMode('write');
+          }}
+          onCreateNewProject={handleCreateNewProject}
+          historyContent={(
+            <HistoryPanel
+              project={activeProject}
+              savedProjects={savedProjects}
+              historyTarget={historyTarget}
+              contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
+              onExportJson={handleExportJson}
+              onExportStoryBibleMarkdown={handleExportStoryBibleMarkdown}
+              onExportPromptText={handleExportPromptText}
+              onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
+              onExportManuscriptDocx={manuscriptSections(activeProject).length > 0 ? exportManuscriptDocx : undefined}
+              onExportManuscriptText={manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined}
+              onExportContent={exportContent}
+              onExportContentBundle={exportContentBundle}
+              onPreviewProjectJson={parseProjectBackup}
+              onImportProjectJson={handleImportProjectJson}
+              onSwitchProject={handleSwitchProject}
+              onCreateNewProject={handleCreateNewProject}
+              onDeleteProject={handleDeleteProject}
+              onRestoreRevision={handleRestoreRevision}
+            />
+          )}
           openProjects={() => openPlan('history', 'project-management')}
           openExport={() => openPlan('history', 'export-content')}
           openImport={() => {
@@ -2516,249 +2572,208 @@ function App() {
         />
       )}
 
-      <div className={workspaceMode === 'plan' ? 'contents' : 'hidden'}>
-      {/* Unified Three-Panel Desktop Workspace */}
-      <main className="flex-1 grid grid-cols-1 xl:grid-cols-12 gap-3 p-3 overflow-hidden min-h-0">
-        {/* Left Panel (3 cols on xl): Decision Inbox, Clarifications 2.0 & Natural-Language Batch Editing */}
-        <div
-          className={`xl:col-span-3 h-full min-h-0 ${
-            mobileTab === 'decisions' ? 'flex flex-col' : 'hidden xl:flex xl:flex-col'
-          }`}
-        >
-          <DecisionInboxPanel
-            decisions={snapshot.decisions}
-            activeProjectId={activeProject.id}
-            activeRevision={activeProject.revision}
-            onApplyDecisions={handleApplyDecisions}
-            onInspectDecisionTarget={handleInspectDecisionTarget}
-            onRefreshClarifications={handleRefreshClarifications}
-            isClarificationsLoading={isClarificationsLoading}
-            clarificationError={clarificationError}
-            onPreviewBatchInstruction={handlePreviewBatchInstruction}
-            onApplyBatchOperations={handleApplyBatchOperations}
-            onBatchPreviewChange={setStagedBatchPreview}
-            onDraftValuesChange={setStagedDecisionDrafts}
-            isBatchLoading={isBatchLoading}
-          />
-        </div>
-
-        {/* Center Panel (6 cols on xl): Seed Prompt + Interactive Belief Graph 2.0 + Collapsible Output Deck */}
-        <div
-          className={`xl:col-span-6 h-full min-h-0 flex-col gap-3 ${
-            mobileTab === 'graph' || mobileTab === 'output' ? 'flex' : 'hidden xl:flex'
-          }`}
-        >
-          <PromptInput
-            prompt={snapshot.originalIdea}
-            setPrompt={handleSetOriginalIdea}
-            onSubmit={handleGenerateOutput}
-            onAnalyze={handleAnalyzeIdea}
-            isLoading={isGraphLoading || isGenerating}
-            isGenerating={isGenerating}
-            isFirstRun={!latestStoryArtifact && !latestImageArtifact}
-            mode={mode}
-            setMode={handleModeChange}
-            compiledPromptLength={snapshot.refinedPrompt.trim().length}
-            maxPromptChars={MAX_PROMPT_CHARS}
-          />
-
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${
-              mobileTab === 'output' ? 'hidden xl:flex' : 'flex'
-            }`}
-          >
-            <BeliefGraph
-              data={{
-                prompt: snapshot.originalIdea,
-                entities: snapshot.entities,
-                relationships: snapshot.relationships,
-              }}
-              isLoading={isGraphLoading}
-              error={analysisError}
-              selectedEntity={selectedEntity}
-              selectedRelationship={selectedRelationship}
-              onSelectEntity={(ent) => {
-                setSelectedEntityId(ent ? (ent.id ?? ent.name) : null);
-                if (ent) {
-                  setSelectedRelationshipId(null);
-                  setRightPanelTab('inspector');
-                }
-              }}
-              onSelectRelationship={(rel: Relationship | null) => {
-                setSelectedRelationshipId(rel?.id ?? null);
-                if (rel) {
-                  setSelectedEntityId(null);
-                  setRightPanelTab('inspector');
-                }
-              }}
-              onRelationshipChange={handleUpsertRelationship}
-              onAttributeChange={handleAttributeChange}
-              onOpenChecks={() => {
-                setRightPanelTab('consistency');
-                setMobileTab('inspector');
-              }}
-              currentPrompt={snapshot.originalIdea}
-              consistencyIssues={consistencyIssues}
-              relationshipProjection={relationshipProjection}
+      <div className={workspaceMode === 'plan' ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'hidden'}>
+        <AdaptivePlanWorkspace
+          projectName={activeProject.name}
+          pendingDecisionCount={pendingDecisionCount}
+          mobileTab={mobileTab}
+          onMobileTabChange={setMobileTab}
+          entities={snapshot.entities}
+          relationships={snapshot.relationships}
+          selectedEntityId={selectedEntityId}
+          selectedRelationshipId={selectedRelationshipId}
+          onSelectEntity={entity => {
+            setSelectedEntityId(entity.id ?? entity.name);
+            setSelectedRelationshipId(null);
+          }}
+          onSelectRelationship={relationship => {
+            setSelectedRelationshipId(relationship.id ?? null);
+            setSelectedEntityId(null);
+          }}
+          onOpenInspectorTab={(tab: PlanInspectorDestination) => {
+            setRightPanelTab(tab);
+            setMobileTab('inspector');
+          }}
+          outputExpanded={showOutputDrawer}
+          onToggleOutput={() => setShowOutputDrawer(value => !value)}
+          decisionInbox={(
+            <DecisionInboxPanel
+              decisions={snapshot.decisions}
+              activeProjectId={activeProject.id}
+              activeRevision={activeProject.revision}
+              onApplyDecisions={handleApplyDecisions}
+              onInspectDecisionTarget={handleInspectDecisionTarget}
+              onRefreshClarifications={handleRefreshClarifications}
+              isClarificationsLoading={isClarificationsLoading}
+              clarificationError={clarificationError}
+              onPreviewBatchInstruction={handlePreviewBatchInstruction}
+              onApplyBatchOperations={handleApplyBatchOperations}
+              onBatchPreviewChange={setStagedBatchPreview}
+              onDraftValuesChange={setStagedDecisionDrafts}
+              isBatchLoading={isBatchLoading}
             />
-          </div>
-
-          {(showOutputDrawer || mobileTab === 'output') && (
-            <div
-              className={`flex-shrink-0 ${
-                mobileTab === 'output'
-                  ? 'flex-1 min-h-0 xl:flex-none xl:h-52'
-                  : latestStoryArtifact || latestImageArtifact || activePolishProposal
-                    ? 'hidden xl:block xl:h-56'
-                    : 'hidden xl:block xl:h-40'
-              }`}
-            >
-              <OutputDisplay
-                originalIdea={snapshot.originalIdea}
-                refinedPrompt={snapshot.refinedPrompt}
-                freeformNotes={snapshot.freeformNotes}
-                onChangeFreeformNotes={handleSetFreeformNotes}
-                onPolishPromptWithAi={handlePolishPromptWithAi}
-                isPolishingPrompt={isPolishingPrompt}
-                polishProposal={activePolishProposal}
-                isPolishStale={Boolean(polishValidation && !polishValidation.ok)}
-                polishStaleReason={polishValidation?.reason ?? null}
-                onAcceptPolishProposal={handleAcceptPolishProposal}
-                onRejectPolishProposal={handleRejectPolishProposal}
-                artifacts={activeProject.artifacts}
-                images={latestImageArtifact?.images ?? []}
-                imageWarning={latestImageArtifact?.warning ?? null}
-                story={latestStoryArtifact?.storyText ?? null}
-                mode={mode}
-                isLoading={isGenerating}
-                error={currentGalleryError}
-                isOutdated={isCurrentOutputOutdated}
-                onGenerate={handleGenerateOutput}
-                onAdoptStory={artifactId => {
-                  if (!allowNavigation()) return;
-                  setAdoptArtifactId(artifactId);
-                  setWorkspaceMode('write');
-                }}
-              />
+          )}
+          graphControls={(
+            <PromptInput
+              prompt={snapshot.originalIdea}
+              setPrompt={handleSetOriginalIdea}
+              onSubmit={handleGenerateOutput}
+              onAnalyze={handleAnalyzeIdea}
+              isLoading={isGraphLoading || isGenerating}
+              isGenerating={isGenerating}
+              isFirstRun={!latestStoryArtifact && !latestImageArtifact}
+              mode={mode}
+              setMode={handleModeChange}
+              compiledPromptLength={snapshot.refinedPrompt.trim().length}
+              maxPromptChars={MAX_PROMPT_CHARS}
+            />
+          )}
+          graphCanvas={(
+            <div className="flex h-full min-h-0 flex-col gap-2.5 p-2.5 sm:p-3">
+              <div className="flex min-h-0 flex-1 flex-col">
+                <BeliefGraph
+                  data={{ prompt: snapshot.originalIdea, entities: snapshot.entities, relationships: snapshot.relationships }}
+                  isLoading={isGraphLoading}
+                  error={analysisError}
+                  selectedEntity={selectedEntity}
+                  selectedRelationship={selectedRelationship}
+                  onSelectEntity={entity => {
+                    setSelectedEntityId(entity ? (entity.id ?? entity.name) : null);
+                    if (entity) { setSelectedRelationshipId(null); setRightPanelTab('inspector'); }
+                  }}
+                  onSelectRelationship={(relationship: Relationship | null) => {
+                    setSelectedRelationshipId(relationship?.id ?? null);
+                    if (relationship) { setSelectedEntityId(null); setRightPanelTab('inspector'); }
+                  }}
+                  onRelationshipChange={handleUpsertRelationship}
+                  onAttributeChange={handleAttributeChange}
+                  onOpenChecks={() => { setRightPanelTab('consistency'); setMobileTab('inspector'); }}
+                  currentPrompt={snapshot.originalIdea}
+                  consistencyIssues={consistencyIssues}
+                  relationshipProjection={relationshipProjection}
+                />
+              </div>
             </div>
           )}
-        </div>
+          generatedOutput={(
+            <OutputDisplay
+              originalIdea={snapshot.originalIdea}
+              refinedPrompt={snapshot.refinedPrompt}
+              freeformNotes={snapshot.freeformNotes}
+              onChangeFreeformNotes={handleSetFreeformNotes}
+              onPolishPromptWithAi={handlePolishPromptWithAi}
+              isPolishingPrompt={isPolishingPrompt}
+              polishProposal={activePolishProposal}
+              isPolishStale={Boolean(polishValidation && !polishValidation.ok)}
+              polishStaleReason={polishValidation?.reason ?? null}
+              onAcceptPolishProposal={handleAcceptPolishProposal}
+              onRejectPolishProposal={handleRejectPolishProposal}
+              artifacts={activeProject.artifacts}
+              images={latestImageArtifact?.images ?? []}
+              imageWarning={latestImageArtifact?.warning ?? null}
+              story={latestStoryArtifact?.storyText ?? null}
+              mode={mode}
+              isLoading={isGenerating}
+              error={currentGalleryError}
+              isOutdated={isCurrentOutputOutdated}
+              onGenerate={handleGenerateOutput}
+              onAdoptStory={artifactId => {
+                if (!allowNavigation()) return;
+                setAdoptArtifactId(artifactId);
+                setWorkspaceMode('write');
+              }}
+            />
+          )}
+          contextualInspector={(
+            <ContextualInspector
+              activeTab={rightPanelTab}
+              historyTarget={historyTarget}
+              onSelectTab={setRightPanelTab}
+              project={activeProject}
+              savedProjects={savedProjects}
+              selectedEntity={selectedEntity}
+              selectedRelationship={selectedRelationship}
+              onSelectEntity={entity => {
+                setSelectedEntityId(entity ? (entity.id ?? entity.name) : null);
+                if (entity) setSelectedRelationshipId(null);
+              }}
+              onSelectRelationship={relationship => {
+                setSelectedRelationshipId(relationship?.id ?? null);
+                if (relationship) setSelectedEntityId(null);
+              }}
+              onAttributeChange={handleAttributeChange}
+              onRenameEntity={handleRenameEntity}
+              onAddEntity={handleAddEntity}
+              onUpsertRelationship={handleUpsertRelationship}
+              onUpdateRelationshipById={handleUpdateRelationshipById}
+              onRemoveRelationship={handleRemoveRelationship}
+              onUpdateStoryBible={handleUpdateStoryBible}
+              storyBibleErrors={storyBibleErrors}
+              focusedStoryBibleField={focusedStoryBibleField}
+              consistencyIssues={consistencyIssues}
+              onNavigateConsistencyTarget={handleNavigateConsistencyTarget}
+              onRestoreRevision={handleRestoreRevision}
+              onSwitchProject={handleSwitchProject}
+              onCreateNewProject={handleCreateNewProject}
+              onDeleteProject={handleDeleteProject}
+              onExportJson={handleExportJson}
+              onExportStoryBibleMarkdown={handleExportStoryBibleMarkdown}
+              onExportPromptText={handleExportPromptText}
+              onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
+              onExportManuscriptDocx={manuscriptSections(activeProject).length > 0 ? exportManuscriptDocx : undefined}
+              onExportManuscriptText={manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined}
+              onOpenReviewDiagnostics={() => { if (allowNavigation()) setWorkspaceMode('review'); }}
+              onJumpToSection={sectionId => {
+                if (!allowNavigation()) return;
+                setFocusedSectionId(sectionId);
+                setWorkspaceMode('write');
+              }}
+              aiConfigured={aiConfigured}
+              onSendOpportunityToReview={handleSendOpportunityToReview}
+              contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
+              onExportContent={exportContent}
+              onExportContentBundle={exportContentBundle}
+              onCreateOpportunity={handleCreateOpportunity}
+              onTransitionOpportunity={handleTransitionOpportunity}
+              onImportProjectJson={handleImportProjectJson}
+              onPreviewProjectJson={parseProjectBackup}
+              isLoading={isGraphLoading}
+            />
+          )}
+        />
 
-        {/* Right Panel (3 cols on xl): Contextual Inspector, Story Bible, Consistency, History & Export */}
-        <div
-          className={`xl:col-span-3 h-full min-h-0 ${
-            mobileTab === 'inspector' ? 'flex flex-col' : 'hidden xl:flex xl:flex-col'
-          }`}
-        >
-          <ContextualInspector
-            activeTab={rightPanelTab}
-            historyTarget={historyTarget}
-            onSelectTab={setRightPanelTab}
-            project={activeProject}
-            savedProjects={savedProjects}
-            selectedEntity={selectedEntity}
-            selectedRelationship={selectedRelationship}
-            onSelectEntity={(ent) => {
-              setSelectedEntityId(ent ? (ent.id ?? ent.name) : null);
-              if (ent) setSelectedRelationshipId(null);
-            }}
-            onSelectRelationship={(rel) => {
-              setSelectedRelationshipId(rel?.id ?? null);
-              if (rel) setSelectedEntityId(null);
-            }}
-            onAttributeChange={handleAttributeChange}
-            onRenameEntity={handleRenameEntity}
-            onAddEntity={handleAddEntity}
-            onUpsertRelationship={handleUpsertRelationship}
-            onUpdateRelationshipById={handleUpdateRelationshipById}
-            onRemoveRelationship={handleRemoveRelationship}
-            onUpdateStoryBible={handleUpdateStoryBible}
-            storyBibleErrors={storyBibleErrors}
-            focusedStoryBibleField={focusedStoryBibleField}
-            consistencyIssues={consistencyIssues}
-            onNavigateConsistencyTarget={handleNavigateConsistencyTarget}
-            onRestoreRevision={handleRestoreRevision}
-            onSwitchProject={handleSwitchProject}
-            onCreateNewProject={handleCreateNewProject}
-            onDeleteProject={handleDeleteProject}
-            onExportJson={handleExportJson}
-            onExportStoryBibleMarkdown={handleExportStoryBibleMarkdown}
-            onExportPromptText={handleExportPromptText}
-            onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
-            onExportManuscriptDocx={manuscriptSections(activeProject).length > 0 ? exportManuscriptDocx : undefined}
-            onExportManuscriptText={manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined}
-            onOpenReviewDiagnostics={() => {
-              if (allowNavigation()) setWorkspaceMode('review');
-            }}
-            onJumpToSection={(sectionId) => {
-              if (!allowNavigation()) return;
-              setFocusedSectionId(sectionId);
-              setWorkspaceMode('write');
-            }}
-            aiConfigured={aiConfigured}
-            onSendOpportunityToReview={handleSendOpportunityToReview}
-            contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
-            onExportContent={exportContent}
-            onExportContentBundle={exportContentBundle}
-            onCreateOpportunity={handleCreateOpportunity}
-            onTransitionOpportunity={handleTransitionOpportunity}
-            onImportProjectJson={handleImportProjectJson}
-            onPreviewProjectJson={parseProjectBackup}
-            isLoading={isGraphLoading}
-          />
-        </div>
-      </main>
+        <nav aria-label="Mobile workspace panels" className="shrink-0 border-t border-pcc-line bg-pcc-surface px-2 py-1.5 dark:border-pcc-dark-line dark:bg-pcc-dark-surface xl:hidden">
+          <div className="grid grid-cols-4 gap-1">
+            {([['decisions', `Inbox (${pendingDecisionCount})`], ['graph', 'Belief Graph'], ['inspector', 'Inspector'], ['output', 'Output']] as const).map(([tabKey, label]) => (
+              <button key={tabKey} type="button" onClick={() => setMobileTab(tabKey)} aria-current={mobileTab === tabKey ? 'page' : undefined}
+                className={`min-h-11 rounded-md px-1 text-center text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus ${mobileTab === tabKey ? 'bg-pcc-canvas text-pcc-action dark:bg-pcc-dark-canvas dark:text-pcc-dark-ink' : 'text-pcc-muted dark:text-pcc-dark-muted'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </nav>
 
-      {/* Mobile Workspace Switcher (< xl) */}
-      <nav
-        aria-label="Mobile workspace panels"
-        className="xl:hidden bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 grid grid-cols-4 gap-1 px-2 py-1.5 flex-shrink-0"
-      >
-        {(
-          [
-            ['decisions', `Inbox (${pendingDecisionCount})`],
-            ['graph', 'Belief Graph'],
-            ['inspector', 'Inspector'],
-            ['output', 'Output'],
-          ] as const
-        ).map(([tabKey, label]) => (
-          <button
-            key={tabKey}
-            type="button"
-            onClick={() => setMobileTab(tabKey)}
-            aria-current={mobileTab === tabKey ? 'page' : undefined}
-            className={`py-2 px-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap text-center ${
-              mobileTab === tabKey
-                ? 'text-blue-600 dark:text-blue-400 bg-blue-50/50 dark:bg-blue-950/40'
-                : 'text-gray-600 dark:text-gray-400'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
-
-      {/* Bottom Area: Undo/Redo, Pending Change Review & Generation */}
-      <WorkspaceBottomBar
-        pendingDecisionCount={pendingDecisionCount}
-        canUndo={undoState.past.length > 0}
-        canRedo={undoState.future.length > 0}
-        undoLabel={undoState.past[undoState.past.length - 1]?.label}
-        redoLabel={undoState.future[0]?.label}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        onAcceptAllPending={handleAcceptAllPendingDecisions}
-        onReviewChanges={() => setIsReviewModalOpen(true)}
-        reviewButtonRef={reviewButtonRef}
-        mode={mode}
-        onModeChange={handleModeChange}
-        onGenerate={handleGenerateOutput}
-        isGenerating={isGenerating}
-        showOutputDrawer={showOutputDrawer}
-        onToggleOutputDrawer={() => setShowOutputDrawer((prev) => !prev)}
-        revisionCount={activeProject.revision}
-        isOutdated={isCurrentOutputOutdated}
-      />
+        <WorkspaceBottomBar
+          pendingDecisionCount={pendingDecisionCount}
+          canUndo={undoState.past.length > 0}
+          canRedo={undoState.future.length > 0}
+          undoLabel={undoState.past[undoState.past.length - 1]?.label}
+          redoLabel={undoState.future[0]?.label}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          onAcceptAllPending={handleAcceptAllPendingDecisions}
+          onReviewChanges={() => setIsReviewModalOpen(true)}
+          reviewButtonRef={reviewButtonRef}
+          mode={mode}
+          onModeChange={handleModeChange}
+          onGenerate={handleGenerateOutput}
+          isGenerating={isGenerating}
+          showOutputDrawer={showOutputDrawer}
+          onToggleOutputDrawer={() => setShowOutputDrawer(value => !value)}
+          revisionCount={activeProject.revision}
+          isOutdated={isCurrentOutputOutdated}
+        compactOnMobile={workspaceMode === 'plan'}
+        />
       </div>
 
       <ReviewDiffModal
