@@ -59,7 +59,7 @@ The M0 audit's seven moderate rows were a single advisory cascade: GHSA-g3hv-75w
 
 The accepted Node engine is `^22.13.0 || >=24.0.0`; React 19 and Tailwind 4 remain unchanged. Vite 8.3.8 and `@vitejs/plugin-react` 6.3.0 are stable releases with verified peer compatibility. The TypeScript native compiler/compatibility package division is confirmed by the actual executable symlinks and version output, not inferred from the dependency declarations.
 
-The final CI run must be attached to the exact final PR head and show the Node 22 and 24 verification matrix plus browser job. A candidate-specific CodeScene comparison could not be produced because no CodeScene connector/tool is available in this environment; the exact commit identity of the previously opened hosted analysis remains unverified. No merge or deployment is authorized by this record.
+A candidate-specific CodeScene comparison could not be produced because no CodeScene connector/tool is available in this environment; the exact commit identity of the previously opened hosted analysis remains unverified. No merge or deployment is authorized by this record.
 
 Evidence files in this directory are synthetic QA artifacts. The consolidated pull request body records exact final base, head, tree and hosted CI status after publication.
 
@@ -68,3 +68,28 @@ Evidence files in this directory are synthetic QA artifacts. The consolidated pu
 The first hosted run on the published candidate `4b2b62d07bec73edd14801f540985db722290a96` (run `45659512863`) passed the Node 22.x and Node 24.x jobs but exposed one failure in the exact Node 22.13.0 job: `node server.ts` did not enable Node's experimental native type stripping and failed with `ERR_UNKNOWN_FILE_EXTENSION`. This contradicted the declared Node floor and the intended production start command. The same test passed on the candidate's other Node matrix entries.
 
 The correction makes the runtime opt-in explicit in `npm start`, CI's production browser server, and the local Stage0 server launchers; the regression test now asserts that startup contract and imports the server using the same flag. On corrected head `a6319732fbac2c376ac208420a14e64f9d803340`, clean `npm ci`, `npm ls --all`, typecheck, lint, the 302-test suite under Node 22.13.0, production build, both npm audits, focused Node 22.13.0/24.0.0 checks, and a key-free Node 22.13.0 production startup smoke all passed. Hosted exact-head run [`45660707659`](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45660707659) passed the Node 22.13.0, Node 22.x, and Node 24.x verification jobs plus Chromium E2E-A through E2E-I. The run's SHA is the corrected code candidate; any subsequent documentation-only head still requires its own exact-head CI result before final handoff.
+
+## Principal Architect bounded closure — F01–F03
+
+Evidence chronology is tied to the actual candidate identities:
+
+- The broad local browser qualification (Stage0, E2E A–I, Narrative Workspace and Q06) was captured on `4f70e0af1705c3f22593fae35c2e528e79019742`. It is historical evidence and is not attributed to later commits.
+- The Node runtime floor/launcher correction followed. The exact Node `22.13.0` check exposed the need for `--experimental-strip-types`; `a6319732fbac2c376ac208420a14e64f9d803340` contains that correction.
+- Hosted CI run [`45660707659`](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45660707659) passed on `a6319732`, including Node `22.13.0`, Node `22.x`, Node `24.x`, and Chromium E2E A–I.
+- The focused F01–F02 checks below were run after that review on this branch; their screenshots and results are included here. Exact final-head hosted CI is reported with the closure outcome.
+
+### F01 — React Fast Refresh behavior
+
+On Node `v26.12.1` / npm `11.20.0`, an isolated synthetic Vite development page at `http://127.0.0.1:4381` established in Chromium `ws://127.0.0.1:4381/?token=…`. A temporary exported React component had a local counter incremented to `2`; changing its rendered marker from `delta` to `epsilon` updated the browser without navigation. `performance.timeOrigin` stayed `1795627132382.6` before and after, the counter remained `2`, and the Vite log reported `hmr update /hmr-probe.tsx`. The final successful browser console had no errors. All three temporary source files were removed after the check. Screenshot: [F01 Fast Refresh](evidence/f01-fast-refresh.png). This qualifies the normal HMR/React Refresh path; the accepted disabled-HMR path was not changed or repeated.
+
+### F02 — EPUB production import
+
+A 1,254-byte synthetic EPUB was imported through the production UI in Chromium on Node `v26.12.1` / npm `11.20.0`. PCC showed its extracted 197 characters / 34 words and one source heading, including Turkish characters. The emitted EPUB inflate worker asset returned HTTP 200 during the import. Source-only import created `M5 F02 Imported EPUB` without analysis. The persisted IndexedDB record had `persistedRevision: 1`, the original filename and matching SHA-256 digest; its Unicode manuscript text remained present after a full page reload. The only `/api/ai/*` request observed was `/api/ai/capabilities` (configuration discovery); non-capability AI routes were guarded and none were requested or blocked. No provider/model request or page error occurred. Screenshot: [F02 source-only EPUB import](evidence/f02-epub-source-only.png).
+
+### F03 — Architecture and dependency provenance
+
+The README now describes Vite 8 and the compiler split: `npm run typecheck` invokes native TypeScript 7; TypeScript 6 is the classic compiler API compatibility package for tools that need it.
+
+The accepted-base lockfile contained 38 production-classified records that are absent from the normalized lockfile; all 38 were marked `peer: true` and `optional: true`. They form the optional `@modelcontextprotocol/sdk` `1.32.2` peer subtree of `@google/genai` `3.3.0` (21 entries nested under the SDK and 17 hoisted dependency records). The current install has no SDK package (`npm ls @modelcontextprotocol/sdk --all` returns empty), and repository source has no direct SDK import. `@google/genai` remains installed at `3.3.0` with its required `google-auth-library`, `p-retry`, `protobufjs`, and `ws` dependencies present. This is normalization/removal of an optional peer subtree, not loss of a required application runtime dependency; obsolete lock entries were not restored.
+
+The custom disabled-HMR transform is an inherited compatibility workaround for the existing `DISABLE_HMR=true` contract. It rewrites Vite's internal client connection call only when that flag is set, alongside `server.hmr: false` and `server.ws: false`; normal HMR remains enabled and passed F01. Its dependence on an internal Vite client path remains a maintenance risk, documented in [M3 Vite migration](M3-vite.md). The existing large bundle warning remains (main JS 1,006.32 kB, PDF worker 1,050.95 kB); the inherited small-target/contrast findings and absence of screen-reader testing/full WCAG 2.2 AA certification remain as documented above. No UI or dependency scope was added for this closure.

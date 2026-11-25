@@ -19,7 +19,7 @@ An intelligent, interactive visual story-planning and prompt-refinement workspac
 
 ## Architecture & Security
 
-- **Frontend:** React 19, TypeScript (strict mode), Vite 6, Tailwind CSS v4, custom SVG force-directed graph layout (`lib/graphLayout.ts`) with interactive pointer/wheel zoom and pan
+- **Frontend:** React 19, native TypeScript 7 compiler with the classic TypeScript 6 API compatibility package for tooling, Vite 8, Tailwind CSS v4, custom SVG force-directed graph layout (`lib/graphLayout.ts`) with interactive pointer/wheel zoom and pan
 - **Backend:** Express 5 (`server.ts`) mounting Vite in development and serving `dist/` in production, with configurable per-client rate limiting (`server/routes.ts`)
 - **Runtime Requirement:** Node.js `^22.13.0 || >=24.0.0` (required by the supported TypeScript, ESLint and Vite toolchain; `npm start` uses Node's `--experimental-strip-types` support to run `server.ts`)
 - **AI Integration:** Server-side `@google/genai` SDK (`server/aiService.ts`) behind `/api/*` endpoints (`/api/analyze`, `/api/clarify`, `/api/refine`, `/api/batch-edit`, `/api/generate/story`, `/api/generate/images`) with Zod schema validation (`shared/schemas.ts`, max `8,000` compiled prompt characters) and bounded retry/backoff (`server/retry.ts`)
