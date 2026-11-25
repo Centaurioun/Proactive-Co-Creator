@@ -55,6 +55,11 @@ import {
 import { AppApiError, classifyGeminiError } from './errors.ts';
 import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
+import { createProviderHubRouter, resolveClientSelection } from './providerHubRoutes.ts';
+import { runWithAiProviderContext } from './providers/requestContext.ts';
+import { assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
+import { getCachedProviderModel } from './providers/runtime.ts';
+import type { AiOperation } from './aiBudget.ts';
 import { extractNarrativeChunk } from './narrative/extractionService.ts';
 import {
   analyzeNarrativeSync,
@@ -198,6 +203,50 @@ export function createApiRouter(
     existing.count += 1;
     next();
   });
+
+  router.use((req, res, next) => {
+    if (req.path === '/health' || req.path.startsWith('/ai/provider-hub/')) { next(); return; }
+    const hasSelection = ['x-pcc-ai-connection', 'x-pcc-ai-model', 'x-pcc-ai-reasoning'].some((name) => req.get(name) !== undefined);
+    if (!hasSelection) { next(); return; }
+    const selection = resolveClientSelection(req);
+    if (!selection) {
+      res.status(403).json({ error: { code: 'PROVIDER_SELECTION_INVALID', message: 'The selected AI connection is unavailable in this environment. Choose an available connection explicitly.' } });
+      return;
+    }
+    const path = req.path;
+    const operation: AiOperation = path === '/analyze' ? 'analyze'
+      : path === '/clarify' ? 'clarify'
+      : path === '/refine' ? 'polish'
+      : path === '/batch-edit' ? 'batch-edit'
+      : path === '/generate/story' ? 'story'
+      : path === '/generate/images' ? 'image'
+      : path === '/narrative/import/extract' ? 'narrative-import'
+      : path.startsWith('/narrative/diagnostics/') ? 'diagnostics'
+      : path.startsWith('/narrative/sync/') ? 'sync'
+      : path.startsWith('/narrative/writing/') ? 'writing'
+      : path.startsWith('/narrative/opportunities/') ? 'opportunities'
+      : path.startsWith('/narrative/import/enhance') ? 'import-enhance'
+      : 'story';
+    try {
+      assertProviderOperation(selection.connectionId, operation);
+      if (selection.connectionId !== 'gemini-managed' && !selection.modelId) {
+        throw new AppApiError('MODEL_UNSUPPORTED', 'Refresh this connection’s model list and select a model before using it.', 422, false);
+      }
+      if (selection.modelId) {
+        const model = getCachedProviderModel(selection.connectionId, selection.modelId);
+        if (!model) throw new AppApiError('MODEL_UNSUPPORTED', 'The selected model is not in the latest server-verified account catalog. Refresh the model list.', 422, false);
+        assertModelOperation(model, operation);
+        assertReasoningSelection(model, selection.reasoningLevel);
+      }
+    } catch (error) {
+      const failure = error instanceof AppApiError ? error : new AppApiError('MODEL_UNSUPPORTED', 'The selected AI model cannot run this operation.', 422, false);
+      res.status(failure.statusCode).json({ error: failure.toPayload() });
+      return;
+    }
+    runWithAiProviderContext({ selection, operation }, next);
+  });
+
+  router.use('/ai/provider-hub', createProviderHubRouter());
 
   router.post('/analyze', async (req, res) => {
     const parsed = AnalyzeRequestSchema.safeParse(req.body);

@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { GoogleGenAI } from '@google/genai';
 import { AppApiError } from './errors.ts';
+import { getAiProviderRequestContext } from './providers/requestContext.ts';
+import { createLegacyAiClient, type LegacyAiClientLike } from './providers/runtime.ts';
 
 let cachedKey: string | null = null;
 let cachedClient: GoogleGenAI | null = null;
@@ -98,7 +100,7 @@ export function hasConfiguredGeminiKey(): boolean {
   return Boolean(key);
 }
 
-export function getGeminiClient(): GoogleGenAI {
+export function getManagedGeminiClient(): GoogleGenAI {
   ensureServerEnvLoaded();
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -124,4 +126,24 @@ export function getGeminiClient(): GoogleGenAI {
 
   return cachedClient;
 }
+
+/** Existing callers retain the SDK-shaped surface while each HTTP request can select a validated adapter. */
+export function getGeminiClient(): GoogleGenAI {
+  const request = getAiProviderRequestContext();
+  if (!request) return getManagedGeminiClient();
+  if (request.selection.connectionId === 'gemini-managed' && !request.selection.modelId && !request.selection.reasoningLevel) {
+    return getManagedGeminiClient();
+  }
+  const selected = createLegacyAiClient(
+    request.selection,
+    request.operation,
+    getSessionGeminiKey(),
+    () => getManagedGeminiClient() as unknown as LegacyAiClientLike,
+  );
+  return selected as unknown as GoogleGenAI;
+}
+
+let sessionGeminiKey: string | undefined;
+export function setSessionGeminiKey(value: string | undefined): void { sessionGeminiKey = value; }
+function getSessionGeminiKey(): string | undefined { return sessionGeminiKey; }
 

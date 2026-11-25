@@ -77,6 +77,16 @@ export class ClientApiError extends Error {
   }
 }
 
+let providerRequestGeneration = 0;
+let providerStorageListenerInstalled = false;
+const activeProviderRequests = new Set<AbortController>();
+
+export function invalidateAiProviderRequests(): void {
+  providerRequestGeneration += 1;
+  for (const controller of activeProviderRequests) controller.abort(new DOMException('AI provider settings changed.', 'AbortError'));
+  activeProviderRequests.clear();
+}
+
 export function isAbortError(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof ClientApiError && error.code === 'CANCELLED') return true;
@@ -96,39 +106,103 @@ async function postJson<TResponse>(
   body: unknown,
   signal?: AbortSignal
 ): Promise<TResponse> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  const payload = (await response.json().catch(() => null)) as
-    | { error?: ApiErrorPayload }
-    | TResponse
-    | null;
-
-  if (!response.ok) {
-    const errPayload =
-      payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;
-    throw new ClientApiError(
-      errPayload?.code ?? 'UPSTREAM_ERROR',
-      errPayload?.message ?? `Request failed with status ${response.status}.`,
-      errPayload?.retryable ?? response.status >= 500,
-      response.status
-    );
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function' && !providerStorageListenerInstalled) {
+    window.addEventListener('storage', event => {
+      if (event.key === 'pcc.ai.providerPreferences.v1') invalidateAiProviderRequests();
+    });
+    providerStorageListenerInstalled = true;
   }
-
-  if (!payload || typeof payload !== 'object') {
-    throw new ClientApiError(
-      'INVALID_RESPONSE',
-      'Server returned an invalid JSON payload.',
-      false,
-      response.status
-    );
+  const providerHeaders: Record<string, string> = {};
+  let rawPreferences: string | null;
+  if (typeof window === 'undefined') rawPreferences = null;
+  else {
+  try {
+    rawPreferences = window.localStorage.getItem('pcc.ai.providerPreferences.v1');
+  } catch {
+    throw new ClientApiError('UPSTREAM_ERROR', 'AI provider preferences could not be read. Open AI Settings and confirm the selected billing path before retrying.', false, 503);
   }
+  }
+  if (rawPreferences) {
+    try {
+      const raw = rawPreferences;
+      const preferences = JSON.parse(raw) as {
+        defaultConnectionId?: string; defaultTextModelId?: string; defaultReasoningLevel?: string;
+        operationOverrides?: Record<string, { connectionId?: string; modelId?: string; reasoningLevel?: string }>;
+      };
+      if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences) || typeof preferences.defaultConnectionId !== 'string') {
+        throw new Error('Invalid provider preferences');
+      }
+      const operation = url.includes('/generate/images') ? 'image'
+        : url.includes('/narrative/import/extract') ? 'narrative-import'
+        : url.includes('/narrative/diagnostics/') ? 'diagnostics'
+        : url.includes('/narrative/sync/') ? 'sync'
+        : url.includes('/narrative/writing/') ? 'writing'
+        : url.includes('/narrative/opportunities/') ? 'opportunities'
+        : url.includes('/narrative/import/enhance') ? 'import-enhance'
+        : url.includes('/generate/story') ? 'story'
+        : url.includes('/batch-edit') ? 'batch-edit'
+        : url.includes('/clarify') ? 'clarify'
+        : url.includes('/refine') ? 'polish'
+        : url.includes('/analyze') ? 'analyze' : undefined;
+      const override = operation ? preferences.operationOverrides?.[operation] : undefined;
+      if (operation === 'image' && override) {
+        throw new Error('Image provider overrides are unavailable until the image capability and budget path is qualified.');
+      }
+      const connectionId = operation === 'image' ? 'gemini-managed' : override?.connectionId ?? preferences.defaultConnectionId;
+      const modelId = override?.modelId ?? (operation === 'image' ? undefined : preferences.defaultTextModelId);
+      const reasoning = override?.reasoningLevel ?? preferences.defaultReasoningLevel;
+      if (connectionId) providerHeaders['x-pcc-ai-connection'] = connectionId;
+      if (modelId) providerHeaders['x-pcc-ai-model'] = modelId;
+      if (operation !== 'image' && reasoning && reasoning !== 'default') providerHeaders['x-pcc-ai-reasoning'] = reasoning;
+    } catch {
+      throw new ClientApiError('VALIDATION_ERROR', 'AI provider preferences are invalid. Open AI Settings and confirm the selected billing path before retrying.', false, 400);
+    }
+  }
+  const requestGeneration = providerRequestGeneration;
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(new DOMException('The request was cancelled.', 'AbortError'));
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
+  activeProviderRequests.add(controller);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...providerHeaders },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: ApiErrorPayload }
+      | TResponse
+      | null;
+    if (requestGeneration !== providerRequestGeneration || controller.signal.aborted) {
+      throw new ClientApiError('CANCELLED', 'The AI response was discarded because its provider selection changed.', false, 499);
+    }
+    if (!response.ok) {
+      const errPayload =
+        payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;
+      throw new ClientApiError(
+        errPayload?.code ?? 'UPSTREAM_ERROR',
+        errPayload?.message ?? `Request failed with status ${response.status}.`,
+        errPayload?.retryable ?? response.status >= 500,
+        response.status
+      );
+    }
 
-  return payload as TResponse;
+    if (!payload || typeof payload !== 'object') {
+      throw new ClientApiError(
+        'INVALID_RESPONSE',
+        'Server returned an invalid JSON payload.',
+        false,
+        response.status
+      );
+    }
+
+    return payload as TResponse;
+  } finally {
+    activeProviderRequests.delete(controller);
+    signal?.removeEventListener('abort', abortFromCaller);
+  }
 }
 
 export async function analyzePromptToBeliefGraph(

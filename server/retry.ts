@@ -4,6 +4,7 @@
  */
 
 import { AppApiError, isRetryableGeminiError } from './errors.ts';
+import { getAiProviderRequestContext } from './providers/requestContext.ts';
 
 export interface RetryOptions {
   maxAttempts?: number;
@@ -49,7 +50,8 @@ export async function withRetry<T>(
   fn: () => Promise<T>,
   options: RetryOptions = {}
 ): Promise<T> {
-  const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
+  const selectedConnection = getAiProviderRequestContext()?.selection.connectionId;
+  const maxAttempts = selectedConnection === 'chatgpt-plan' ? 1 : Math.max(1, options.maxAttempts ?? 3);
   const initialDelayMs = options.initialDelayMs ?? 800;
   const maxDelayMs = options.maxDelayMs ?? 12000;
   const sleep = options.sleep ?? defaultSleep;

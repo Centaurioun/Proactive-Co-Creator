@@ -4,6 +4,7 @@
  */
 
 import { ThinkingLevel, Type } from '@google/genai';
+import { randomUUID } from 'node:crypto';
 import type {
   BatchEditProposalResult,
   BeliefState,
@@ -22,6 +23,7 @@ import { AppApiError, classifyGeminiError } from './errors.ts';
 import { getGeminiClient } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
 import { withRetry } from './retry.ts';
+import { acquireAiSlot, AI_OPERATION_POLICIES, estimateTokensFromText, evaluateOperationBudget, reserveAggregateOperationUsage } from './aiBudget.ts';
 
 const TEXT_TIMEOUT_MS = 45_000;
 const IMAGE_TIMEOUT_MS = 60_000;
@@ -541,14 +543,29 @@ export async function generateImagesBatch(
   prompt: string,
   signal?: AbortSignal
 ): Promise<ImageGenerationResult> {
+  const policy = AI_OPERATION_POLICIES.image;
+  const budget = evaluateOperationBudget({
+    operation: 'image', model: policy.model, inputChars: prompt.length,
+    estimatedInputTokens: estimateTokensFromText(prompt),
+    maxInputTokens: policy.maxInputTokens, maxOutputTokens: policy.maxOutputTokens,
+  });
+  if (!budget.ok) throw new AppApiError('VALIDATION_ERROR', budget.reason ?? 'The image request exceeds its conservative application budget.', 400, false);
+  if (signal?.aborted) throw new AppApiError('CANCELLED', 'The request was cancelled.', 499, false);
+  const slot = acquireAiSlot('image');
+  if (!slot.ok) throw new AppApiError('RATE_LIMITED', slot.reason, 429, true);
+  const operationKey = randomUUID();
+
+  try {
   const ai = getGeminiClient();
 
   const generateSingleImage = async (): Promise<{ image: string | null; error: AppApiError | null }> => {
     const { signal: slotSignal, cleanup } = combineSignals(signal, IMAGE_TIMEOUT_MS);
     try {
       const response = await withRetry(
-        () =>
-          ai.models.generateContent({
+        () => {
+          const aggregate = reserveAggregateOperationUsage({ policy, operationKey, inputTokens: budget.inputTokens });
+          if (!aggregate.ok) throw new AppApiError('RATE_LIMITED', aggregate.reason, 429, false);
+          return ai.models.generateContent({
             model: GEMINI_MODELS.image,
             contents: { parts: [{ text: prompt }] },
             config: {
@@ -557,7 +574,8 @@ export async function generateImagesBatch(
                 aspectRatio: '1:1',
               },
             },
-          }),
+          });
+        },
         { maxAttempts: 2, initialDelayMs: 1000, signal: slotSignal }
       );
 
@@ -621,4 +639,7 @@ export async function generateImagesBatch(
     failedCount,
     warning,
   };
+  } finally {
+    slot.release();
+  }
 }

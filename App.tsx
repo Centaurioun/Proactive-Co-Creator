@@ -68,6 +68,7 @@ import DecisionInboxPanel from './components/DecisionInboxPanel';
 import Header, { type WorkspaceSection } from './components/Header';
 import { getSavePresentation } from './lib/workspace/savePresentation';
 import InfoModal from './components/InfoModal';
+import AiConnectionsPanel from './components/settings/AiConnectionsPanel';
 import OutputDisplay from './components/OutputGallery';
 import PromptInput from './components/PromptInput';
 import WorkspaceBottomBar from './components/WorkspaceBottomBar';
@@ -230,6 +231,7 @@ function App() {
   const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
+  const [showAiSettings, setShowAiSettings] = useState<boolean>(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [createProjectPending, setCreateProjectPending] = useState(false);
   const [manuscriptDraftDirty, setManuscriptDraftDirty] = useState(false);
@@ -2429,6 +2431,7 @@ function App() {
               onClick={() => { if (allowNavigation()) { setAdoptArtifactId(undefined); setWorkspaceMode(mode); } }}>{label}</button>
           ))}
         </div>
+        <button type="button" className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas" onClick={() => { if (allowNavigation()) setShowAiSettings(true); }} aria-haspopup="dialog">AI settings</button>
         <div className="ml-auto flex flex-wrap justify-end gap-1 sm:hidden">
           <button type="button" className="min-h-11 rounded-md bg-pcc-action px-2.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus" onClick={() => { if (allowNavigation()) setCreateProjectOpen(true); }}>New</button>
           <button type="button" disabled={!hydrationSettled} className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45" onClick={() => { if (allowNavigation()) setWorkspaceMode('import'); }}>Import</button>
@@ -2791,6 +2794,15 @@ function App() {
       />
 
       <InfoModal isOpen={showInfoModal} onClose={() => setShowInfoModal(false)} />
+      {showAiSettings && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAiSettings(false); }}>
+        <section role="dialog" aria-modal="true" aria-labelledby="ai-settings-title" className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-pcc-line bg-pcc-surface p-4 text-pcc-ink shadow-xl dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink sm:p-6">
+          <header className="mb-4 flex items-center justify-between gap-3">
+            <h2 id="ai-settings-title" className="font-display text-lg font-bold">AI settings</h2>
+            <button type="button" className="min-h-11 rounded-md px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus" onClick={() => setShowAiSettings(false)}>Close</button>
+          </header>
+          <AiConnectionsPanel />
+        </section>
+      </div>}
     </div>
   );
 }

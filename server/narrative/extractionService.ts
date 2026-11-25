@@ -4,7 +4,8 @@ import { filterExtractionScope } from '../../lib/narrative/import/scope.ts';
 import { AppApiError, classifyGeminiError } from '../errors.ts';
 import { getGeminiClient } from '../geminiClient.ts';
 import { GEMINI_MODELS } from '../models.ts';
-import { AI_OPERATION_POLICIES, reserveAggregateOperationUsage } from '../aiBudget.ts';
+import { AI_OPERATION_POLICIES, estimateTokensFromText, reserveAggregateOperationUsage } from '../aiBudget.ts';
+import { getAiProviderRequestContext } from '../providers/requestContext.ts';
 
 const MAX_INPUT_TOKENS_PER_CHUNK = 8_000;
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -62,6 +63,7 @@ export async function extractNarrativeChunk(
   client: ReturnType<typeof getGeminiClient> = getGeminiClient(),
 ) {
   const ai = client;
+  const selectedModel = getAiProviderRequestContext()?.selection.modelId ?? GEMINI_MODELS.text;
   const abort = new AbortController();
   const timeout = setTimeout(() => abort.abort(new Error('Narrative import extraction timed out.')), REQUEST_TIMEOUT_MS);
   const onAbort = () => abort.abort(externalSignal?.reason);
@@ -89,7 +91,7 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
   try {
     let countTimer: ReturnType<typeof setTimeout> | undefined;
     const tokenCount = await Promise.race([
-      ai.models.countTokens({ model: GEMINI_MODELS.text, contents: prompt, config: { abortSignal: abort.signal } }),
+      ai.models.countTokens({ model: selectedModel, contents: prompt, config: { abortSignal: abort.signal } }),
       new Promise<never>((_, reject) => {
         countTimer = setTimeout(() => {
           abort.abort(new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true));
@@ -101,19 +103,23 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
     if (typeof tokenCount.totalTokens !== 'number' || !Number.isSafeInteger(tokenCount.totalTokens) || tokenCount.totalTokens < 0) {
       throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; extraction was not started.', 503, false);
     }
-    if (tokenCount.totalTokens > MAX_INPUT_TOKENS_PER_CHUNK) {
-      throw new AppApiError('VALIDATION_ERROR', `This segment exceeds the safe ${MAX_INPUT_TOKENS_PER_CHUNK.toLocaleString()} input-token budget. Reduce the segment size and retry.`, 413, false);
+    const tokenSource = (tokenCount as { totalTokens?: number; source?: 'provider-count' | 'estimate' }).source;
+    const inputTokensForBudget = tokenSource === 'estimate'
+      ? Math.max(estimateTokensFromText(prompt), tokenCount.totalTokens)
+      : tokenCount.totalTokens;
+    if (inputTokensForBudget > MAX_INPUT_TOKENS_PER_CHUNK) {
+      throw new AppApiError('VALIDATION_ERROR', `This segment exceeds the safe ${MAX_INPUT_TOKENS_PER_CHUNK.toLocaleString()} ${tokenSource === 'estimate' ? 'estimated' : ''} input-token budget. Reduce the segment size and retry.`, 413, false);
     }
     const aggregateBudget = reserveAggregateOperationUsage({
       policy: AI_OPERATION_POLICIES['narrative-import'],
       operationKey: request.digest,
-      inputTokens: tokenCount.totalTokens,
+      inputTokens: inputTokensForBudget,
     });
     if (!aggregateBudget.ok) {
       throw new AppApiError('VALIDATION_ERROR', aggregateBudget.reason, 429, false);
     }
     const response = await ai.models.generateContent({
-      model: GEMINI_MODELS.text,
+      model: selectedModel,
       contents: prompt,
       config: {
         abortSignal: abort.signal,
