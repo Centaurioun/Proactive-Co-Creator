@@ -862,8 +862,9 @@ export interface AiTicketAuthority {
   ) => { ticket: AiRequestTicket; signal: AbortSignal };
   isCurrent: (ticket: AiRequestTicket) => boolean;
   isActionLoading: (projectId: string, action: AiRequestAction) => boolean;
-  hasProjectTickets: (projectId: string) => boolean;
+  hasProjectTickets: (projectId: string, except?: AiRequestAction) => boolean;
   clearIfCurrent: (ticket: AiRequestTicket) => boolean;
+  cancelIfCurrent: (ticket: AiRequestTicket) => void;
   invalidateProject: (projectId: string) => void;
   invalidateAll: () => void;
 }
@@ -879,6 +880,13 @@ export function createAiTicketAuthority(
     onChange?.(tickets);
   };
 
+  const clearIfCurrent = (ticket: AiRequestTicket) => {
+    if (!isTicketCurrent(tickets, ticket)) return false;
+    controllers.delete(makeTicketSlotKey(ticket.projectId, ticket.action));
+    emit(clearTicket(tickets, ticket));
+    return true;
+  };
+
   return {
     getTickets: () => tickets,
     beginSlot: (project, action, now = Date.now()) => {
@@ -892,19 +900,13 @@ export function createAiTicketAuthority(
     },
     isCurrent: (ticket) => isTicketCurrent(tickets, ticket),
     isActionLoading: (projectId, action) => isProjectActionLoading(tickets, projectId, action),
-    hasProjectTickets: (projectId) =>
-      Object.values(tickets).some((ticket) => ticket.projectId === projectId),
-    clearIfCurrent: (ticket) => {
-      if (!isTicketCurrent(tickets, ticket)) {
-        return false;
-      }
-      const slotKey = makeTicketSlotKey(ticket.projectId, ticket.action);
-      const entry = controllers.get(slotKey);
-      if (entry && entry.requestId === ticket.requestId) {
-        controllers.delete(slotKey);
-      }
-      emit(clearTicket(tickets, ticket));
-      return true;
+    hasProjectTickets: (projectId, except) =>
+      Object.values(tickets).some(ticket => ticket.projectId === projectId && ticket.action !== except),
+    clearIfCurrent,
+    cancelIfCurrent: (ticket) => {
+      if (!isTicketCurrent(tickets, ticket)) return;
+      controllers.get(makeTicketSlotKey(ticket.projectId, ticket.action))?.controller.abort();
+      clearIfCurrent(ticket);
     },
     invalidateProject: (projectId) => {
       let changed = false;

@@ -24,7 +24,7 @@ interface DecisionInboxPanelProps {
   onRefreshClarifications: (preserveDrafts?: Record<string, string>) => void;
   isClarificationsLoading: boolean;
   clarificationError: string | null;
-  onPreviewBatchInstruction: (instruction: string) => Promise<BatchEditProposalResult>;
+  onPreviewBatchInstruction: (instruction: string) => Promise<BatchEditProposalResult | null>;
   onApplyBatchOperations: (preview: BatchEditProposalResult) => BatchCommitResult;
   onBatchPreviewChange?: (preview: BatchEditProposalResult | null) => void;
   onDraftValuesChange?: (drafts: Record<string, string>) => void;
@@ -148,7 +148,7 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
     setAcknowledgeUnhandledClauses(false);
     try {
       const result = await onPreviewBatchInstruction(trimmed);
-      setBatchPreview(result);
+      if (result) setBatchPreview(result);
     } catch (err) {
       setBatchError(err instanceof Error ? err.message : 'Failed to interpret batch instruction.');
     }
@@ -328,7 +328,7 @@ const DecisionInboxPanel: React.FC<DecisionInboxPanelProps> = ({
                               `the ${cand}`
                             );
                             setBatchInstruction(resolvedText);
-                            void onPreviewBatchInstruction(resolvedText).then(setBatchPreview);
+                            void runBatchPreviewForText(resolvedText);
                           }}
                           className="px-2 py-1 text-[11px] font-medium bg-white dark:bg-gray-800 border border-amber-400 dark:border-amber-700 rounded hover:bg-amber-100 dark:hover:bg-gray-700"
                         >

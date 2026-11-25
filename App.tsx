@@ -24,6 +24,7 @@ import {
   triggerRefinedPromptDownload,
   triggerStoryBibleMarkdownDownload,
 } from './lib/workspace/projectExports';
+import { buildClientBudgetDisclosure } from './lib/narrative/aiBudgetClient';
 import { sameProjectVersion } from './lib/controller/projectListSync';
 import StorageAlertBanner, { type StorageConflictAlert } from './components/workspace/StorageAlertBanner';
 import ReviewDiffModal from './components/workspace/ReviewDiffModal';
@@ -47,7 +48,7 @@ import {
 import type { ArtifactAnchor, ManuscriptSection, NarrativeRecords, OpportunityProposal } from './shared/narrativeTypes';
 import type {
   DiagnosticFixAlternative,
-  SemanticDiagnosticFinding,
+  DiagnosticsAnalyzeRequest,
   SyncManuscriptPatch,
   SyncModelProposal,
   WritingAssistAction,
@@ -666,6 +667,55 @@ function App() {
     });
   }, [autoBackupEnabled, hydrationGate, activeProject]);
 
+  const stageNarrativeMetadata = useCallback((next: CreativeProject, label: string, summary: string) => {
+    if (next === activeProjectRef.current) return false;
+    const revised = recordProjectRevision(next, label, summary);
+    activeProjectRef.current = revised;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(revised);
+    return true;
+  }, []);
+
+  const runSemanticDiagnostics = useCallback(async (
+    payload: DiagnosticsAnalyzeRequest,
+    context: { manuscriptVersionId?: string; snapshotDigest: string; scopeLabel: string },
+    lifetime: AbortSignal,
+    preferences?: NonNullable<NarrativeRecords['automationPreferences']>,
+  ) => {
+    const matchesInput = () => {
+      const current = activeProjectRef.current;
+      return !lifetime.aborted && !getDeletedProjectIds().has(payload.projectId) &&
+        current.id === payload.projectId && current.revision === payload.baseRevision &&
+        current.snapshot.manuscriptVersionId === context.manuscriptVersionId &&
+        computeSnapshotDigest(current.snapshot) === context.snapshotDigest &&
+        (!preferences || current.narrative?.automationPreferences === preferences);
+    };
+    if (!matchesInput()) return null;
+    const authority = aiTicketAuthorityRef.current;
+    const { ticket, signal } = authority.beginSlot(activeProjectRef.current, 'diagnostics');
+    const cancel = () => authority.cancelIfCurrent(ticket);
+    lifetime.addEventListener('abort', cancel, { once: true });
+    try {
+      const response = await requestSemanticDiagnostics(payload, signal);
+      if (!authority.isCurrent(ticket) || !matchesInput()) return null;
+      const before = activeProjectRef.current;
+      const mapped = convertSemanticFindingsToDiagnosticFindings(response.findings);
+      const next = syncDiagnosticFindingsIntoProject(before, mapped, {
+        source: 'semantic-ai',
+        scopeLabel: context.scopeLabel,
+        fullScan: false,
+      });
+      stageNarrativeMetadata(next, 'Semantic consistency check', 'Recorded scoped diagnostic findings.');
+      return response;
+    } catch (error) {
+      if (!authority.isCurrent(ticket) || !matchesInput()) return null;
+      throw error;
+    } finally {
+      lifetime.removeEventListener('abort', cancel);
+      authority.clearIfCurrent(ticket);
+    }
+  }, [stageNarrativeMetadata]);
+
   // Metadata-only commits share the same analysis input and must not schedule another run.
   const analysisSnapshotDigest = computeSnapshotDigest(activeProject.snapshot);
   // Optional bounded semantic auto-analysis (strictly OFF by default, debounced, capped per session)
@@ -676,8 +726,14 @@ function App() {
     if (autoAnalysisCallCount.current >= (prefs.maxCallsPerSession ?? 4)) return;
     if (hydrationGate !== 'ready') return;
 
+    const lifetime = new AbortController();
+    const projectId = activeProject.id;
     const timer = window.setTimeout(() => {
       const current = activeProjectRef.current;
+      if (current.id !== projectId || current.narrative?.automationPreferences !== prefs ||
+          computeSnapshotDigest(current.snapshot) !== analysisSnapshotDigest ||
+          autoAnalysisCallCount.current >= prefs.maxCallsPerSession ||
+          aiTicketAuthorityRef.current.isActionLoading(projectId, 'diagnostics')) return;
       const sections = manuscriptSections(current).slice(0, 4).map((s) => ({
         id: s.id,
         title: s.title || s.kind,
@@ -714,9 +770,7 @@ function App() {
         if (f.value.trim()) storyBible[k] = f.value.trim().slice(0, 400);
       }
 
-      autoAnalysisCallCount.current += 1;
-      setAutoAnalysisCallsUsed(autoAnalysisCallCount.current);
-      void requestSemanticDiagnostics({
+      const payload = {
         projectId: current.id,
         baseRevision: current.revision,
         scope: prefs.scope,
@@ -724,27 +778,25 @@ function App() {
         relationships,
         storyBible,
         sections,
-      })
-        .then((res) => {
-          if (activeProjectRef.current.id !== current.id) return;
-          const mapped = convertSemanticFindingsToDiagnosticFindings(res.findings);
-          const merged = syncDiagnosticFindingsIntoProject(activeProjectRef.current, mapped, {
-            source: 'semantic-ai',
-            scopeLabel: `Auto (${prefs.scope})`,
-            fullScan: false,
-          });
-          if (merged === activeProjectRef.current) return;
-          const revised = recordProjectRevision(merged, 'Semantic consistency check', 'Recorded scoped diagnostic findings.');
-          activeProjectRef.current = revised;
-          setProject(revised);
-        })
-        .catch(() => {
-          // Non-fatal background check; manual diagnostics stay available.
-        });
+      };
+      const budget = buildClientBudgetDisclosure('diagnostics', 'Automatic semantic check', payload);
+      if (!budget.withinLimit || budget.estimatedInputTokens > prefs.maxTokensPerRun) return;
+      autoAnalysisCallCount.current += 1;
+      setAutoAnalysisCallsUsed(autoAnalysisCallCount.current);
+      void runSemanticDiagnostics(payload, {
+        manuscriptVersionId: current.snapshot.manuscriptVersionId,
+        snapshotDigest: analysisSnapshotDigest,
+        scopeLabel: `Auto (${prefs.scope})`,
+      }, lifetime.signal, prefs).catch(() => {
+        // Manual diagnostics remain available if a background check fails.
+      });
     }, 3500);
 
-    return () => window.clearTimeout(timer);
-  }, [aiConfigured, activeProject.id, analysisSnapshotDigest, activeProject.narrative?.automationPreferences, hydrationGate]);
+    return () => {
+      window.clearTimeout(timer);
+      lifetime.abort();
+    };
+  }, [aiConfigured, activeProject.id, analysisSnapshotDigest, activeProject.narrative?.automationPreferences, hydrationGate, runSemanticDiagnostics]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -817,7 +869,7 @@ function App() {
       throw new Error('IndexedDB must be available and the workspace must finish loading.');
     }
     const before = activeProjectRef.current;
-    if (aiTicketAuthorityRef.current?.hasProjectTickets(before.id)) {
+    if (aiTicketAuthorityRef.current?.hasProjectTickets(before.id, 'diagnostics')) {
       throw new Error('Wait for the current project operation to finish before saving.');
     }
     const prepared = prepareManuscriptChange(before, undoStateRef.current, base, sections, artifact, styleProfile);
@@ -966,15 +1018,6 @@ function App() {
 
   // --- Package C, D, E, F, G, H Narrative Workspace Handlers ---
 
-  const stageNarrativeMetadata = (next: CreativeProject, label: string, summary: string) => {
-    if (next === activeProjectRef.current) return false;
-    const revised = recordProjectRevision(next, label, summary);
-    activeProjectRef.current = revised;
-    hasLocalEditsSinceMountRef.current = true;
-    setProject(revised);
-    return true;
-  };
-
   const handleRunLocalDiagnostics = () => {
     const before = activeProjectRef.current;
     const localFindings = collectLocalDiagnosticFindings(before);
@@ -985,17 +1028,6 @@ function App() {
     });
     const changed = stageNarrativeMetadata(next, 'Local consistency check', 'Updated tracked diagnostic findings.');
     setStatusNotification(changed ? 'Local findings updated and queued for saving.' : 'Local checks found no changes to tracked issues.');
-  };
-
-  const handleMergeSemanticFindings = (findings: readonly SemanticDiagnosticFinding[], scopeLabel: string) => {
-    const before = activeProjectRef.current;
-    const mapped = convertSemanticFindingsToDiagnosticFindings(findings);
-    const next = syncDiagnosticFindingsIntoProject(before, mapped, {
-      source: 'semantic-ai',
-      scopeLabel,
-      fullScan: false,
-    });
-    stageNarrativeMetadata(next, 'Semantic consistency check', 'Recorded scoped diagnostic findings.');
   };
 
   const handleApplyDiagnosticFix = async (
@@ -1577,8 +1609,11 @@ function App() {
 
   const handlePreviewBatchInstruction = async (
     instruction: string
-  ): Promise<BatchEditProposalResult> => {
+  ): Promise<BatchEditProposalResult | null> => {
     const targetProject = activeProjectRef.current;
+    const authority = aiTicketAuthorityRef.current;
+    const { ticket, signal } = authority.beginSlot(targetProject, 'batch');
+    const current = () => authority.isCurrent(ticket) && sameProjectVersion(activeProjectRef.current, targetProject);
     const localResult = interpretBatchInstructionLocally(
       instruction,
       targetProject.snapshot,
@@ -1591,11 +1626,13 @@ function App() {
       (localResult.operations.length > 0 || localResult.ambiguities.length > 0) &&
       localResult.coverageComplete
     ) {
+      authority.clearIfCurrent(ticket);
       return localResult;
     }
 
     const promptDecision = resolveProviderPrompt(targetProject, targetProject.snapshot.mode);
     if (!promptDecision.ok) {
+      authority.clearIfCurrent(ticket);
       setStatusNotification(promptDecision.reason);
       return {
         instruction,
@@ -1609,8 +1646,6 @@ function App() {
     }
     if (promptDecision.warning) setStatusNotification(promptDecision.warning);
 
-    const authority = aiTicketAuthorityRef.current!;
-    const { ticket, signal } = authority.beginSlot(targetProject, 'batch');
     try {
       const aiResult = await requestBatchEditInterpretation(
         instruction,
@@ -1636,6 +1671,7 @@ function App() {
         },
         signal
       );
+      if (!current()) return null;
       if (aiResult.operations.length > 0 || aiResult.ambiguities.length > 0) {
         return {
           ...aiResult,
@@ -1645,7 +1681,7 @@ function App() {
       }
       return localResult;
     } catch {
-      return localResult;
+      return current() ? localResult : null;
     } finally {
       authority.clearIfCurrent(ticket);
     }
@@ -2371,7 +2407,7 @@ function App() {
     try {
       const legacyOrPortable = await parseProjectBackup(rawJson);
       const outgoing = activeProjectRef.current;
-      if (aiTicketAuthorityRef.current?.hasProjectTickets(outgoing.id)) {
+      if (aiTicketAuthorityRef.current?.hasProjectTickets(outgoing.id, 'diagnostics')) {
         throw new Error('Wait for the current project operation to finish before restoring.');
       }
       const migrated = replace ? prepareBackupReplacement(outgoing, legacyOrPortable) : prepareBackupCopy(legacyOrPortable);
@@ -2557,6 +2593,7 @@ function App() {
       )}
       {workspaceMode === 'review' && (
         <NarrativeReview
+          key={activeProject.id}
           project={activeProject}
           checks={consistencyIssues}
           aiConfigured={aiConfigured}
@@ -2573,7 +2610,7 @@ function App() {
           }
           onIssueDisposition={handleIssueDisposition}
           onRunLocalDiagnostics={handleRunLocalDiagnostics}
-          onMergeSemanticFindings={handleMergeSemanticFindings}
+          onRunSemanticDiagnostics={runSemanticDiagnostics}
           onApplyDiagnosticFix={handleApplyDiagnosticFix}
           onNavigateTarget={handleNavigateConsistencyTarget}
           onApplyModelSyncProposal={handleApplyModelSyncProposal}

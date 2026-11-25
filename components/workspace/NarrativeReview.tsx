@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ConsistencyIssue, ConsistencyIssueTarget, CreativeProject } from '../../shared/types';
 import type { NarrativeIssue, NarrativeRecords } from '../../shared/narrativeTypes';
 import type {
   DiagnosticFixAlternative,
+  DiagnosticsAnalyzeRequest,
+  DiagnosticsAnalyzeResponse,
   SyncManuscriptPatch,
   SyncModelProposal,
 } from '../../shared/narrativeAiSchemas';
@@ -11,6 +13,7 @@ import {
   buildLocalFixAlternatives,
   splitReadinessAndIssues,
 } from '../../lib/narrative/diagnostics/engine';
+import { computeSnapshotDigest } from '../../lib/historyEngine';
 import { manuscriptSections } from '../../lib/narrative/manuscriptModel';
 import {
   computeSyncFreshness,
@@ -19,7 +22,6 @@ import {
 import {
   requestDiagnosticFixSuggestions,
   requestNarrativeSyncAnalysis,
-  requestSemanticDiagnostics,
 } from '../../services/apiClient';
 import { workspaceButton } from '../manuscript/ManuscriptEditor';
 
@@ -34,10 +36,11 @@ interface Props {
   exportReport: (format: 'json' | 'md') => void;
   onIssueDisposition: (issueId: string, disposition: NarrativeIssue['disposition'], reason: string) => void;
   onRunLocalDiagnostics?: () => void;
-  onMergeSemanticFindings?: (
-    findings: Parameters<typeof import('../../lib/narrative/diagnostics/engine').convertSemanticFindingsToDiagnosticFindings>[0],
-    scopeLabel: string
-  ) => void;
+  onRunSemanticDiagnostics?: (
+    payload: DiagnosticsAnalyzeRequest,
+    context: { manuscriptVersionId?: string; snapshotDigest: string; scopeLabel: string },
+    signal: AbortSignal,
+  ) => Promise<DiagnosticsAnalyzeResponse | null>;
   onApplyDiagnosticFix?: (
     issueId: string,
     alternative: DiagnosticFixAlternative,
@@ -69,7 +72,7 @@ export default function NarrativeReview({
   exportReport,
   onIssueDisposition,
   onRunLocalDiagnostics,
-  onMergeSemanticFindings,
+  onRunSemanticDiagnostics,
   onApplyDiagnosticFix,
   onNavigateTarget,
   onApplyModelSyncProposal,
@@ -83,6 +86,10 @@ export default function NarrativeReview({
   const [diagScope, setDiagScope] = useState<'full' | 'scene' | 'entity' | 'changed'>('full');
   const [diagTargetId, setDiagTargetId] = useState('');
   const [diagBusy, setDiagBusy] = useState(false);
+  const diagnosticRun = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    diagnosticRun.current?.abort();
+  }, [project.id]);
   const [diagMessage, setDiagMessage] = useState('');
   const [diagError, setDiagError] = useState('');
 
@@ -206,20 +213,39 @@ export default function NarrativeReview({
       setDiagError('Server Gemini API key is not configured. Use Run Local Checks or configure server AI credentials.');
       return;
     }
+    if (!onRunSemanticDiagnostics) return;
+    diagnosticRun.current?.abort();
+    const run = new AbortController();
+    diagnosticRun.current = run;
     setDiagBusy(true);
     setDiagError('');
     setDiagMessage('');
     try {
-      const response = await requestSemanticDiagnostics(scopedDiagPayload);
-      onMergeSemanticFindings?.(response.findings, `AI Semantic (${diagScope})`);
-      setDiagMessage(
-        `${response.coverageNote} Recorded ${response.findings.length} semantic finding(s).`
-      );
+      const response = await onRunSemanticDiagnostics(scopedDiagPayload, {
+        manuscriptVersionId: project.snapshot.manuscriptVersionId,
+        snapshotDigest: computeSnapshotDigest(project.snapshot),
+        scopeLabel: `AI Semantic (${diagScope})`,
+      }, run.signal);
+      if (!response || run.signal.aborted || diagnosticRun.current !== run) return;
+      setDiagMessage(`${response.coverageNote} Recorded ${response.findings.length} semantic finding(s).`);
     } catch (cause) {
-      setDiagError(cause instanceof Error ? cause.message : 'Semantic consistency analysis failed.');
+      if (!run.signal.aborted && diagnosticRun.current === run) {
+        setDiagError(cause instanceof Error ? cause.message : 'Semantic consistency analysis failed.');
+      }
     } finally {
-      setDiagBusy(false);
+      if (!run.signal.aborted && diagnosticRun.current === run) {
+        diagnosticRun.current = null;
+        setDiagBusy(false);
+      }
     }
+  };
+
+  const resetDiagnosticScope = () => {
+    diagnosticRun.current?.abort();
+    diagnosticRun.current = null;
+    setDiagBusy(false);
+    setDiagError('');
+    setDiagMessage('');
   };
 
   const openFixesForIssue = (issue: NarrativeIssue) => {
@@ -393,6 +419,7 @@ export default function NarrativeReview({
                 <select
                   value={diagScope}
                   onChange={(e) => {
+                    resetDiagnosticScope();
                     setDiagScope(e.target.value as typeof diagScope);
                     setDiagTargetId('');
                   }}
@@ -407,7 +434,7 @@ export default function NarrativeReview({
               {diagScope === 'scene' && (
                 <label className="space-y-1">
                   <span className="block font-medium">Scene</span>
-                  <select value={diagTargetId} onChange={(e) => setDiagTargetId(e.target.value)} className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950">
+                  <select value={diagTargetId} onChange={(e) => { resetDiagnosticScope(); setDiagTargetId(e.target.value); }} className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950">
                     <option value="">Select scene…</option>
                     {sections.map((s) => <option key={s.id} value={s.id}>{s.title || s.kind}</option>)}
                   </select>
@@ -416,7 +443,7 @@ export default function NarrativeReview({
               {diagScope === 'entity' && (
                 <label className="space-y-1">
                   <span className="block font-medium">Entity</span>
-                  <select value={diagTargetId} onChange={(e) => setDiagTargetId(e.target.value)} className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950">
+                  <select value={diagTargetId} onChange={(e) => { resetDiagnosticScope(); setDiagTargetId(e.target.value); }} className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950">
                     <option value="">Select entity…</option>
                     {project.snapshot.entities.filter((e) => e.category !== 'scene').map((e) => (
                       <option key={e.id ?? e.name} value={e.id ?? e.name}>{e.name}</option>
