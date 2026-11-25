@@ -1,6 +1,6 @@
 # C05 independent acceptance protocol
 
-Status: **partial; independent reviewer recommends Principal Architect review, not final C05 acceptance**
+Status at preparation snapshot: **partial**. The later bounded Q01–Q05 follow-up and its limits are recorded below; see [`c01-c05-final-qualification.md`](c01-c05-final-qualification.md) for the consolidated disposition.
 Prepared on base: `4281e497dca2bd81d297bb8a870a8892e025d936`
 Scope: visual and behavioral acceptance for the PCC Adaptive Draftroom UI work. This protocol is not a release verdict.
 
@@ -56,7 +56,18 @@ The existing J10 browser assertion does not compare a semantic snapshot digest b
 - Figma and browser screen captures are mapped in `docs/implementation/narrative-workspace/design-qa.md`; the stale Review proposal/evidence state and selected-prose contextual Write still lack equivalent-state side-by-side captures.
 - Stage0 J01/J09/J10 have no page errors but report 1/3/1 unmocked API hits and visible console HTTP 500 errors, respectively. The run's health check reported `configured:false`; preserve the console outcomes as observed rather than describing Stage0 as console-clean. E2E A–I is a separate run and reported no page/console errors.
 
-**Current C05 disposition:** enough for the Principal Architect to inspect the implementation direction and decide whether to keep the candidate in draft PR #15. C05 final acceptance remains incomplete until the remaining matrix rows are exercised or explicitly accepted as limitations, and equivalent-state visuals are reviewed.
+**C05 disposition at the preparation snapshot:** enough for the Principal Architect to inspect the implementation direction and decide whether to keep the candidate in draft PR #15. The later bounded follow-up below supersedes this historical status for the checks it actually exercised; uncovered matrix rows and equivalent-state visual gaps remain open.
+
+## Bounded follow-up after preparation snapshot — 2026-11-25
+
+The initial C05 review above is historical. Follow-up probes were performed against the integrated correction source in isolated Chromium contexts. These later results do not erase the explicit limitations above:
+
+- Save failure/retry retained the Unicode draft after injected IndexedDB quota failure, showed `Save failed`, then persisted exact text on retry. Compact status notice is now overlaid and transient, with a 44×44 dismiss target.
+- Live stale proposal browser path advanced r6→r7 by deferral; stale Apply was unavailable and the direct stale-revision mutation was rejected without changing IndexedDB. A fresh proposal was explicitly applied and read back at r8.
+- Source-only import and durable retry succeeded without claims or provider calls. Import cancel was tested only from an empty source screen; staged-source and in-flight cancellation remain **NOT TESTED**.
+- Six Q05 return paths (Write/Plan/Review through Projects/Continue and Import/Exit) retained the stable mode preference. Project inventory/revision/projection digest were unchanged. The synthetic sample has no manuscript narrative, so this is not evidence for non-empty manuscript record preservation in that probe.
+- Targeted 320px toast retest and narrative workspace browser scenario passed. Complete equivalent-state screenshot pairs, screen reader/VoiceOver, and WCAG 2.2 AA certification remain **NOT TESTED**.
+- Stage0 unmocked `/api/ai/capabilities` requests were deliberately trapped by the test harness and fulfilled 500; AI operation routes were mocked. No provider request occurred.
 
 ## Finding classification
 

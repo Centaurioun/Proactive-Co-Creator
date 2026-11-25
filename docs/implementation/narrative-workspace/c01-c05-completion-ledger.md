@@ -88,3 +88,14 @@ The QA worker added `docs/qa/c05-independent-acceptance.md` and `scripts/c05-fix
 4. **Failure and recovery:** exercised stale proposal rejection, failed/unconfigured AI, storage conflict paths, import/recovery, backup copy and confirmed replacement using synthetic data; cancellation returns safely.
 5. **Responsive/accessibility:** five specified viewports plus 200% zoom-equivalent checked; no overflow or unnamed control. Small touch targets, mobile Plan graph density, full text enlargement and screen-reader behavior remain open.
 6. **Evidence and exact candidate:** screenshots exist for the named screen families and J10 states, though selected-text contextual Write and stale proposal/evidence Review are not equivalent-state matched. C05 final acceptance is partial. Exact final commit/tree, Principal Architect review, and hosted CI are publication gates; PR must remain draft.
+
+## Final bounded correction addendum — 2026-11-25
+
+This addendum supersedes the earlier “C05 PARTIAL” and open-Q01/Q02/Q05 statements above for the bounded checks executed after candidate `0599ced916740b0be9c0ac977ef0641183b03635`. The complete result is in [`docs/qa/c01-c05-final-qualification.md`](../../qa/c01-c05-final-qualification.md).
+
+- Q01/Q02 passed: stale text selection is no longer restored against unrelated text; stale proposal Apply was rejected at the live UI and mutation boundary, with durable storage unchanged. Fresh proposal control was explicitly applied and read back.
+- Q03 passed for source-only import and durable retry. Empty Import exit and no-source cancel were exercised. Staged-source/in-flight extraction cancellation remains NOT TESTED because no extraction was started.
+- Q04 passed for compact dirty-draft navigation and the shared status notice. The notice no longer permanently displaces the 320px editor, its dismiss action is 44×44, and it auto-dismisses after eight seconds. Full assistive-technology/WCAG certification remains unclaimed.
+- Q05 passed for six Projects/Import return paths and stable workspace preference. The synthetic project inventory, revision and canonical projection digest were unchanged through exits and History inspection. The synthetic fixture had no manuscript narrative, limiting that specific preservation claim.
+- Fresh integrated-source checks: typecheck, lint, 302/302 unit tests, build, Stage0 12/12, E2E A–I 9/9, and narrative workspace scenario passed. Stage0's unmocked calls were capability-discovery checks trapped and answered 500; AI operation routes were mocked. No provider call occurred.
+- The report records remaining responsive density, equivalence-capture, screen-reader and staged/in-flight import limitations. Draft PR #15 remains subject to exact-head hosted CI and Principal Architect review.

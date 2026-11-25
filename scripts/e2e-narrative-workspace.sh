@@ -79,6 +79,7 @@ async (page) => {
     await saved(first);
     await first.getByRole('button', { name: 'Redo', exact: true }).click();
     await saved(first);
+    await first.getByRole('button', { name: 'Dismiss status notification' }).waitFor({ state: 'hidden', timeout: 10_000 });
 
     for (const width of [320, 390, 768, 1280, 1440]) {
       await first.setViewportSize({ width, height: 900 });

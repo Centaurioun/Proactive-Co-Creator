@@ -195,7 +195,9 @@ async (page) => {
         evidence: outcome.evidence || {},
         friction: outcome.friction || [],
         mockedApiHits: mockedHits.length,
+        mockedApiUrls: mockedHits,
         unmockedApiHits: unmockedHits.length,
+        unmockedApiUrls: unmockedHits,
         pageErrors,
         consoleErrors,
       });
@@ -208,7 +210,9 @@ async (page) => {
         durationMs: Date.now() - t0,
         error: err instanceof Error ? err.message : String(err),
         mockedApiHits: mockedHits.length,
+        mockedApiUrls: mockedHits,
         unmockedApiHits: unmockedHits.length,
+        unmockedApiUrls: unmockedHits,
         pageErrors,
         consoleErrors,
       });
