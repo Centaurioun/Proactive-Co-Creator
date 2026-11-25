@@ -5,7 +5,7 @@
 - Vite `8.3.8` (Rolldown/Oxc build pipeline).
 - `@vitejs/plugin-react` `6.3.0`.
 - Tailwind CSS and `@tailwindcss/vite` remain `4.3.5`; React/React DOM remain `19.3.1`.
-- Node engine is now `^22.13.0 || >=24.0.0`. Vite and its React plugin require `^20.19.0 || >=22.12.0`; ESLint 10 requires `^22.13.0` in the Node 22 line, so 22.13 is the supported floor. Node 22 and 24 are preserved as supported LTS lines. The accepted manifest and README describe the same runtime range.
+- Node engine is now `^22.13.0 || >=24.0.0`. Vite and its React plugin require `^20.19.0 || >=22.12.0`; ESLint 10 requires `^22.13.0` in the Node 22 line, so 22.13 is the supported floor. Node 22 and 24 are preserved as supported LTS lines. The accepted manifest and README describe the same runtime range. Because Node 22.13 requires explicit opt-in for native TypeScript type stripping, production startup uses `node --experimental-strip-types server.ts`.
 
 The direct Vite 8 migration was used rather than retaining a Vite 7 or `rolldown-vite` dependency. Official migration guidance offers `rolldown-vite` as a temporary diagnostic step for larger or more complex projects. The direct candidate builds and passes the required current regression suites; a permanent intermediary would add no value to the final dependency set. The migration was checked against both official boundaries: Vite 6→7 (Node engine floor and browser target change) and Vite 7→8 (Rolldown/Oxc, output API, and browser target changes).
 

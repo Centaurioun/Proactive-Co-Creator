@@ -92,7 +92,7 @@ jobs:
           E2E_BASE_URL: http://127.0.0.1:3000
         run: |
           mkdir -p .playwright-cli
-          node server.ts >.playwright-cli/e2e-server.log 2>&1 &
+          node --experimental-strip-types server.ts >.playwright-cli/e2e-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill $SERVER_PID >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 40); do

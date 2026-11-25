@@ -40,10 +40,15 @@ describe('security & Node 22 native execution compatibility', () => {
     }
   });
 
-  it('imports server.ts cleanly under plain Node 22 without tsx', () => {
+  it('starts server.ts with Node 22 native type stripping without tsx', () => {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as {
+      scripts?: { start?: string };
+    };
+    assert.equal(packageJson.scripts?.start, 'node --experimental-strip-types server.ts');
+
     const output = execFileSync(
       process.execPath,
-      ['-e', 'import("./server.ts").then(m => console.log(typeof m.createApp))'],
+      ['--experimental-strip-types', '-e', 'import("./server.ts").then(m => console.log(typeof m.createApp))'],
       { cwd: ROOT, encoding: 'utf8' }
     ).trim();
     assert.equal(output, 'function');

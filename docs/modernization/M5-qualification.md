@@ -62,3 +62,9 @@ The accepted Node engine is `^22.13.0 || >=24.0.0`; React 19 and Tailwind 4 rema
 The final CI run must be attached to the exact final PR head and show the Node 22 and 24 verification matrix plus browser job. A candidate-specific CodeScene comparison could not be produced because no CodeScene connector/tool is available in this environment; the exact commit identity of the previously opened hosted analysis remains unverified. No merge or deployment is authorized by this record.
 
 Evidence files in this directory are synthetic QA artifacts. The consolidated pull request body records exact final base, head, tree and hosted CI status after publication.
+
+## Post-publication Node 22.13 correction
+
+The first hosted run on the published candidate `4b2b62d07bec73edd14801f540985db722290a96` (run `45659512863`) passed the Node 22.x and Node 24.x jobs but exposed one failure in the exact Node 22.13.0 job: `node server.ts` did not enable Node's experimental native type stripping and failed with `ERR_UNKNOWN_FILE_EXTENSION`. This contradicted the declared Node floor and the intended production start command. The same test passed on the candidate's other Node matrix entries.
+
+The correction makes the runtime opt-in explicit in `npm start`, CI's production browser server, and the local Stage0 server launchers; the regression test now asserts that startup contract and imports the server using the same flag. The focused regression passed locally under Node 22.13.0 and Node 24.0.0. Full-suite, clean-install, build, browser and exact-head hosted requalification are required on the corrected PR head before final acceptance.

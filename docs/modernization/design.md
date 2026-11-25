@@ -7,7 +7,7 @@
    - Upgrade `@google/genai` to `3.3.0` (`>= 2.32.0` / `>= 3.3.0`) on the server.
    - Keep `typescript` at `~5.8.3` because `typescript-eslint@8.72.2` requires `typescript < 6.1.0`; keep `vite` `^6.4.6` + `@vitejs/plugin-react` `^5.2.0` (stable, compatible with `@tailwindcss/vite@4.3.5`).
    - Add `express@5.3.0`, `@types/express@5.0.6`, `tsx@4.23.15`, `zod@4.6.7`, `tailwindcss@4.3.5`, `@tailwindcss/vite@4.3.5`, `@types/react@19.3.0`, `@types/react-dom@19.3.0`, and ESLint 10 tooling.
-   - Ensure server-side relative imports use explicit `.ts` extensions and avoid TS `enum` syntax in server runtime files so `"start": "node server.ts"` works cleanly with Node 22 native type-stripping as well as `tsx server.ts`.
+   - Ensure server-side relative imports use explicit `.ts` extensions and avoid TS `enum` syntax in server runtime files so `"start": "node --experimental-strip-types server.ts"` works cleanly with Node 22 native type-stripping as well as `tsx server.ts`.
 3. **Cycle 3 (Architecture, Security & Reliability)**:
    - Introduce an Express backend (`server.ts`) mounting `vite.middlewares` in development and static `dist/` in production, keeping `GEMINI_API_KEY` and `@google/genai` strictly server-side (`User-Agent: 'aistudio-build'`).
    - Remove `window.aistudio` key-selection hooks and `process.env.API_KEY` browser references; return structured error codes (`MISSING_API_KEY`, `AUTH_ERROR`, `RATE_LIMITED`, `MODEL_UNSUPPORTED`, `SAFETY_BLOCKED`, `INVALID_RESPONSE`, `TIMEOUT`, `CANCELLED`, `INTERNAL_ERROR`) so the UI shows actionable messages without leaking credentials.
