@@ -199,7 +199,7 @@ function evaluateRevisionAndSnapshotCas(params: {
         saved: false,
         conflictDetected: true,
         storedProject: normalizedExisting,
-        error: `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with divergent project content.`,
+        error: `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with a divergent ${snapshotsEqual ? 'narrative record' : 'snapshot'}.`,
       };
     }
     if (existing.updatedAt > candidate.updatedAt) {

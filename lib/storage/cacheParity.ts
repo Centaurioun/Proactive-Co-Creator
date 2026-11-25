@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { migrateProjectPayload } from './migration.ts';
+import type { IndexedDbLoadResult } from './constants.ts';
 import { isSnapshotSemanticallyEqual } from '../historyEngine.ts';
 import type {
   CreativeProject,
@@ -202,4 +204,25 @@ export function verifyProjectCacheParity(
   }
 
   return verifyUndoHistoryParity(localProject, idbProject, idbRevs, sameRevision);
+}
+
+/** Return a compacted cache only when every survivor has a complete durable copy. */
+export function planCacheCompaction(
+  rawCache: string,
+  deletedProjectId: string,
+  durable: IndexedDbLoadResult,
+): string | null {
+  if (!durable.ok || durable.corruptRecordCount > 0) return null;
+  const survivors = Object.entries(JSON.parse(rawCache) as Record<string, CreativeProject>)
+    .filter(([id]) => id !== deletedProjectId);
+  const durableById = new Map(durable.projects.map(project => [project.id, project]));
+  for (const [id, rawProject] of survivors) {
+    const durableProject = durableById.get(id);
+    if (!durableProject || !verifyProjectCacheParity(migrateProjectPayload(rawProject), durableProject)) {
+      return null;
+    }
+  }
+  return JSON.stringify(Object.fromEntries(
+    survivors.map(([id, project]) => [id, { ...project, artifacts: [] }])
+  ));
 }

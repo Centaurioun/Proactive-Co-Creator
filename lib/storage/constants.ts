@@ -23,6 +23,7 @@ export interface DurableWriteOptions {
   intentId?: string;
   forceOverwrite?: boolean;
   allowDeleted?: boolean;
+  selectProject?: boolean;
   requireExactBase?: boolean;
 }
 

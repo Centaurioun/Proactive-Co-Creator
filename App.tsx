@@ -122,7 +122,7 @@ import { createOpportunityProposal, transitionOpportunityProposal, type Opportun
 import {
   deleteProjectCompletely,
   getDeletedProjectIds,
-  LOCAL_STORAGE_ACTIVE_ID_KEY,
+  setCachedProjectSelection,
   loadProjectsFromIndexedDbDetailed,
   loadProjectsFromLocalStorage,
   persistProjectDurably,
@@ -494,11 +494,12 @@ function App() {
 
         if (activeProjectRef.current === observedActive && undoStateRef.current === observedUndo) {
           setSavedProjects(reconciled.savedProjects);
+          if (!initialData.activeProjectId) setCachedProjectSelection(reconciled.activeProject.id);
           if (reconciled.activeProject !== observedActive || reconciled.activeUndoState !== observedUndo) {
             setProject(reconciled.activeProject);
             setUndoState(reconciled.activeUndoState);
             if (reconciled.upgradedFromIndexedDb && !reconciled.conflictWithHydrated) {
-              saveProjectToLocalStorage(reconciled.activeProject);
+              saveProjectToLocalStorage(reconciled.activeProject, { selectProject: false });
             }
           }
         }
@@ -520,7 +521,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [updateHydrationGate, initialData.autoSeededSample]);
+  }, [updateHydrationGate, initialData.autoSeededSample, initialData.activeProjectId]);
 
   // Persist active project via serialized durable IndexedDB CAS + non-authoritative localStorage cache
   useEffect(() => {
@@ -596,7 +597,7 @@ function App() {
         autosaveTimerRef.current = null;
       }
       if (!current.narrative) {
-        saveProjectToLocalStorage(current, { expectedPersistedRevision: current.persistedRevision });
+        saveProjectToLocalStorage(current, { expectedPersistedRevision: current.persistedRevision, selectProject: false });
       }
       void flushProjectDurably(current, {
         expectedPersistedRevision: current.persistedRevision,
@@ -851,11 +852,7 @@ function App() {
       setProject(committed);
       setUndoState(nextUndo);
       setStorageAlert(null);
-      try {
-        window.localStorage?.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, committed.id);
-      } catch {
-        // The authoritative project is already in IndexedDB; active selection can be recovered from the in-memory workspace.
-      }
+      setCachedProjectSelection(committed.id);
       setWorkspaceMode('write');
       setStatusNotification(`Imported project "${committed.name}" saved.`);
     } finally {
@@ -1198,6 +1195,7 @@ function App() {
     setSavedProjects(nextSaved);
     setProject(committed);
     setUndoState(nextUndo);
+    setCachedProjectSelection(committed.id);
     setWorkspaceMode('write');
     setStatusNotification(
       `Appended ${applied.addedSectionCount} section(s) into "${committed.name}" (${applied.addedEntityCount} new, ${applied.linkedEntityCount} linked entities).`
@@ -2084,6 +2082,7 @@ function App() {
         setSavedProjects(latest.projects);
         setProject(latest.activeProject);
         setUndoState(latest.activeUndoState);
+        setCachedProjectSelection(latest.activeProject.id);
         if (resolution === 'prefer-idb' || latest.upgradedFromIndexedDb) {
           hasLocalEditsSinceMountRef.current = false;
         }
@@ -2186,6 +2185,7 @@ function App() {
     setSelectedRelationshipId(null);
     setStoryBibleErrors({});
     setStorageAlert(null);
+    setCachedProjectSelection(sample.id);
     void flushProjectDurably(sample, {
       forceOverwrite: true,
       allowDeleted: true,
@@ -2230,11 +2230,7 @@ function App() {
       setStorageAlert(null);
     }
 
-    try {
-      window.localStorage?.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, nextTarget.id);
-    } catch {
-      // Ignore quota error when updating active project pointer
-    }
+    setCachedProjectSelection(nextTarget.id);
 
     if (switchRes.projectToFlush && hydrationGateRef.current !== 'blocked-read-error') {
       void flushProjectDurably(switchRes.projectToFlush, {
@@ -2316,6 +2312,7 @@ function App() {
       setStorageAlert(null);
     }
 
+    setCachedProjectSelection(newProj.id);
     void flushProjectDurably(newProj, {
       forceOverwrite: true,
       allowDeleted: true,
@@ -2428,6 +2425,7 @@ function App() {
       setSelectedEntityId(null);
       setSelectedRelationshipId(null);
       setStoryBibleErrors({});
+      setCachedProjectSelection(saved.id);
       setStatusNotification(`Restored and saved project ${replace ? '' : 'copy '}“${saved.name}”.`);
       return { ok: true };
     } catch (err) {

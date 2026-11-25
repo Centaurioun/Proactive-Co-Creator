@@ -29,6 +29,11 @@ import {
   loadProjectsFromLocalStorage,
   migrateProjectPayload,
   persistProjectDurably,
+  recordDeletedProjectId,
+  getDeletedProjectIds,
+  LOCAL_STORAGE_ACTIVE_ID_KEY,
+  LOCAL_STORAGE_PROJECTS_KEY,
+  LOCAL_STORAGE_DELETED_IDS_KEY,
   reconcileHydratedProjects,
   reloadLatestProjectsFromStorage,
   saveProjectToIndexedDb,
@@ -45,6 +50,7 @@ class MockLocalStorage {
   public quotaLimitBytes: number | null = null;
   public failNextSetItemError: string | null = null;
   public setItemCalls = 0;
+  public rejectedKey: string | null = null;
 
   getItem(key: string): string | null {
     return this.store.get(key) ?? null;
@@ -52,6 +58,7 @@ class MockLocalStorage {
 
   setItem(key: string, value: string): void {
     this.setItemCalls += 1;
+    if (key === this.rejectedKey) throw new Error("Mock storage key write failed");
     if (this.failNextSetItemError) {
       const msg = this.failNextSetItemError;
       this.failNextSetItemError = null;
@@ -80,6 +87,7 @@ class MockLocalStorage {
     this.quotaLimitBytes = null;
     this.failNextSetItemError = null;
     this.setItemCalls = 0;
+    this.rejectedKey = null;
   }
 }
 
@@ -98,6 +106,7 @@ class FakeIndexedDB {
   public failNextGetAll: string | null = null;
   public abortNextPutWithQuota = false;
   public afterReadAll?: () => void;
+  public afterPut?: () => void;
   public putCalls = 0;
   public openDelayMs = 0;
   public getDelayMs = 0;
@@ -109,6 +118,7 @@ class FakeIndexedDB {
     this.failNextGetAll = null;
     this.abortNextPutWithQuota = false;
     this.afterReadAll = undefined;
+    this.afterPut = undefined;
     this.putCalls = 0;
     this.openDelayMs = 0;
     this.getDelayMs = 0;
@@ -230,6 +240,7 @@ class FakeIndexedDB {
                 return;
               }
               this.records.set(val.id, structuredClone(val));
+              this.afterPut?.();
               r.onsuccess?.();
               scheduleCompleteIfIdle();
             }, 0);
@@ -324,6 +335,86 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
   beforeEach(() => {
     mockStorage.clear();
     fakeIdb.reset();
+  });
+
+  it('S2: a failed selection pointer write does not negate a stored payload', () => {
+    const project = { ...createSampleProject(), id: 'saved-payload' };
+    mockStorage.rejectedKey = LOCAL_STORAGE_ACTIVE_ID_KEY;
+    const result = saveProjectToLocalStorage(project);
+    assert.equal(loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true }).projects[0]?.id, project.id);
+    assert.equal(result.saved, true);
+    assert.match(result.cacheWarning ?? '', /selection/i);
+  });
+
+  it('S2: saving a background project does not select it', async () => {
+    const project = { ...createSampleProject(), id: 'background-save' };
+    mockStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, 'selected-by-user');
+    assert.equal((await persistProjectDurably(project)).saved, true);
+    assert.equal(mockStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY), 'selected-by-user');
+  });
+
+  it('S2: a cache security exception leaves the IndexedDB commit authoritative', async () => {
+    const project = { ...createSampleProject(), id: 'blocked-cache' };
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true, get() { throw new DOMException('Blocked storage', 'SecurityError'); },
+    });
+    try {
+      const result = await persistProjectDurably(project);
+      assert.equal(result.idbSaved, true);
+      assert.equal(result.cacheSynced, false);
+      assert.equal((await loadProjectsFromIndexedDb())[0]?.id, project.id);
+    } finally {
+      Object.defineProperty(window, 'localStorage', descriptor);
+    }
+  });
+
+  it('S3: an empty cache read does not forget a remembered deletion', () => {
+    const id = 'memory-tombstone';
+    recordDeletedProjectId(id);
+    mockStorage.clear();
+    loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true });
+    assert.equal(getDeletedProjectIds().has(id), true);
+    clearDeletedProjectId(id);
+  });
+
+  it('S3: quota compaction preserves survivor edits made after the parity read started', async () => {
+    const base = createSampleProject();
+    const survivor = { ...base, id: 'parity-survivor' };
+    const doomed = { ...base, id: 'parity-doomed' };
+    await persistProjectDurably(survivor);
+    await persistProjectDurably(doomed);
+    mockStorage.rejectedKey = LOCAL_STORAGE_DELETED_IDS_KEY;
+    fakeIdb.afterReadAll = () => {
+      fakeIdb.afterReadAll = undefined;
+      const entry = { ...survivor, name: 'Unverified cache edit' };
+      mockStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify({ [survivor.id]: entry }));
+    };
+    try {
+      const deletion = await deleteProjectCompletely(doomed.id);
+      assert.equal(deletion.incompleteDeletion, true);
+      assert.equal(loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true }).projects[0]?.name, 'Unverified cache edit');
+    } finally {
+      mockStorage.rejectedKey = null;
+      clearDeletedProjectId(doomed.id);
+    }
+  });
+
+  it('S3: compensating delete failure does not report a successful rollback', async () => {
+    const project = { ...createSampleProject(), id: 'compensating-delete' };
+    fakeIdb.afterPut = () => {
+      fakeIdb.afterPut = undefined;
+      fakeIdb.failNextDelete = 'Delete was blocked';
+      recordDeletedProjectId(project.id);
+    };
+    try {
+      const result = await saveProjectToIndexedDb(project);
+      assert.equal(result.saved, false);
+      assert.match(result.error ?? '', /cleanup.*Delete was blocked/i);
+      assert.ok(fakeIdb.records.has(project.id), 'The failed cleanup left the tombstoned record.');
+    } finally {
+      clearDeletedProjectId(project.id);
+    }
   });
 
   it('S1: a reload restores history without writing over a newer cross-tab commit', async () => {
