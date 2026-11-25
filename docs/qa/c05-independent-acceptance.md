@@ -69,6 +69,18 @@ The initial C05 review above is historical. Follow-up probes were performed agai
 - Targeted 320px toast retest and narrative workspace browser scenario passed. Complete equivalent-state screenshot pairs, screen reader/VoiceOver, and WCAG 2.2 AA certification remain **NOT TESTED**.
 - Stage0 unmocked `/api/ai/capabilities` requests were deliberately trapped by the test harness and fulfilled 500; AI operation routes were mocked. No provider request occurred.
 
+## Final blocking cancellation verification — 2026-11-25
+
+The Principal Architect required staged-source cancellation, in-flight mocked extraction cancellation, rejection of a deliberately late response, preservation of a non-empty existing manuscript, stable workspace restoration, and no implicit commit. All checks passed in a private isolated browser session using [`scripts/qa/import-cancellation-browser.mjs`](../scripts/qa/import-cancellation-browser.mjs) and [`scripts/qa/import-cancellation-init.js`](../scripts/qa/import-cancellation-init.js); no production code changed.
+
+- A valid parsed source was staged, then Import was exited. The existing one-project inventory and Write preference stayed unchanged.
+- A second source started one intercepted `POST /api/narrative/import/extract`. The test observed the AbortSignal, then delivered an empty mock response after cancellation. No Review candidates appeared.
+- The synthetic existing manuscript `PCC cancellation fixture — Türkçe — manuscript stays intact.` was durably stored at revision 2 before the test and remained exact afterward. The full IndexedDB project projection digest matched before and after: `a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575` in this run. No project creation, append, or revision increment occurred; workspace returned to Write.
+- Server health was `configured:false`. Client AI capability and the one extraction response were mocked in a pre-navigation init script. No provider traffic occurred; other same-origin `/api/*` routes were fail-closed.
+- Result and screenshots: `docs/qa/evidence/browser/final-qualification-2026-11-25/q06-import-cancellation-2026-11-25.json` and `q06-*.png`.
+
+This closes the import cancellation limitation listed above. The remaining visual, responsive density, screen-reader and WCAG certification limitations are accepted/deferred by the Principal Architect, not blockers to closing this bounded implementation phase.
+
 ## Finding classification
 
 - **Observed defect:** reproducible failure against a matrix assertion, with exact candidate identity, steps, and matching screenshot plus behavioral evidence.
