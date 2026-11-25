@@ -107,11 +107,6 @@ export default function ImportWorkflow({
     acceptedIds: new Set<string>(),
   });
   const stage2ControllerRef = useRef<Stage2EnhancementController | null>(null);
-  if (stage2ControllerRef.current == null) {
-    stage2ControllerRef.current = createStage2EnhancementController((next) => {
-      setStage2State(next);
-    });
-  }
   const enhanceBusy = stage2State.busy;
   const enhanceError = stage2State.error;
   const enhancements = stage2State.proposals;
@@ -124,13 +119,18 @@ export default function ImportWorkflow({
   const inProgressRef = useRef(false);
   const creatingRef = useRef(false);
 
-  useEffect(() => () => {
-    sourceReadEpochRef.current += 1;
-    sourceReadAbortRef.current?.abort();
-    sourceReadAbortRef.current = null;
-    epochRef.current += 1;
-    abortRef.current?.abort();
-    stage2ControllerRef.current?.dispose();
+  useEffect(() => {
+    const stage2Controller = createStage2EnhancementController(setStage2State);
+    stage2ControllerRef.current = stage2Controller;
+    return () => {
+      sourceReadEpochRef.current += 1;
+      sourceReadAbortRef.current?.abort();
+      sourceReadAbortRef.current = null;
+      epochRef.current += 1;
+      abortRef.current?.abort();
+      stage2Controller.dispose();
+      stage2ControllerRef.current = null;
+    };
   }, []);
 
   const parsedHasFileRetentionGap = Boolean(file && source?.retention === 'extracted-only');
