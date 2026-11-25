@@ -5,7 +5,7 @@
 
 import { computeSnapshotDigest, isSnapshotSemanticallyEqual } from '../historyEngine.ts';
 import type { CreativeProject } from '../../shared/types.ts';
-import { NARRATIVE_SCHEMA_VERSION, type StorageSaveResult } from './constants.ts';
+import { NARRATIVE_SCHEMA_VERSION, type StorageSaveResult, type DurableWriteOptions } from './constants.ts';
 import { migrateProjectPayload } from './migration.ts';
 
 const MAX_RECENT_INTENT_IDS = 50;
@@ -229,6 +229,7 @@ export function evaluateCasConflict(params: {
   expectedManuscriptVersionId?: string;
   expectedBaseSnapshotDigest?: string;
   expectedBaseProject?: CreativeProject | null;
+  expectedBaseNarrative?: DurableWriteOptions['expectedBaseNarrative'];
   intentId?: string;
   requireExactBase?: boolean;
   forceOverwrite: boolean;
@@ -241,6 +242,7 @@ export function evaluateCasConflict(params: {
     expectedManuscriptVersionId,
     expectedBaseSnapshotDigest,
     expectedBaseProject,
+    expectedBaseNarrative,
     intentId,
     requireExactBase,
     forceOverwrite,
@@ -267,6 +269,14 @@ export function evaluateCasConflict(params: {
   if (forceOverwrite || !existing) return null;
 
   const normalizedExisting = safeMigrateExisting(existing);
+
+  if (expectedBaseNarrative !== undefined &&
+      stableIntentSerialization(normalizedExisting.narrative ?? null) !== stableIntentSerialization(expectedBaseNarrative)) {
+    return {
+      ok: false, saved: false, conflictDetected: true, storedProject: normalizedExisting,
+      error: 'The durable narrative changed since this operation was prepared. Reload and review before retrying.',
+    };
+  }
 
   if (
     expectedManuscriptVersionId !== undefined &&

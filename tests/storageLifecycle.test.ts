@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { reconcileAsyncSaveAcknowledgement } from '../lib/controller/projectListSync.ts';
 import { describe, it, beforeEach } from 'node:test';
 import {
   createSampleProject,
@@ -335,6 +336,38 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
   beforeEach(() => {
     mockStorage.clear();
     fakeIdb.reset();
+  });
+
+  it('A4: a delayed acknowledgement cannot mark a different same-revision narrative as saved', () => {
+    const base = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'same-revision-ack', revision: 5, persistedRevision: 4 });
+    const acknowledged = { ...base, name: 'Saved version' };
+    const current = { ...base, name: 'Newer edits at the same revision' };
+    const result = reconcileAsyncSaveAcknowledgement({
+      acknowledgedProject: acknowledged, acknowledgedRevision: 5,
+      currentActiveProject: current, savedProjects: [current],
+    });
+    assert.equal(result.activeProject.persistedRevision, 4);
+    assert.equal(result.savedProjects[0].name, current.name);
+    assert.equal(result.savedProjects[0].persistedRevision, 4);
+  });
+
+  it('S5: an exact-base manuscript change rejects a divergent narrative at the same base revision', async () => {
+    const before = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'same-base', revision: 5, persistedRevision: 5 });
+    const concurrentlySaved = {
+      ...before, narrative: {
+        ...before.narrative!,
+        automationPreferences: { semanticAutoAnalysisEnabled: true, scope: 'changed' as const, maxCallsPerSession: 2, maxTokensPerRun: 2000 },
+      },
+    };
+    await saveProjectToIndexedDb(concurrentlySaved);
+    const candidate = { ...before, revision: 6, name: 'Reviewed manuscript change' };
+    const attempt = await saveProjectToIndexedDb(candidate, {
+      requireExactBase: true,
+      expectedPersistedRevision: before.revision,
+      expectedBaseNarrative: before.narrative ?? null,
+    });
+    assert.equal(attempt.conflictDetected, true);
+    assert.equal((await loadProjectsFromIndexedDb())[0]?.narrative?.automationPreferences?.semanticAutoAnalysisEnabled, true);
   });
 
   it('S2: a failed selection pointer write does not negate a stored payload', () => {

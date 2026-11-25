@@ -185,6 +185,7 @@ export function saveProjectToLocalStorage(
     const existing = map[project.id];
 
     const casConflict = evaluateCasConflict({
+      ...opts,
       existing,
       candidate: project,
       rawExpected,
@@ -573,6 +574,7 @@ export async function persistProjectDurably(
   }
 
   const fallbackRes = saveProjectToLocalStorage(project, {
+    ...opts,
     selectProject: false,
     expectedPersistedRevision: rawExpected,
     expectedManuscriptVersionId: opts?.expectedManuscriptVersionId,

@@ -24,6 +24,7 @@ import {
   triggerRefinedPromptDownload,
   triggerStoryBibleMarkdownDownload,
 } from './lib/workspace/projectExports';
+import { sameProjectVersion } from './lib/controller/projectListSync';
 import StorageAlertBanner, { type StorageConflictAlert } from './components/workspace/StorageAlertBanner';
 import ReviewDiffModal from './components/workspace/ReviewDiffModal';
 import {
@@ -203,6 +204,7 @@ function App() {
   const [historyTarget, setHistoryTarget] = useState<{ id: string; sequence: number } | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects' | 'import'>('plan');
   const [aiConfigured, setAiConfigured] = useState<boolean>(false);
+  const autoAnalysisCallCount = useRef(0);
   const [autoAnalysisCallsUsed, setAutoAnalysisCallsUsed] = useState<number>(0);
   const [autoBackupEnabled, setAutoBackupEnabled] = useState<boolean>(() => {
     try {
@@ -354,28 +356,24 @@ function App() {
         }
 
         const ackRevision = res.persistedRevision ?? (targetProject.revision ?? 1);
-        const acknowledgedProject = res.idempotentHit && res.storedProject
-          ? res.storedProject
-          : targetProject;
-        setProject((prev) => {
-          if (prev.id !== targetProject.id) return prev;
-          const nextPersisted = Math.max(prev.persistedRevision ?? 0, ackRevision);
-          return prev.persistedRevision !== nextPersisted
-            ? { ...prev, persistedRevision: nextPersisted }
-            : prev;
+        const acknowledgedProject = res.storedProject ?? targetProject;
+        const activeAtAcknowledgement = activeProjectRef.current;
+        const reconciled = reconcileAsyncSaveAcknowledgement({
+          acknowledgedProject,
+          acknowledgedRevision: ackRevision,
+          currentActiveProject: activeAtAcknowledgement,
+          savedProjects: savedProjectsRef.current,
         });
-        setSavedProjects((prev) => {
-          const reconciled = reconcileAsyncSaveAcknowledgement({
-            acknowledgedProject,
-            acknowledgedRevision: ackRevision,
-            currentActiveProject: activeProjectRef.current,
-            savedProjects: prev,
-          });
-          savedProjectsRef.current = reconciled.savedProjects;
-          return reconciled.savedProjects;
-        });
+        savedProjectsRef.current = reconciled.savedProjects;
+        setSavedProjects(reconciled.savedProjects);
+        if (reconciled.activeProject !== activeAtAcknowledgement) {
+          const updated = reconciled.activeProject;
+          activeProjectRef.current = updated;
+          setProject((prev) => prev.id === updated.id && prev.revision === updated.revision &&
+            prev.narrative === updated.narrative ? { ...prev, persistedRevision: updated.persistedRevision } : prev);
+        }
 
-        if (options?.clearConflictOnSuccess) {
+        if (options?.clearConflictOnSuccess && activeProjectRef.current.id === targetProject.id) {
           setStorageAlert(null);
         }
         if (options?.successNotification) {
@@ -668,12 +666,14 @@ function App() {
     });
   }, [autoBackupEnabled, hydrationGate, activeProject]);
 
+  // Metadata-only commits share the same analysis input and must not schedule another run.
+  const analysisSnapshotDigest = computeSnapshotDigest(activeProject.snapshot);
   // Optional bounded semantic auto-analysis (strictly OFF by default, debounced, capped per session)
   useEffect(() => {
     const prefs = activeProject.narrative?.automationPreferences;
     if (!aiConfigured || !prefs?.semanticAutoAnalysisEnabled || prefs.paused) return;
     if (!hasLocalEditsSinceMountRef.current) return;
-    if (autoAnalysisCallsUsed >= (prefs.maxCallsPerSession ?? 4)) return;
+    if (autoAnalysisCallCount.current >= (prefs.maxCallsPerSession ?? 4)) return;
     if (hydrationGate !== 'ready') return;
 
     const timer = window.setTimeout(() => {
@@ -714,7 +714,8 @@ function App() {
         if (f.value.trim()) storyBible[k] = f.value.trim().slice(0, 400);
       }
 
-      setAutoAnalysisCallsUsed((c) => c + 1);
+      autoAnalysisCallCount.current += 1;
+      setAutoAnalysisCallsUsed(autoAnalysisCallCount.current);
       void requestSemanticDiagnostics({
         projectId: current.id,
         baseRevision: current.revision,
@@ -732,8 +733,10 @@ function App() {
             scopeLabel: `Auto (${prefs.scope})`,
             fullScan: false,
           });
-          activeProjectRef.current = merged;
-          setProject(merged);
+          if (merged === activeProjectRef.current) return;
+          const revised = recordProjectRevision(merged, 'Semantic consistency check', 'Recorded scoped diagnostic findings.');
+          activeProjectRef.current = revised;
+          setProject(revised);
         })
         .catch(() => {
           // Non-fatal background check; manual diagnostics stay available.
@@ -741,7 +744,7 @@ function App() {
     }, 3500);
 
     return () => window.clearTimeout(timer);
-  }, [aiConfigured, activeProject.revision, activeProject.narrative?.automationPreferences, autoAnalysisCallsUsed, hydrationGate]);
+  }, [aiConfigured, activeProject.id, analysisSnapshotDigest, activeProject.narrative?.automationPreferences, hydrationGate]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -765,6 +768,49 @@ function App() {
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, []);
+
+  const commitPreparedNarrative = async (
+    origin: CreativeProject,
+    prepared: { project: CreativeProject; undoState: UndoRedoState },
+    message: string,
+    intentId?: string,
+  ) => {
+    if (!sameProjectVersion(activeProjectRef.current, origin) || getDeletedProjectIds().has(origin.id)) {
+      throw new Error('The project changed while preparing this operation. Review the latest version and retry.');
+    }
+    if (activeProjectRef.current.persistedRevision !== origin.revision) {
+      const savedBase = await flushProjectDurably(origin, { expectedPersistedRevision: origin.persistedRevision });
+      if (!savedBase.saved) throw new Error(savedBase.error ?? 'The prior project version could not be saved.');
+      if (!sameProjectVersion(activeProjectRef.current, origin)) {
+        throw new Error('The project changed while saving the prior version. Review the latest version and retry.');
+      }
+    }
+
+    const result = await flushProjectDurably(prepared.project, {
+      expectedPersistedRevision: origin.revision,
+      expectedManuscriptVersionId: origin.snapshot.manuscriptVersionId ?? '',
+      expectedBaseSnapshotDigest: computeSnapshotDigest(origin.snapshot),
+      expectedBaseNarrative: origin.narrative ?? null,
+      requireExactBase: true,
+      intentId,
+      clearConflictOnSuccess: true,
+    });
+    if (!result.saved) throw new Error(result.error ?? 'The change could not be durably saved.');
+    const committed = result.storedProject ?? {
+      ...prepared.project, persistedRevision: result.persistedRevision ?? prepared.project.revision,
+    };
+    if (!sameProjectVersion(activeProjectRef.current, origin) ||
+        !sameProjectVersion(committed, prepared.project) || getDeletedProjectIds().has(origin.id)) {
+      return { published: false, message: `Saved to "${origin.name}". The current working copy was preserved.` };
+    }
+    activeProjectRef.current = committed;
+    undoStateRef.current = prepared.undoState;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(committed);
+    setUndoState(prepared.undoState);
+    if (message) setStatusNotification(message);
+    return { published: true, message };
+  };
 
   const saveManuscript = async (base: NarrativeBase, sections: ManuscriptSection[], artifact?: ArtifactAnchor, styleProfile?: StyleProfile) => {
     if (hydrationGateRef.current !== 'ready' || !window.indexedDB) {
@@ -792,18 +838,8 @@ function App() {
         await saveBackup(before, 'Before first manuscript save', true);
       }
     }
-    const current = activeProjectRef.current;
-    if (current.id !== before.id || current.revision !== before.revision) {
-      throw new Error('The project changed while preparing the manuscript. The draft is still open.');
-    }
-    const result = await flushProjectDurably(prepared.project, { expectedPersistedRevision: before.revision, requireExactBase: true, clearConflictOnSuccess: true });
-    if (!result.saved) throw new Error(result.error ?? 'The manuscript could not be saved.');
-    const committed = { ...prepared.project, persistedRevision: result.persistedRevision ?? prepared.project.revision };
-    activeProjectRef.current = committed;
-    undoStateRef.current = prepared.undoState;
-    hasLocalEditsSinceMountRef.current = true;
-    setProject(committed);
-    setUndoState(prepared.undoState);
+    const saved = await commitPreparedNarrative(before, prepared, '');
+    if (!saved.published) throw new Error(saved.message);
   };
 
   const handleCreateImportedProject = async (candidate: CreativeProject) => {
@@ -930,6 +966,15 @@ function App() {
 
   // --- Package C, D, E, F, G, H Narrative Workspace Handlers ---
 
+  const stageNarrativeMetadata = (next: CreativeProject, label: string, summary: string) => {
+    if (next === activeProjectRef.current) return false;
+    const revised = recordProjectRevision(next, label, summary);
+    activeProjectRef.current = revised;
+    hasLocalEditsSinceMountRef.current = true;
+    setProject(revised);
+    return true;
+  };
+
   const handleRunLocalDiagnostics = () => {
     const before = activeProjectRef.current;
     const localFindings = collectLocalDiagnosticFindings(before);
@@ -938,10 +983,8 @@ function App() {
       scopeLabel: 'Full local check',
       fullScan: true,
     });
-    activeProjectRef.current = next;
-    hasLocalEditsSinceMountRef.current = true;
-    setProject(next);
-    setStatusNotification(`Synced ${localFindings.length} local diagnostic finding(s) into tracked issues.`);
+    const changed = stageNarrativeMetadata(next, 'Local consistency check', 'Updated tracked diagnostic findings.');
+    setStatusNotification(changed ? 'Local findings updated and queued for saving.' : 'Local checks found no changes to tracked issues.');
   };
 
   const handleMergeSemanticFindings = (findings: readonly SemanticDiagnosticFinding[], scopeLabel: string) => {
@@ -952,9 +995,7 @@ function App() {
       scopeLabel,
       fullScan: false,
     });
-    activeProjectRef.current = next;
-    hasLocalEditsSinceMountRef.current = true;
-    setProject(next);
+    stageNarrativeMetadata(next, 'Semantic consistency check', 'Recorded scoped diagnostic findings.');
   };
 
   const handleApplyDiagnosticFix = async (
@@ -965,31 +1006,11 @@ function App() {
     try {
       const before = activeProjectRef.current;
       const result = applyDiagnosticFixAlternative(before, undoStateRef.current, issueId, alternative, expectedBaseRevision);
-      const saved = await flushProjectDurably(result.project, {
-        expectedPersistedRevision: before.revision,
-        requireExactBase: true,
-        intentId: `fix_${before.id}_${issueId}_${alternative.id}_r${expectedBaseRevision}`,
-        clearConflictOnSuccess: true,
-      });
-      if (!saved.saved) {
-        return { ok: false, message: saved.error ?? 'Could not durably save the applied fix.' };
-      }
-      const committed = saved.idempotentHit && saved.storedProject
-        ? saved.storedProject
-        : { ...result.project, persistedRevision: saved.persistedRevision ?? result.project.revision };
-      const committedUndo = saved.idempotentHit
-        ? createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory)
-        : result.undoState;
-      activeProjectRef.current = committed;
-      undoStateRef.current = committedUndo;
-      hasLocalEditsSinceMountRef.current = true;
-      setProject(committed);
-      setUndoState(committedUndo);
       const note = result.issueResolved
         ? `${result.appliedSummary} Issue resolved after post-apply recheck.`
         : `${result.appliedSummary} Post-apply recheck kept residual issue open (${result.residualOpenCount} open).`;
-      setStatusNotification(note);
-      return { ok: true, message: note };
+      const saved = await commitPreparedNarrative(before, result, note, `fix_${before.id}_${issueId}_${alternative.id}_r${expectedBaseRevision}`);
+      return { ok: true, message: saved.message };
     } catch (cause) {
       return { ok: false, message: cause instanceof Error ? cause.message : 'Fix could not be applied.' };
     }
@@ -1002,26 +1023,8 @@ function App() {
     try {
       const before = activeProjectRef.current;
       const applied = applyModelSyncProposal(before, undoStateRef.current, proposal, expectedBaseRevision);
-      const saved = await flushProjectDurably(applied.project, {
-        expectedPersistedRevision: before.revision,
-        requireExactBase: true,
-        intentId: `sync_model_${before.id}_${proposal.id}_r${expectedBaseRevision}`,
-        clearConflictOnSuccess: true,
-      });
-      if (!saved.saved) return { ok: false, message: saved.error ?? 'Could not save sync model update.' };
-      const committed = saved.idempotentHit && saved.storedProject
-        ? saved.storedProject
-        : { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
-      const committedUndo = saved.idempotentHit
-        ? createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory)
-        : applied.undoState;
-      activeProjectRef.current = committed;
-      undoStateRef.current = committedUndo;
-      hasLocalEditsSinceMountRef.current = true;
-      setProject(committed);
-      setUndoState(committedUndo);
-      setStatusNotification(applied.summary);
-      return { ok: true, message: applied.summary };
+      const saved = await commitPreparedNarrative(before, applied, applied.summary, `sync_model_${before.id}_${proposal.id}_r${expectedBaseRevision}`);
+      return { ok: true, message: saved.message };
     } catch (cause) {
       return { ok: false, message: cause instanceof Error ? cause.message : 'Sync model update failed.' };
     }
@@ -1041,27 +1044,8 @@ function App() {
         expectedBaseRevision,
         expectedManuscriptVersionId
       );
-      const saved = await flushProjectDurably(applied.project, {
-        expectedPersistedRevision: before.revision,
-        expectedManuscriptVersionId,
-        requireExactBase: true,
-        intentId: `sync_ms_${before.id}_${patch.id}_r${expectedBaseRevision}`,
-        clearConflictOnSuccess: true,
-      });
-      if (!saved.saved) return { ok: false, message: saved.error ?? 'Could not save manuscript sync patch.' };
-      const committed = saved.idempotentHit && saved.storedProject
-        ? saved.storedProject
-        : { ...applied.project, persistedRevision: saved.persistedRevision ?? applied.project.revision };
-      const committedUndo = saved.idempotentHit
-        ? createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory)
-        : applied.undoState;
-      activeProjectRef.current = committed;
-      undoStateRef.current = committedUndo;
-      hasLocalEditsSinceMountRef.current = true;
-      setProject(committed);
-      setUndoState(committedUndo);
-      setStatusNotification(applied.summary);
-      return { ok: true, message: applied.summary };
+      const saved = await commitPreparedNarrative(before, applied, applied.summary, `sync_ms_${before.id}_${patch.id}_r${expectedBaseRevision}`);
+      return { ok: true, message: saved.message };
     } catch (cause) {
       return { ok: false, message: cause instanceof Error ? cause.message : 'Manuscript sync patch failed.' };
     }
@@ -1104,10 +1088,8 @@ function App() {
         ].slice(-30),
       },
     };
-    activeProjectRef.current = next;
-    hasLocalEditsSinceMountRef.current = true;
-    setProject(next);
-    setStatusNotification(`Saved "${alt.label}" as a non-mutating alternative.`);
+    stageNarrativeMetadata(next, 'Keep writing alternative', alt.label);
+    setStatusNotification(`Queued "${alt.label}" for saving as an alternative.`);
   };
 
   const handleSendOpportunityToReview = (proposal: OpportunityProposal) => {
@@ -1118,6 +1100,10 @@ function App() {
 
   const handleUpdateAutomationPreferences = (prefs: NonNullable<NarrativeRecords['automationPreferences']>) => {
     const ensured = ensureNarrativeEnvelope(activeProjectRef.current);
+    const current = ensured.narrative?.automationPreferences;
+    if (current && current.semanticAutoAnalysisEnabled === prefs.semanticAutoAnalysisEnabled &&
+        current.scope === prefs.scope && current.maxCallsPerSession === prefs.maxCallsPerSession &&
+        current.maxTokensPerRun === prefs.maxTokensPerRun && Boolean(current.paused) === Boolean(prefs.paused)) return;
     const next: CreativeProject = {
       ...ensured,
       narrative: {
@@ -1125,10 +1111,8 @@ function App() {
         automationPreferences: prefs,
       },
     };
-    activeProjectRef.current = next;
-    hasLocalEditsSinceMountRef.current = true;
-    setProject(next);
-    setStatusNotification(prefs.semanticAutoAnalysisEnabled ? 'Bounded semantic auto-analysis preference updated.' : 'Semantic auto-analysis disabled.');
+    stageNarrativeMetadata(next, 'Update automation preferences', 'Changed bounded semantic auto-analysis preferences.');
+    setStatusNotification('Semantic auto-analysis preferences queued for saving.');
   };
 
   const handleToggleAutoBackup = (enabled: boolean) => {
