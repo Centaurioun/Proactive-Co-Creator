@@ -3,6 +3,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -54,7 +56,7 @@ const waitUntil = async (predicate, label, timeoutMs = 20_000) => {
     } catch (error) {
       lastError = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await sleep(250);
   }
   throw new Error(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}`);
 };
@@ -71,7 +73,7 @@ const refFor = (tree, needle) => {
 const fill = (tree, needle, value) => command(['fill', refFor(tree, needle), '--', value]);
 const click = (tree, needle) => command(['click', refFor(tree, needle)]);
 const screenshot = (name) => command(['screenshot', path.join(evidenceDir, name)]);
-const waitPage = (js, label) => command(['wait', '--fn', js, '--timeout', '20000']);
+const waitPage = (js) => command(['wait', '--fn', js, '--timeout', '20000']);
 
 const runResult = {
   status: 'RUNNING',

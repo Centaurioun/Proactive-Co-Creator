@@ -1,3 +1,4 @@
+/* global window, indexedDB, TextEncoder, crypto, localStorage, URL, Response */
 (() => {
   const originalFetch = window.fetch.bind(window);
   const capabilityResponse = {

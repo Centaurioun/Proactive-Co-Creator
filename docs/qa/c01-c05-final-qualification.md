@@ -49,9 +49,9 @@ The test durably saved the synthetic manuscript `PCC cancellation fixture — T�
 
 The test server health was `configured:false`. The isolated init script mocked `/api/ai/capabilities` as available solely to enable the real UI action and mocked the extraction response; all other same-origin `/api/*` calls would be recorded and rejected. Observed requests were two mocked capability reads and one mocked extraction POST. No real provider request or credentials were used.
 
-Observed baseline and post-cancellation digest for this run: `a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575` over 76,205 serialized characters; one project, revision/persisted revision 2, exact synthetic manuscript unchanged. The sample seed timestamp changes between isolated runs, so equality within a run—not equality to a previous run—is the invariant.
+Observed baseline and post-cancellation digest for the run on candidate `e6a70f5143121727b51276ed9e3ae29936f9c4a9`: `4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d` over 76,205 serialized characters; one project, revision/persisted revision 2, exact synthetic manuscript unchanged. The sample seed timestamp changes between isolated runs, so equality within a run—not equality to a previous run—is the invariant.
 
-Result JSON: [`q06-import-cancellation-2026-11-25.json`](evidence/browser/final-qualification-2026-11-25/q06-import-cancellation-2026-11-25.json), SHA-256 `370c35e55f33e6e572b315d7bc9d8644b7ce0c77c7eef8dfdd1cfc2f6d64b295`. Screenshots are `q06-staged-source-before-cancel.png`, `q06-extraction-in-flight.png` and `q06-late-response-rejected.png` in the same evidence directory.
+Result JSON: [`q06-import-cancellation-2026-11-25.json`](evidence/browser/final-qualification-2026-11-25/q06-import-cancellation-2026-11-25.json), SHA-256 `30d5afff54171b2ba197883b1675d920fe8ba9e8da3f1b1985c8e4467722dc43`. Screenshots are `q06-staged-source-before-cancel.png`, `q06-extraction-in-flight.png` and `q06-late-response-rejected.png` in the same evidence directory.
 
 ### Compact navigation and accessibility observations
 

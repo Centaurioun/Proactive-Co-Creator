@@ -1,6 +1,6 @@
 {
   "status": "PASS",
-  "candidateHead": "1d4242595e7ec268977592e77f6e03bf3608b5bf",
+  "candidateHead": "e6a70f5143121727b51276ed9e3ae29936f9c4a9",
   "browserSession": "pcc-import-cancel-7515c387cd68",
   "origin": "http://127.0.0.1:4337",
   "providerConfigured": false,
@@ -18,7 +18,7 @@
       "samePreference": true,
       "stage": "staged-source-before-exit",
       "state": {
-        "digest": "a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575",
+        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
         "projectCount": 1,
         "projectionCharacters": 76205,
         "projects": [
@@ -39,7 +39,7 @@
       "samePreference": true,
       "stage": "staged-source-after-exit",
       "state": {
-        "digest": "a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575",
+        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
         "projectCount": 1,
         "projectionCharacters": 76205,
         "projects": [
@@ -64,7 +64,7 @@
       "samePreference": true,
       "stage": "late-response-rejected",
       "state": {
-        "digest": "a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575",
+        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
         "projectCount": 1,
         "projectionCharacters": 76205,
         "projects": [
@@ -86,7 +86,7 @@
   ],
   "baseline": {
     "projectBaseline": {
-      "digest": "a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575",
+      "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
       "projectCount": 1,
       "projectionCharacters": 76205,
       "projects": [
@@ -110,7 +110,7 @@
     "samePreference": true,
     "stage": "after-in-flight-import-exit",
     "state": {
-      "digest": "a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575",
+      "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
       "projectCount": 1,
       "projectionCharacters": 76205,
       "projects": [

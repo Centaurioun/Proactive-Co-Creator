@@ -75,7 +75,7 @@ The Principal Architect required staged-source cancellation, in-flight mocked ex
 
 - A valid parsed source was staged, then Import was exited. The existing one-project inventory and Write preference stayed unchanged.
 - A second source started one intercepted `POST /api/narrative/import/extract`. The test observed the AbortSignal, then delivered an empty mock response after cancellation. No Review candidates appeared.
-- The synthetic existing manuscript `PCC cancellation fixture — Türkçe — manuscript stays intact.` was durably stored at revision 2 before the test and remained exact afterward. The full IndexedDB project projection digest matched before and after: `a89005a61a04d3e6b658a7b45f0c2fb098bf7ea40d8ccf8961f1956a42eee575` in this run. No project creation, append, or revision increment occurred; workspace returned to Write.
+- The synthetic existing manuscript `PCC cancellation fixture — Türkçe — manuscript stays intact.` was durably stored at revision 2 before the test and remained exact afterward. On candidate `e6a70f5143121727b51276ed9e3ae29936f9c4a9`, the full IndexedDB project projection digest matched before and after: `4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d`. No project creation, append, or revision increment occurred; workspace returned to Write.
 - Server health was `configured:false`. Client AI capability and the one extraction response were mocked in a pre-navigation init script. No provider traffic occurred; other same-origin `/api/*` routes were fail-closed.
 - Result and screenshots: `docs/qa/evidence/browser/final-qualification-2026-11-25/q06-import-cancellation-2026-11-25.json` and `q06-*.png`.
 
