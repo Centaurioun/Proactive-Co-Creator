@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ArtifactAnchor, ManuscriptSection } from '../../shared/narrativeTypes';
 import type { CreativeProject } from '../../shared/types';
 import { applyManuscriptOperation, manuscriptSections, narrativeBase, type NarrativeBase } from '../../lib/narrative/manuscriptModel';
 import { filterManuscriptSections } from '../../lib/narrative/manuscriptNavigation';
+import { isTextBoundary } from '../../lib/narrative/evidenceRegistry';
 import { createStyleProfile, type StyleProfile } from '../../lib/narrative/context/styleProfile';
 import AdoptArtifactDialog from './AdoptArtifactDialog';
 import WritingAssistantPanel from './WritingAssistantPanel';
@@ -17,6 +18,8 @@ interface Props {
   project: CreativeProject;
   onSave: (base: NarrativeBase, sections: ManuscriptSection[], artifact?: ArtifactAnchor, styleProfile?: StyleProfile) => Promise<void>;
   onDirty: (dirty: boolean) => void;
+  onCompositionChange?: (composing: boolean) => void;
+  isActive?: boolean;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -40,6 +43,8 @@ export default function ManuscriptEditor({
   project,
   onSave,
   onDirty,
+  onCompositionChange,
+  isActive = true,
   onUndo,
   onRedo,
   canUndo,
@@ -59,6 +64,7 @@ export default function ManuscriptEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [focus, setFocus] = useState(false);
+  const [focusToolsOpen, setFocusToolsOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [chapterFilter, setChapterFilter] = useState('');
@@ -71,6 +77,20 @@ export default function ManuscriptEditor({
   const [adopting, setAdopting] = useState(Boolean(initialArtifactId));
   const [confirming, setConfirming] = useState<'delete' | 'merge' | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const editorMain = useRef<HTMLElement>(null);
+  const composingRef = useRef(false);
+  const editorOwnedFocus = useRef(false);
+  const wasActive = useRef(isActive);
+  const textareaScrollTop = useRef(0);
+  const returnPosition = useRef<{
+    sectionId: string;
+    start: number;
+    end: number;
+    textareaScrollTop: number;
+    editorScrollTop: number;
+  } | null>(null);
+  const restorePosition = useRef(false);
+  const restoreFocus = useRef(false);
   const inFlight = useRef(false);
   const sections = draft?.sections ?? manuscriptSections(project);
   const styleSources = project.narrative?.sources ?? [];
@@ -100,6 +120,67 @@ export default function ManuscriptEditor({
   }
 
   const styleProfileDirty = JSON.stringify(styleProfile) !== JSON.stringify(profileForCurrentVersion);
+
+  const captureReturnPosition = useCallback(() => {
+    const editor = textarea.current;
+    returnPosition.current = {
+      sectionId: selected?.id ?? '',
+      start: editor?.selectionStart ?? selectionRange.start,
+      end: editor?.selectionEnd ?? selectionRange.end,
+      textareaScrollTop: editor?.scrollTop ?? textareaScrollTop.current,
+      editorScrollTop: editorMain.current?.scrollTop ?? 0,
+    };
+  }, [selected?.id, selectionRange.start, selectionRange.end]);
+
+  function toggleFocus() {
+    if (composingRef.current) return;
+    captureReturnPosition();
+    restorePosition.current = true;
+    restoreFocus.current = true;
+    if (!focus && previewSection) setPreviewSection(false);
+    setFocus(value => !value);
+    setFocusToolsOpen(false);
+  }
+
+  useLayoutEffect(() => {
+    const activeChanged = wasActive.current !== isActive;
+    if (activeChanged) {
+      wasActive.current = isActive;
+      if (!isActive) {
+        editorOwnedFocus.current = editorOwnedFocus.current || document.activeElement === textarea.current;
+        captureReturnPosition();
+        return;
+      }
+      restorePosition.current = true;
+      restoreFocus.current = editorOwnedFocus.current;
+    }
+    if (!isActive) return;
+    if (!restorePosition.current || !returnPosition.current) return;
+    restorePosition.current = false;
+    const position = returnPosition.current;
+    if (position.sectionId !== (selected?.id ?? '')) return;
+    const editor = textarea.current;
+    let restoredStart = position.start;
+    let restoredEnd = position.end;
+    if (editor) {
+      restoredStart = Math.min(position.start, editor.value.length);
+      restoredEnd = Math.min(Math.max(restoredStart, position.end), editor.value.length);
+      if (restoredStart === restoredEnd) {
+        while (restoredStart > 0 && !isTextBoundary(editor.value, restoredStart)) restoredStart -= 1;
+        restoredEnd = restoredStart;
+      } else {
+        while (restoredStart > 0 && !isTextBoundary(editor.value, restoredStart)) restoredStart -= 1;
+        while (restoredEnd < editor.value.length && !isTextBoundary(editor.value, restoredEnd)) restoredEnd += 1;
+      }
+      editor.setSelectionRange(restoredStart, restoredEnd);
+      editor.scrollTop = position.textareaScrollTop;
+      if (restoreFocus.current) editor.focus({ preventScroll: true });
+      textareaScrollTop.current = position.textareaScrollTop;
+    }
+    if (editorMain.current) editorMain.current.scrollTop = position.editorScrollTop;
+    setSelectionRange({ start: restoredStart, end: restoredEnd });
+    restoreFocus.current = false;
+  }, [captureReturnPosition, focus, isActive, previewSection, selected?.id]);
 
   function edit(next: ManuscriptSection[]) {
     setDraft({ base: draft?.base ?? narrativeBase(project), sections: next });
@@ -149,6 +230,7 @@ export default function ManuscriptEditor({
     const section = { id: crypto.randomUUID(), kind, title: '', text: '' };
     operate({ kind: 'add', section });
     setSelectedId(section.id);
+    setSelectionRange({ start: 0, end: 0 });
   }
 
   function update(updates: Extract<Parameters<typeof applyManuscriptOperation>[1], { kind: 'edit' }>['updates']) {
@@ -156,7 +238,7 @@ export default function ManuscriptEditor({
   }
 
   return (
-    <main className="min-h-0 flex-1 overflow-auto bg-pcc-canvas dark:bg-pcc-dark-canvas">
+    <main ref={editorMain} className="min-h-0 flex-1 overflow-auto bg-pcc-canvas dark:bg-pcc-dark-canvas">
       <div className={`mx-auto grid max-w-[1600px] gap-4 p-3 sm:p-6 ${focus ? 'max-w-[82ch]' : 'lg:grid-cols-[15rem_minmax(0,1fr)]'}`}>
         {!focus && (
           <button type="button" className={`${workspaceButton} justify-self-start lg:hidden`}
@@ -185,7 +267,9 @@ export default function ManuscriptEditor({
             onChangeChapterFilter={setChapterFilter}
             onChangeChronologyFilter={setChronologyFilter}
             onSelectSection={(id) => {
+              if (!sections.some(section => section.id === id)) return;
               setSelectedId(id);
+              setSelectionRange({ start: 0, end: 0 });
               setConfirming(null);
             }}
           />
@@ -197,9 +281,9 @@ export default function ManuscriptEditor({
               <p className="break-words text-sm text-gray-600 dark:text-gray-300">{project.name} · {words} words</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className={workspaceButton} aria-pressed={focus} onClick={() => setFocus(!focus)}>{focus ? 'Exit focus' : 'Focus mode'}</button>
-              <button className={workspaceButton} disabled={!enabled || !!draft || !canUndo} onClick={onUndo}>Undo</button>
-              <button className={workspaceButton} disabled={!enabled || !!draft || !canRedo} onClick={onRedo}>Redo</button>
+              <button type="button" className={workspaceButton} aria-pressed={focus} disabled={isComposing} onClick={toggleFocus}>{focus ? 'Return to writing' : 'Focus mode'}</button>
+              {!focus && <button type="button" className={workspaceButton} disabled={!enabled || !!draft || !canUndo} onClick={onUndo}>Undo</button>}
+              {!focus && <button type="button" className={workspaceButton} disabled={!enabled || !!draft || !canRedo} onClick={onRedo}>Redo</button>}
             </div>
           </header>
           {!enabled && <p role="status" className="mt-3">Writing requires available IndexedDB and a verified workspace load.</p>}
@@ -231,7 +315,7 @@ export default function ManuscriptEditor({
               onApply={(next, anchor, base) => void save(base, next, anchor)} />
           )}
           <fieldset className="min-w-0 space-y-3" disabled={!enabled || adopting}>
-            {selected ? (
+            {selected && !focus ? (
               <label className="block text-sm">
                 {selected.kind === 'chapter' ? 'Chapter title' : 'Scene title'} (optional)
                 <input className={field} value={selected.title} readOnly={saving} onChange={event => update({ title: event.target.value })} />
@@ -241,9 +325,14 @@ export default function ManuscriptEditor({
               Manuscript text
               <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
                 <span id="manuscript-markdown-hint" className="text-xs text-gray-600 dark:text-gray-300">Markdown remains literal source text; preview displays it safely without interpreting HTML.</span>
-                <button type="button" className={workspaceButton} aria-pressed={previewSection} onClick={() => setPreviewSection(value => !value)}>
+                {!focus && <button type="button" className={workspaceButton} aria-pressed={previewSection} onClick={() => {
+                  captureReturnPosition();
+                  restorePosition.current = true;
+                  restoreFocus.current = previewSection;
+                  setPreviewSection(value => !value);
+                }}>
                   {previewSection ? 'Edit section' : 'Preview section'}
-                </button>
+                </button>}
               </div>
               {previewSection ? (
                 <pre aria-label="Section preview" className="pcc-editorial mt-2 min-h-[56vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-pcc-line bg-pcc-canvas p-5 text-[17px] leading-[1.7] dark:border-pcc-dark-line dark:bg-pcc-dark-canvas">{selected?.text || 'Nothing to preview yet.'}</pre>
@@ -253,6 +342,17 @@ export default function ManuscriptEditor({
                   onSelect={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
                   onKeyUp={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
                   onMouseUp={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
+                  onScroll={event => {
+                    const editor = event.currentTarget;
+                    returnPosition.current = {
+                      sectionId: selected?.id ?? '',
+                      start: editor.selectionStart,
+                      end: editor.selectionEnd,
+                      textareaScrollTop: editor.scrollTop,
+                      editorScrollTop: editorMain.current?.scrollTop ?? 0,
+                    };
+                    textareaScrollTop.current = editor.scrollTop;
+                  }}
                   onChange={event => {
                     setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 });
                     if (selected) {
@@ -263,11 +363,25 @@ export default function ManuscriptEditor({
                       setSelectedId(section.id);
                     }
                   }}
-                  onCompositionStart={() => setIsComposing(true)}
-                  onCompositionEnd={() => setIsComposing(false)} spellCheck />
+                  onCompositionStart={() => {
+                    composingRef.current = true;
+                    onCompositionChange?.(true);
+                    setIsComposing(true);
+                  }}
+                  onCompositionEnd={event => {
+                    composingRef.current = false;
+                    onCompositionChange?.(false);
+                    setIsComposing(false);
+                    setSelectionRange({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd });
+                  }}
+                  onFocus={() => { editorOwnedFocus.current = true; }}
+                  onBlur={event => {
+                    if (event.relatedTarget || isActive) editorOwnedFocus.current = false;
+                  }}
+                  spellCheck />
               )}
             </label>
-            {selected && (
+            {selected && !focus && (
               <fieldset disabled={saving} className="min-w-0 space-y-3">
               <div className="flex flex-wrap gap-2">
                 <button className={workspaceButton} disabled={index <= 0} onClick={() => operate({ kind: 'move', id: selected.id, direction: -1 })}>Move up</button>
@@ -320,7 +434,14 @@ export default function ManuscriptEditor({
               </fieldset>
             )}
           </fieldset>
-          <div className="mt-5 grid gap-3 lg:grid-cols-2">
+          <div className="mt-5">
+            {focus && (
+              <button type="button" className={workspaceButton} aria-expanded={focusToolsOpen}
+                onClick={() => setFocusToolsOpen(value => !value)}>
+                {focusToolsOpen ? 'Hide context and writing tools' : 'Inspect context and writing tools'}
+              </button>
+            )}
+            <div hidden={focus && !focusToolsOpen} className="mt-3 grid gap-3 lg:grid-cols-2">
             <StyleProfilePanel
               projectId={project.id}
               styleVersionKey={styleVersionKey}
@@ -360,9 +481,11 @@ export default function ManuscriptEditor({
                 const newSec: ManuscriptSection = { id: crypto.randomUUID(), kind: 'scene', title, text };
                 operate({ kind: 'add', section: newSec });
                 setSelectedId(newSec.id);
+                setSelectionRange({ start: 0, end: 0 });
               }}
               onSaveAlternative={(alt) => onSaveWritingAlternative?.(alt)}
             />
+            </div>
           </div>
         </article>
       </div>

@@ -12,6 +12,7 @@ import {
   type StyleTrait,
 } from '../../lib/narrative/context/styleProfile';
 import type { ManuscriptSection, NarrativeRecords } from '../../shared/narrativeTypes';
+import { isTextBoundary } from '../../lib/narrative/evidenceRegistry';
 
 export interface StyleProfilePanelProps {
   projectId: string;
@@ -79,10 +80,19 @@ const StyleProfilePanel: React.FC<StyleProfilePanelProps> = ({
     const source = resolveStyleSource(observation.evidence);
     return (
       source !== undefined &&
+      Number.isInteger(observation.evidence.start) &&
+      Number.isInteger(observation.evidence.end) &&
+      observation.evidence.start >= 0 &&
+      observation.evidence.end > observation.evidence.start &&
+      observation.evidence.end <= source.text.length &&
+      observation.evidence.end - observation.evidence.start === observation.evidence.excerpt.length &&
+      isTextBoundary(source.text, observation.evidence.start) &&
+      isTextBoundary(source.text, observation.evidence.end) &&
       source.text.slice(observation.evidence.start, observation.evidence.end) ===
         observation.evidence.excerpt
     );
   });
+  const staleStyleObservationCount = styleProfile.observations.length - currentStyleObservations.length;
   const currentStyleProfile = { ...styleProfile, observations: currentStyleObservations };
   const styleContext = selectedSection
     ? selectStyleContext(currentStyleProfile, projectId, selectedSection.id)
@@ -104,7 +114,12 @@ const StyleProfilePanel: React.FC<StyleProfilePanelProps> = ({
       return;
     }
     const start = source.text.indexOf(styleExcerpt);
-    if (start < 0 || source.text.indexOf(styleExcerpt, start + 1) >= 0) {
+    if (
+      start < 0 ||
+      source.text.indexOf(styleExcerpt, start + 1) >= 0 ||
+      !isTextBoundary(source.text, start) ||
+      !isTextBoundary(source.text, start + styleExcerpt.length)
+    ) {
       setStyleError('The exact excerpt must appear once in the selected project source.');
       return;
     }
@@ -188,6 +203,11 @@ const StyleProfilePanel: React.FC<StyleProfilePanelProps> = ({
           </p>
         ))}
       </section>
+      {staleStyleObservationCount > 0 && (
+        <p role="status" className="mb-3 rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
+          {staleStyleObservationCount} style {staleStyleObservationCount === 1 ? 'reference no longer matches' : 'references no longer match'} its imported source and are excluded from context.
+        </p>
+      )}
       {styleSources.length ? (
         <fieldset className="grid gap-3" disabled={!selectedStyleSource || saving}>
           <legend className="font-medium">Add a note for review</legend>
