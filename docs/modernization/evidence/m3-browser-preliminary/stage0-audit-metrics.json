@@ -1,0 +1,582 @@
+{
+  "measuredAt": "2026-11-25T15:32:38.353Z",
+  "a11y": {
+    "responsiveResults": [
+      {
+        "viewport": "1440x900 (Desktop)",
+        "width": 1440,
+        "height": 900,
+        "docOverflow": false,
+        "overflowPx": 0,
+        "clippedRightCount": 0,
+        "clippedSamples": [],
+        "totalVisibleInteractive": 102,
+        "below24Count": 4,
+        "below24Samples": [
+          {
+            "label": "PCC",
+            "w": 28,
+            "h": 20
+          },
+          {
+            "label": "Dismiss",
+            "w": 51,
+            "h": 16
+          },
+          {
+            "label": "Story Mode",
+            "w": 83,
+            "h": 20
+          },
+          {
+            "label": "Image Mode",
+            "w": 87,
+            "h": 20
+          }
+        ],
+        "below44Count": 72,
+        "headerHeight": 65,
+        "footerHeight": 59,
+        "generateButtonInViewport": true
+      },
+      {
+        "viewport": "1280x800 (Laptop)",
+        "width": 1280,
+        "height": 800,
+        "docOverflow": false,
+        "overflowPx": 0,
+        "clippedRightCount": 0,
+        "clippedSamples": [],
+        "totalVisibleInteractive": 102,
+        "below24Count": 4,
+        "below24Samples": [
+          {
+            "label": "PCC",
+            "w": 28,
+            "h": 20
+          },
+          {
+            "label": "Dismiss",
+            "w": 51,
+            "h": 16
+          },
+          {
+            "label": "Story Mode",
+            "w": 83,
+            "h": 20
+          },
+          {
+            "label": "Image Mode",
+            "w": 87,
+            "h": 20
+          }
+        ],
+        "below44Count": 72,
+        "headerHeight": 65,
+        "footerHeight": 59,
+        "generateButtonInViewport": true
+      },
+      {
+        "viewport": "768x1024 (Tablet)",
+        "width": 768,
+        "height": 1024,
+        "docOverflow": false,
+        "overflowPx": 0,
+        "clippedRightCount": 0,
+        "clippedSamples": [],
+        "totalVisibleInteractive": 46,
+        "below24Count": 4,
+        "below24Samples": [
+          {
+            "label": "PCC",
+            "w": 28,
+            "h": 20
+          },
+          {
+            "label": "Dismiss",
+            "w": 51,
+            "h": 16
+          },
+          {
+            "label": "Story Mode",
+            "w": 83,
+            "h": 20
+          },
+          {
+            "label": "Image Mode",
+            "w": 87,
+            "h": 20
+          }
+        ],
+        "below44Count": 27,
+        "headerHeight": 117,
+        "footerHeight": 59,
+        "generateButtonInViewport": true
+      },
+      {
+        "viewport": "390x844 (Mobile)",
+        "width": 390,
+        "height": 844,
+        "docOverflow": false,
+        "overflowPx": 0,
+        "clippedRightCount": 0,
+        "clippedSamples": [],
+        "totalVisibleInteractive": 41,
+        "below24Count": 4,
+        "below24Samples": [
+          {
+            "label": "PCC",
+            "w": 28,
+            "h": 20
+          },
+          {
+            "label": "Dismiss",
+            "w": 51,
+            "h": 16
+          },
+          {
+            "label": "Story Mode",
+            "w": 83,
+            "h": 20
+          },
+          {
+            "label": "Image Mode",
+            "w": 87,
+            "h": 20
+          }
+        ],
+        "below44Count": 23,
+        "headerHeight": 117,
+        "footerHeight": 97,
+        "generateButtonInViewport": true
+      },
+      {
+        "viewport": "320x568 (Narrow Mobile)",
+        "width": 320,
+        "height": 568,
+        "docOverflow": false,
+        "overflowPx": 0,
+        "clippedRightCount": 0,
+        "clippedSamples": [],
+        "totalVisibleInteractive": 41,
+        "below24Count": 4,
+        "below24Samples": [
+          {
+            "label": "PCC",
+            "w": 28,
+            "h": 20
+          },
+          {
+            "label": "Dismiss",
+            "w": 51,
+            "h": 16
+          },
+          {
+            "label": "Story Mode",
+            "w": 83,
+            "h": 20
+          },
+          {
+            "label": "Image Mode",
+            "w": 87,
+            "h": 20
+          }
+        ],
+        "below44Count": 23,
+        "headerHeight": 117,
+        "footerHeight": 97,
+        "generateButtonInViewport": true
+      },
+      {
+        "viewport": "720x450 (200% Zoom equiv @1440x900)",
+        "width": 720,
+        "height": 450,
+        "docOverflow": false,
+        "overflowPx": 0,
+        "clippedRightCount": 0,
+        "clippedSamples": [],
+        "totalVisibleInteractive": 46,
+        "below24Count": 4,
+        "below24Samples": [
+          {
+            "label": "PCC",
+            "w": 28,
+            "h": 20
+          },
+          {
+            "label": "Dismiss",
+            "w": 51,
+            "h": 16
+          },
+          {
+            "label": "Story Mode",
+            "w": 83,
+            "h": 20
+          },
+          {
+            "label": "Image Mode",
+            "w": 87,
+            "h": 20
+          }
+        ],
+        "below44Count": 27,
+        "headerHeight": 117,
+        "footerHeight": 59,
+        "generateButtonInViewport": true
+      }
+    ],
+    "semanticAudit": {
+      "headings": [
+        {
+          "tag": "H2",
+          "text": "Outline"
+        },
+        {
+          "tag": "H1",
+          "text": "Working Manuscript"
+        },
+        {
+          "tag": "H3",
+          "text": "Current style context"
+        },
+        {
+          "tag": "H1",
+          "text": "Plan"
+        },
+        {
+          "tag": "H2",
+          "text": "Decision inbox"
+        },
+        {
+          "tag": "H2",
+          "text": "Decision Inbox"
+        },
+        {
+          "tag": "H3",
+          "text": "What is the cat's personality as the party ho"
+        },
+        {
+          "tag": "H3",
+          "text": "What overall tone and atmosphere should the d"
+        },
+        {
+          "tag": "H3",
+          "text": "Where is the cat hosting this gathering?"
+        },
+        {
+          "tag": "H3",
+          "text": "What sparks tension or intrigue during the di"
+        },
+        {
+          "tag": "H3",
+          "text": "The Story: tone"
+        },
+        {
+          "tag": "H3",
+          "text": "The Story: setting"
+        },
+        {
+          "tag": "H3",
+          "text": "Cat: age"
+        },
+        {
+          "tag": "H3",
+          "text": "Rabbit: personality"
+        },
+        {
+          "tag": "H3",
+          "text": "Rabbit: age"
+        },
+        {
+          "tag": "H3",
+          "text": "Fox: personality"
+        },
+        {
+          "tag": "H3",
+          "text": "Fox: age"
+        },
+        {
+          "tag": "H3",
+          "text": "Conservatory Dining Room: atmosphere"
+        },
+        {
+          "tag": "H3",
+          "text": "Banquet Table → Conservatory Dining Room"
+        },
+        {
+          "tag": "H3",
+          "text": "Owl → Clocktower Mill"
+        },
+        {
+          "tag": "H3",
+          "text": "Hedgehog → Silver Teapot"
+        },
+        {
+          "tag": "H3",
+          "text": "Fox → Sealed Ledger"
+        },
+        {
+          "tag": "H3",
+          "text": "Fox → Cat"
+        },
+        {
+          "tag": "H2",
+          "text": "Generated output"
+        },
+        {
+          "tag": "H3",
+          "text": "Story Elements Directory (15)"
+        },
+        {
+          "tag": "H4",
+          "text": "Add New Entity to Graph"
+        }
+      ],
+      "unnamedControlsCount": 0,
+      "unnamedControls": [],
+      "tablists": [
+        {
+          "label": "Prompt and Generated Output views",
+          "tabs": 2,
+          "selected": 1
+        },
+        {
+          "label": "Inspector views",
+          "tabs": 7,
+          "selected": 1
+        }
+      ]
+    },
+    "headerActiveAfterStoryBible": {
+      "activeMode": "Plan",
+      "selectedContextTab": "Generated Story · Outdated"
+    },
+    "infoModalFocus": {
+      "onOpen": {
+        "open": true,
+        "focusInside": true,
+        "activeTag": "BUTTON",
+        "activeText": "×"
+      },
+      "afterEscape": {
+        "tag": "BUTTON",
+        "text": "About"
+      }
+    },
+    "lightContrast": [
+      {
+        "name": "Header brand title",
+        "found": true,
+        "sampleText": "PCC",
+        "fontSize": "14px",
+        "fg": "rgb(40, 38, 41)",
+        "bg": "rgb(255, 254, 250)",
+        "contrastRatio": 14.87,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Inactive workspace mode",
+        "found": true,
+        "sampleText": "Write",
+        "fontSize": "14px",
+        "fg": "rgb(112, 108, 114)",
+        "bg": "rgb(248, 247, 243)",
+        "contrastRatio": 4.81,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Primary Generate CTA",
+        "found": true,
+        "sampleText": "Generate Story",
+        "fontSize": "14px",
+        "fg": "rgb(255, 255, 255)",
+        "bg": "rgb(98, 68, 94)",
+        "contrastRatio": 8.37,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "12px metadata / helper text",
+        "found": true,
+        "sampleText": "17 pending · 0 confirmed",
+        "fontSize": "12px",
+        "fg": "rgb(130, 125, 131)",
+        "bg": "rgb(255, 255, 255)",
+        "contrastRatio": 4.03,
+        "passesAA_Normal_4_5": false,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "11px link (\"Try sample batch\")",
+        "found": true,
+        "sampleText": "Try sample batch",
+        "fontSize": "11px",
+        "fg": "rgb(98, 68, 94)",
+        "bg": "oklab(0.975789 -0.000435561 0.00539803 / 0.6)",
+        "contrastRatio": 8.03,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Graph legend text (11px)",
+        "found": true,
+        "sampleText": "PCCCurrent projectLantern Mill Whod",
+        "fontSize": "16px",
+        "fg": "rgb(40, 38, 41)",
+        "bg": "rgb(248, 247, 243)",
+        "contrastRatio": 14,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Outdated warning banner",
+        "found": true,
+        "sampleText": "PCCCurrent projectLantern Mill Whod",
+        "fontSize": "16px",
+        "fg": "rgb(40, 38, 41)",
+        "bg": "rgb(248, 247, 243)",
+        "contrastRatio": 14,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      }
+    ],
+    "darkContrast": [
+      {
+        "name": "Header brand title",
+        "found": true,
+        "sampleText": "PCC",
+        "fontSize": "14px",
+        "fg": "rgb(243, 239, 242)",
+        "bg": "rgb(36, 33, 37)",
+        "contrastRatio": 13.98,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Inactive workspace mode",
+        "found": true,
+        "sampleText": "Write",
+        "fontSize": "14px",
+        "fg": "rgb(185, 176, 185)",
+        "bg": "rgb(27, 25, 28)",
+        "contrastRatio": 8.29,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Primary Generate CTA",
+        "found": true,
+        "sampleText": "Generate Story",
+        "fontSize": "14px",
+        "fg": "rgb(255, 255, 255)",
+        "bg": "rgb(98, 68, 94)",
+        "contrastRatio": 8.37,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "12px metadata / helper text",
+        "found": true,
+        "sampleText": "17 pending · 0 confirmed",
+        "fontSize": "12px",
+        "fg": "rgb(170, 165, 170)",
+        "bg": "rgb(40, 38, 41)",
+        "contrastRatio": 6.2,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "11px link (\"Try sample batch\")",
+        "found": true,
+        "sampleText": "Try sample batch",
+        "fontSize": "11px",
+        "fg": "rgb(157, 118, 151)",
+        "bg": "oklab(0.216963 0.00459737 -0.00463443 / 0.5)",
+        "contrastRatio": 4.61,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Graph legend text (11px)",
+        "found": true,
+        "sampleText": "PCCCurrent projectLantern Mill Whod",
+        "fontSize": "16px",
+        "fg": "rgb(243, 239, 242)",
+        "bg": "rgb(27, 25, 28)",
+        "contrastRatio": 15.34,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      },
+      {
+        "name": "Outdated warning banner",
+        "found": true,
+        "sampleText": "PCCCurrent projectLantern Mill Whod",
+        "fontSize": "16px",
+        "fg": "rgb(243, 239, 242)",
+        "bg": "rgb(27, 25, 28)",
+        "contrastRatio": 15.34,
+        "passesAA_Normal_4_5": true,
+        "passesAA_Large_3_0": true
+      }
+    ],
+    "reducedMotionSupport": {
+      "hasReducedMotionCssRule": true
+    }
+  },
+  "browserPerf": [
+    {
+      "entityCount": 10,
+      "edgeCount": 10,
+      "readyMs": 661,
+      "nodeClickMs": 20,
+      "tabSwitchMs": 37,
+      "domNodes": 638,
+      "svgElements": 64,
+      "domContentLoadedMs": 40,
+      "loadEventMs": 40,
+      "fcpMs": 100,
+      "usedJsHeapMb": 10
+    },
+    {
+      "entityCount": 30,
+      "edgeCount": 30,
+      "readyMs": 676,
+      "nodeClickMs": 14,
+      "tabSwitchMs": 58,
+      "domNodes": 958,
+      "svgElements": 184,
+      "domContentLoadedMs": 39,
+      "loadEventMs": 39,
+      "fcpMs": 112,
+      "usedJsHeapMb": 11
+    },
+    {
+      "entityCount": 100,
+      "edgeCount": 100,
+      "readyMs": 734,
+      "nodeClickMs": 22,
+      "tabSwitchMs": 54,
+      "domNodes": 1878,
+      "svgElements": 604,
+      "domContentLoadedMs": 41,
+      "loadEventMs": 42,
+      "fcpMs": 136,
+      "usedJsHeapMb": 14
+    },
+    {
+      "entityCount": 250,
+      "edgeCount": 250,
+      "readyMs": 732,
+      "nodeClickMs": 33,
+      "tabSwitchMs": 95,
+      "domNodes": 2778,
+      "svgElements": 1504,
+      "domContentLoadedMs": 40,
+      "loadEventMs": 40,
+      "fcpMs": 148,
+      "usedJsHeapMb": 12
+    }
+  ]
+}

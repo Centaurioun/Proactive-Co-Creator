@@ -1,0 +1,466 @@
+{
+  "measuredAt": "2026-11-25T15:32:25.130Z",
+  "count": 12,
+  "journeys": [
+    {
+      "id": "J01",
+      "title": "First launch, seed idea entry, and Analyze (mock)",
+      "fixture": "FX-EMPTY",
+      "status": "PASS",
+      "durationMs": 1197,
+      "steps": [
+        "Seed FX-EMPTY",
+        "Fill idea textarea",
+        "Click Reanalyze Idea",
+        "Verify Clockmaker node + clarification render"
+      ],
+      "clicks": 2,
+      "evidence": {
+        "initialWorkspace": "write",
+        "initialEmptyTextareaValue": "Untitled creative project",
+        "clockmakerRendered": true,
+        "clarificationRendered": true
+      },
+      "friction": [
+        "Blank workspace pre-populated textarea with \"Untitled creative project\" instead of empty placeholder",
+        "Empty graph canvas has no empty-state prompt/CTA guiding first-time users to click Reanalyze Idea",
+        "Action button reads \"Reanalyze Idea\" even on an unanalyzed empty project"
+      ],
+      "mockedApiHits": 2,
+      "mockedApiUrls": [
+        "http://127.0.0.1:3490/api/analyze",
+        "http://127.0.0.1:3490/api/clarify"
+      ],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J02",
+      "title": "Decision Inbox Accept/Reject/Defer & Inspect target",
+      "fixture": "FX-SIMPLE",
+      "status": "PASS",
+      "durationMs": 1721,
+      "steps": [
+        "Accept first pending decision",
+        "Defer next decision",
+        "Reject next decision",
+        "Click Inspect -> on item"
+      ],
+      "clicks": 4,
+      "evidence": {
+        "headerBefore": "Decision Inbox13 pending · 0 confirmedMore QuestionsNatural-",
+        "headerAfter": "Decision Inbox10 pending · 1 confirmedMore QuestionsNatural-",
+        "inspectedTarget": true,
+        "footerSummary": "UndoRedo10 pending · 5 revsAccept All Pending (10)Review Plan & PromptShow Promp"
+      },
+      "friction": [
+        "Category filter strip (\"All | Questions | Characters | Relations | Setting\") clips horizontally on right edge in 3-col layout"
+      ],
+      "mockedApiHits": 0,
+      "mockedApiUrls": [],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J03",
+      "title": "Clarification custom answer, defer, and More Questions refresh (mock)",
+      "fixture": "FX-SIMPLE",
+      "status": "PASS",
+      "durationMs": 1590,
+      "steps": [
+        "Open Custom... on clarification",
+        "Type custom answer",
+        "Click Accept",
+        "Defer second clarification",
+        "Click More Questions (mock)"
+      ],
+      "clicks": 5,
+      "evidence": {
+        "customAnswerAccepted": true,
+        "refreshedQuestionVisible": true
+      },
+      "friction": [
+        "Pressing Enter inside Custom... input did not auto-submit without explicit Accept click unless handled; Defer is present while standalone Skip label is merged into Reject/Defer"
+      ],
+      "mockedApiHits": 1,
+      "mockedApiUrls": [
+        "http://127.0.0.1:3490/api/clarify"
+      ],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J04",
+      "title": "Story Bible edit, clear authority, Undo/Redo, and reload persistence",
+      "fixture": "FX-SIMPLE",
+      "status": "PASS",
+      "durationMs": 2470,
+      "steps": [
+        "Open Story Bible",
+        "Fill #bible-setting",
+        "Clear Primary Setting",
+        "Undo",
+        "Redo",
+        "Reload & verify empty"
+      ],
+      "clicks": 4,
+      "evidence": {
+        "afterEdit": "Rainy Harbor",
+        "afterClear": "",
+        "afterUndo": "Rainy Harbor",
+        "afterRedo": "",
+        "afterReload": ""
+      },
+      "friction": [
+        "2-column Grid default in 3-col right Inspector truncates input values and field titles (\"Point of Vi...\")"
+      ],
+      "mockedApiHits": 0,
+      "mockedApiUrls": [],
+      "unmockedApiHits": 2,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities",
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J05",
+      "title": "Graph search, category filter, zoom/fit, Table view & relationship edit",
+      "fixture": "FX-BUSY",
+      "status": "PASS",
+      "durationMs": 1753,
+      "steps": [
+        "Search Badger",
+        "Filter location",
+        "Zoom in + Fit",
+        "Toggle Table view",
+        "Check Table keyboard rows",
+        "Select & edit relationship"
+      ],
+      "clicks": 7,
+      "evidence": {
+        "filteredNodes": 1,
+        "locationNodes": 3,
+        "tableRowInfo": {
+          "totalRows": 28,
+          "keyboardFocusableRows": 28
+        },
+        "relEditable": true
+      },
+      "friction": [
+        "At 1440x900 with 15 entities, Fit zooms out until SVG node labels drop below ~8px visual height"
+      ],
+      "mockedApiHits": 0,
+      "mockedApiUrls": [],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J06",
+      "title": "NL batch preview, partial selection, stale guard, Review modal & Apply",
+      "fixture": "FX-BUSY",
+      "status": "PASS",
+      "durationMs": 1325,
+      "steps": [
+        "Fill NL batch",
+        "Preview",
+        "Uncheck Fox",
+        "Open Review Modal",
+        "Escape return focus",
+        "Edit setting -> stale guard",
+        "Re-preview & Apply"
+      ],
+      "clicks": 7,
+      "evidence": {
+        "modalFocus": "Review Plan & Prompt",
+        "returnFocus": "Review Plan & Prompt",
+        "staleVisible": true,
+        "applyDisabledWhileStale": true,
+        "appliedTone": "mysterious"
+      },
+      "friction": [
+        "Batch preview area sits inside left Decision Inbox scroll pane, pushing pending decisions down below the fold"
+      ],
+      "mockedApiHits": 0,
+      "mockedApiUrls": [],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J07",
+      "title": "Generate Story (mock), inspect output, copy/download & outdated badge",
+      "fixture": "FX-SIMPLE",
+      "status": "PASS",
+      "durationMs": 1307,
+      "steps": [
+        "Click Generate Story (mock)",
+        "Verify generated story + Copy/Download controls",
+        "Edit Story Bible tone",
+        "Verify Outdated badge"
+      ],
+      "clicks": 2,
+      "evidence": {
+        "copyVisible": true,
+        "dlVisible": true,
+        "outdatedVisible": true,
+        "storyBoxHeight": 900
+      },
+      "friction": [
+        "Three simultaneous \"Generate Story\" buttons appear on desktop before generation (PromptInput, OutputGallery empty state, Bottom Bar)",
+        "Output deck height is constrained beneath BeliefGraph, limiting long-form story reading to ~5 lines at 1440x900"
+      ],
+      "mockedApiHits": 1,
+      "mockedApiUrls": [
+        "http://127.0.0.1:3490/api/generate/story"
+      ],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J08",
+      "title": "Switch Story <-> Image, generate images (mock), gallery & lightbox Escape focus",
+      "fixture": "FX-OUT",
+      "status": "PASS",
+      "durationMs": 1619,
+      "steps": [
+        "Switch to Image mode",
+        "Generate Images (mock)",
+        "Open image 1 lightbox",
+        "Inspect focus inside dialog",
+        "Press Escape and check focus return",
+        "Switch back to Story"
+      ],
+      "clicks": 4,
+      "evidence": {
+        "focusInsideLightbox": true,
+        "focusAfterEscape": "Preview generated image 1"
+      },
+      "friction": [],
+      "mockedApiHits": 1,
+      "mockedApiUrls": [
+        "http://127.0.0.1:3490/api/generate/images"
+      ],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J09",
+      "title": "Create A/B projects, switch, reload & JSON export/import roundtrip",
+      "fixture": "FX-SIMPLE",
+      "status": "PASS",
+      "durationMs": 3608,
+      "steps": [
+        "Open Projects and create Project Alpha J09",
+        "Edit genre",
+        "Switch away & back",
+        "Reload Plan and verify stable preference/project inventory",
+        "Reload Review and verify stable preference/project inventory",
+        "Preview and restore JSON as a copy via paste"
+      ],
+      "clicks": 8,
+      "evidence": {
+        "newProjectOpenedInWrite": true,
+        "planPreferenceRestored": true,
+        "planPreferenceRecord": {
+          "version": 1,
+          "mode": "plan"
+        },
+        "planReloadPreservedInventory": true,
+        "reviewPreferenceRestored": true,
+        "reviewPreferenceRecord": {
+          "version": 1,
+          "mode": "review"
+        },
+        "reviewReloadPreservedInventory": true,
+        "projectInventory": [
+          "fx_simple_woodland",
+          "proj_mwwa83pl_5"
+        ],
+        "survivedGenre": "Maritime Noir",
+        "restoredProjectOpenedInWrite": true,
+        "restoredProjectName": "Imported J09 World (restored copy)",
+        "importedVisible": true,
+        "exportPromptBtnText": "Export Refined Prompt (.txt)"
+      },
+      "friction": [
+        "Export button reads \"Export Refined Prompt (.txt)\" while App.tsx downloads refined-prompt.md (Markdown)"
+      ],
+      "mockedApiHits": 0,
+      "mockedApiUrls": [],
+      "unmockedApiHits": 3,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities",
+        "http://127.0.0.1:3490/api/ai/capabilities",
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J10",
+      "title": "Consistency Checks navigation to entity & Story Bible field without revision bump",
+      "fixture": "FX-BUSY",
+      "status": "PASS",
+      "durationMs": 1352,
+      "steps": [
+        "Read authoritative IndexedDB semantic snapshot",
+        "Open Checks tab and capture",
+        "Click Inspect Fox and capture Inspector",
+        "Return to Checks",
+        "Open Tone readiness field and capture focus",
+        "Read authoritative IndexedDB semantic snapshot again"
+      ],
+      "clicks": 4,
+      "evidence": {
+        "revBefore": 3,
+        "revAfter": 3,
+        "semanticProjectionBefore": "{\"answeredQuestions\":[],\"clarifications\":[{\"category\":\"character\",\"id\":\"clar_cat_personality\",\"impact\":\"Shapes how the Cat interacts with every guest around the table.\",\"options\":[\"Gracious and attentive\",\"Mischievous\",\"Mysterious and observant\",\"Fussy perfectionist\"],\"question\":\"What is the cat's personality as the party host?\",\"status\":\"unanswered\",\"target\":{\"attributeName\":\"personality\",\"entityId\":\"ent_cat\",\"entityName\":\"Cat\",\"type\":\"entity_attribute\"}},{\"category\":\"tone\",\"id\":\"clar_party_tone\",\"impact\":\"Determines the narrative mood, dialogue style, and pacing.\",\"options\":[\"Warm and whimsical\",\"Mysterious with hidden secrets\",\"Lively comedic banter\",\"Cozy autumn nostalgia\"],\"question\":\"What overall tone and atmosphere should the dinner party have?\",\"status\":\"unanswered\",\"target\":{\"storyField\":\"tone\",\"type\":\"story_bible\"}},{\"category\":\"setting\",\"id\":\"clar_party_setting\",\"impact\":\"Establishes the sensory backdrop and environmental details.\",\"options\":[\"Lantern-lit conservatory dining room\",\"Sunlit garden under string lights\",\"Snowy mountain cabin by a fireplace\",\"Hollowed-out ancient oak treehouse\"],\"question\":\"Where is the cat hosting this gathering?\",\"status\":\"unanswered\",\"target\":{\"storyField\":\"setting\",\"type\":\"story_bible\"}},{\"category\":\"plot\",\"id\":\"clar_central_conflict\",\"impact\":\"Drives the narrative arc of the scene.\",\"options\":[\"A missing heirloom recipe card that someone at the table took\",\"Trying to keep a surprise midnight dish secret from the curious Fox\",\"An unexpected knock at the door from an uninvited Wolf\",\"Purely slice-of-life storytelling with gentle humor\"],\"question\":\"What sparks tension or intrigue during the dinner conversation?\",\"status\":\"unanswered\",\"target\":{\"storyField\":\"centralConflict\",\"type\":\"story_bible\"}}],\"decisions\":[{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Shapes how the Cat interacts with every guest around the table.\",\"explanation\":\"Targets Cat → personality\",\"groupKey\":\"character\",\"id\":\"dec_clar_clar_cat_personality\",\"options\":[\"Gracious and attentive\",\"Mischievous\",\"Mysterious and observant\",\"Fussy perfectionist\"],\"proposedValue\":\"Gracious and attentive\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_cat_personality\",\"status\":\"pending\",\"targetAttributeName\":\"personality\",\"targetEntityId\":\"ent_cat\",\"targetEntityName\":\"Cat\",\"title\":\"What is the cat's personality as the party host?\"},{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Determines the narrative mood, dialogue style, and pacing.\",\"explanation\":\"Targets Story Bible → tone\",\"groupKey\":\"story\",\"id\":\"dec_clar_clar_party_tone\",\"options\":[\"Warm and whimsical\",\"Mysterious with hidden secrets\",\"Lively comedic banter\",\"Cozy autumn nostalgia\"],\"proposedValue\":\"Warm and whimsical\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_party_tone\",\"status\":\"pending\",\"targetStoryField\":\"tone\",\"title\":\"What overall tone and atmosphere should the dinner party have?\"},{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Establishes the sensory backdrop and environmental details.\",\"explanation\":\"Targets Story Bible → setting\",\"groupKey\":\"setting\",\"id\":\"dec_clar_clar_party_setting\",\"options\":[\"Lantern-lit conservatory dining room\",\"Sunlit garden under string lights\",\"Snowy mountain cabin by a fireplace\",\"Hollowed-out ancient oak treehouse\"],\"proposedValue\":\"Lantern-lit conservatory dining room\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_party_setting\",\"status\":\"pending\",\"targetStoryField\":\"setting\",\"title\":\"Where is the cat hosting this gathering?\"},{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Drives the narrative arc of the scene.\",\"explanation\":\"Targets Story Bible → centralConflict\",\"groupKey\":\"plot\",\"id\":\"dec_clar_clar_central_conflict\",\"options\":[\"A missing heirloom recipe card that someone at the table took\",\"Trying to keep a surprise midnight dish secret from the curious Fox\",\"An unexpected knock at the door from an uninvited Wolf\",\"Purely slice-of-life storytelling with gentle humor\"],\"proposedValue\":\"A missing heirloom recipe card that someone at the table took\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_central_conflict\",\"status\":\"pending\",\"targetStoryField\":\"centralConflict\",\"title\":\"What sparks tension or intrigue during the dinner conversation?\"},{\"category\":\"story-bible\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Warm and whimsical\\\"\",\"explanation\":\"Inferred attribute for explicit entity \\\"The Story\\\".\",\"groupKey\":\"story\",\"id\":\"dec_attr_ent_story_scene_tone\",\"options\":[\"Warm and whimsical\",\"Mysterious\",\"Chaotic\"],\"proposedValue\":\"Warm and whimsical\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"tone\",\"targetEntityId\":\"ent_story_scene\",\"targetEntityName\":\"The Story\",\"title\":\"The Story: tone\"},{\"category\":\"story-bible\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Lantern-lit conservatory dining room\\\"\",\"explanation\":\"Inferred attribute for explicit entity \\\"The Story\\\".\",\"groupKey\":\"story\",\"id\":\"dec_attr_ent_story_scene_setting\",\"options\":[\"Lantern-lit conservatory dining room\",\"Sunlit garden courtyard\",\"Snowy mountain cabin\"],\"proposedValue\":\"Lantern-lit conservatory dining room\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"setting\",\"targetEntityId\":\"ent_story_scene\",\"targetEntityName\":\"The Story\",\"title\":\"The Story: setting\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Young adult\\\"\",\"explanation\":\"Inferred attribute for explicit entity \\\"Cat\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_cat_age\",\"options\":[\"Young adult\",\"Young\",\"Elderly\"],\"proposedValue\":\"Young adult\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"age\",\"targetEntityId\":\"ent_cat\",\"targetEntityName\":\"Cat\",\"title\":\"Cat: age\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Excitable storyteller\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Rabbit\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_rabbit_personality\",\"options\":[\"Excitable storyteller\",\"Cautious\",\"Friendly\"],\"proposedValue\":\"Excitable storyteller\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"personality\",\"targetEntityId\":\"ent_rabbit\",\"targetEntityName\":\"Rabbit\",\"title\":\"Rabbit: personality\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Adult\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Rabbit\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_rabbit_age\",\"options\":[\"Adult\",\"Elderly\",\"Young\"],\"proposedValue\":\"Adult\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"age\",\"targetEntityId\":\"ent_rabbit\",\"targetEntityName\":\"Rabbit\",\"title\":\"Rabbit: age\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Charming raconteur\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Fox\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_fox_personality\",\"options\":[\"Charming raconteur\",\"Sly\",\"Friendly\"],\"proposedValue\":\"Charming raconteur\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"personality\",\"targetEntityId\":\"ent_fox\",\"targetEntityName\":\"Fox\",\"title\":\"Fox: personality\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Middle-aged\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Fox\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_fox_age\",\"options\":[\"Middle-aged\",\"Elderly\",\"Young\"],\"proposedValue\":\"Middle-aged\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"age\",\"targetEntityId\":\"ent_fox\",\"targetEntityName\":\"Fox\",\"title\":\"Fox: age\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Candlelit and inviting\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Conservatory Dining Room\\\".\",\"groupKey\":\"setting\",\"id\":\"dec_attr_ent_conservatory_atmosphere\",\"options\":[\"Candlelit and inviting\",\"Mysterious\",\"Festive\"],\"proposedValue\":\"Candlelit and inviting\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"atmosphere\",\"targetEntityId\":\"ent_conservatory\",\"targetEntityName\":\"Conservatory Dining Room\",\"title\":\"Conservatory Dining Room: atmosphere\"},{\"category\":\"relationship\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"set inside\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Banquet Table\\\" to \\\"Conservatory Dining Room\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_table_conservatory\",\"options\":[\"set inside\",\"centerpiece of\"],\"proposedValue\":\"set inside\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_table_conservatory\",\"targetSourceEntityName\":\"Banquet Table\",\"targetTargetEntityName\":\"Conservatory Dining Room\",\"title\":\"Banquet Table → Conservatory Dining Room\"},{\"category\":\"relationship\",\"createdAt\":1795619623116,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"watches from\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Owl\\\" to \\\"Clocktower Mill\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8gc_1g\",\"options\":[\"watches from\"],\"proposedValue\":\"watches from\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8gc_1g\",\"targetSourceEntityName\":\"Owl\",\"targetTargetEntityName\":\"Clocktower Mill\",\"title\":\"Owl → Clocktower Mill\"},{\"category\":\"relationship\",\"createdAt\":1795619623117,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"polished\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Hedgehog\\\" to \\\"Silver Teapot\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8gd_1h\",\"options\":[\"polished\"],\"proposedValue\":\"polished\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8gd_1h\",\"targetSourceEntityName\":\"Hedgehog\",\"targetTargetEntityName\":\"Silver Teapot\",\"title\":\"Hedgehog → Silver Teapot\"},{\"category\":\"relationship\",\"createdAt\":1795619623117,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"examined\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Fox\\\" to \\\"Sealed Ledger\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8gd_1k\",\"options\":[\"examined\"],\"proposedValue\":\"examined\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8gd_1k\",\"targetSourceEntityName\":\"Fox\",\"targetTargetEntityName\":\"Sealed Ledger\",\"title\":\"Fox → Sealed Ledger\"},{\"category\":\"relationship\",\"createdAt\":1795619623118,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"suspects\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Fox\\\" to \\\"Cat\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8ge_1l\",\"options\":[\"suspects\"],\"proposedValue\":\"suspects\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8ge_1l\",\"targetSourceEntityName\":\"Fox\",\"targetTargetEntityName\":\"Cat\",\"title\":\"Fox → Cat\"}],\"entities\":[{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_story_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Cozy Woodland Whodunit\",\"id\":\"attr_story_genre\",\"name\":\"genre\",\"presence_in_prompt\":true,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":[{\"name\":\"Cozy Woodland Whodunit\"},{\"name\":\"Cozy Anthropomorphic Fable\"},{\"name\":\"Woodland Mystery\"},{\"name\":\"Satirical Comedy\"}]},{\"id\":\"attr_story_tone\",\"name\":\"tone\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Warm and whimsical\"},{\"name\":\"Mysterious\"},{\"name\":\"Chaotic\"}]},{\"id\":\"attr_story_setting\",\"name\":\"setting\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Lantern-lit conservatory dining room\"},{\"name\":\"Sunlit garden courtyard\"},{\"name\":\"Snowy mountain cabin\"}]},{\"confirmedValue\":\"Storybook gouache with warm brass highlights\",\"id\":\"attr_mww9k8gf_1n\",\"name\":\"image_style\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":[{\"name\":\"Storybook gouache with warm brass highlights\"}]}],\"category\":\"scene\",\"description\":\"High-level narrative properties and scene atmosphere.\",\"excluded\":false,\"id\":\"ent_story_scene\",\"name\":\"The Story\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"The Cat\",\"Host Cat\"],\"alternatives\":[{\"name\":\"Tabby Cat\"},{\"name\":\"Tuxedo Cat\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_cat_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Party Host\",\"id\":\"attr_cat_role\",\"name\":\"role\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Party Host\"},{\"name\":\"Master of Ceremonies\"}]},{\"id\":\"attr_cat_personality\",\"name\":\"personality\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Gracious\"},{\"name\":\"Mischievous\"},{\"name\":\"Mysterious\"}]},{\"id\":\"attr_cat_age\",\"name\":\"age\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Young adult\"},{\"name\":\"Young\"},{\"name\":\"Elderly\"}]}],\"category\":\"character\",\"description\":\"The attentive host of the dinner party.\",\"excluded\":false,\"id\":\"ent_cat\",\"name\":\"Cat\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"The Rabbit\"],\"alternatives\":[{\"name\":\"Hare\"},{\"name\":\"Dormouse\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_rabbit_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"id\":\"attr_rabbit_personality\",\"name\":\"personality\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Excitable storyteller\"},{\"name\":\"Cautious\"},{\"name\":\"Friendly\"}]},{\"id\":\"attr_rabbit_age\",\"name\":\"age\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Adult\"},{\"name\":\"Elderly\"},{\"name\":\"Young\"}]}],\"category\":\"character\",\"description\":\"An animal friend invited to the cat’s table.\",\"excluded\":false,\"id\":\"ent_rabbit\",\"name\":\"Rabbit\",\"presence_in_prompt\":false,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"The Fox\"],\"alternatives\":[{\"name\":\"Badger\"},{\"name\":\"Owl\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_fox_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"id\":\"attr_fox_personality\",\"name\":\"personality\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Charming raconteur\"},{\"name\":\"Sly\"},{\"name\":\"Friendly\"}]},{\"id\":\"attr_fox_age\",\"name\":\"age\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Middle-aged\"},{\"name\":\"Elderly\"},{\"name\":\"Young\"}]},{\"confirmedValue\":\"observant and sly\",\"id\":\"attr_mww9k8g7_c\",\"name\":\"demeanor\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"observant and sly\"}]}],\"category\":\"character\",\"description\":\"A sharp-witted woodland friend seated at the dinner table.\",\"excluded\":false,\"id\":\"ent_fox\",\"name\":\"Fox\",\"presence_in_prompt\":false,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"Table\"],\"alternatives\":[{\"name\":\"Oak Dining Table\"},{\"name\":\"Picnic Table\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_table_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Artisanal pastries, fish tartlets, and herbal tea\",\"id\":\"attr_table_spread\",\"name\":\"food_spread\",\"presence_in_prompt\":true,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Artisanal pastries, fish tartlets, and herbal tea\"},{\"name\":\"Rustic woodland harvest feast\"},{\"name\":\"Midnight mystery banquet\"}]}],\"category\":\"object\",\"description\":\"The central table where the cat and animal friends dine and chat.\",\"excluded\":false,\"id\":\"ent_table\",\"name\":\"Banquet Table\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"Party Setting\",\"Dining Room\"],\"alternatives\":[{\"name\":\"Garden Patio\"},{\"name\":\"Snowy Mountain Cabin\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_loc_existence\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"id\":\"attr_loc_atmosphere\",\"name\":\"atmosphere\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Candlelit and inviting\"},{\"name\":\"Mysterious\"},{\"name\":\"Festive\"}]}],\"category\":\"location\",\"description\":\"The setting where the dinner party takes place.\",\"excluded\":false,\"id\":\"ent_conservatory\",\"name\":\"Conservatory Dining Room\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g6_8\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Quiet dusk\",\"id\":\"attr_mww9k8g6_9\",\"name\":\"atmosphere\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Quiet dusk\"}]},{\"confirmedValue\":\"Warm amber lanterns\",\"id\":\"attr_mww9k8g6_a\",\"name\":\"lighting\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Warm amber lanterns\"}]}],\"category\":\"location\",\"description\":\"A mossy clearing lit by hanging brass lanterns.\",\"excluded\":false,\"id\":\"ent_mww9k8g6_7\",\"name\":\"Lantern Glade\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g7_e\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Archivist\",\"id\":\"attr_mww9k8g7_f\",\"name\":\"role\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Archivist\"}]},{\"confirmedValue\":\"Cautious\",\"id\":\"attr_mww9k8g7_g\",\"name\":\"mood\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Cautious\"}]},{\"confirmedValue\":\"Cataloguing maps in cellar\",\"id\":\"attr_mww9k8g9_19\",\"name\":\"alibi\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Cataloguing maps in cellar\"}]}],\"category\":\"character\",\"description\":\"Retired mapmaker guarding the cellar key.\",\"excluded\":false,\"id\":\"ent_mww9k8g7_d\",\"name\":\"Badger\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g7_i\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Lookout\",\"id\":\"attr_mww9k8g7_j\",\"name\":\"role\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Lookout\"}]},{\"confirmedValue\":\"Brass spectacles\",\"id\":\"attr_mww9k8g7_k\",\"name\":\"eyewear\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Brass spectacles\"}]},{\"confirmedValue\":\"Saw shadows near Clocktower Mill\",\"id\":\"attr_mww9k8ga_1a\",\"name\":\"suspicion\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Saw shadows near Clocktower Mill\"}]}],\"category\":\"character\",\"description\":\"Night watchman perched above the belfry.\",\"excluded\":false,\"id\":\"ent_mww9k8g7_h\",\"name\":\"Owl\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_m\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Walnut tarts\",\"id\":\"attr_mww9k8g8_n\",\"name\":\"specialty\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Walnut tarts\"}]},{\"confirmedValue\":\"Cheerful\",\"id\":\"attr_mww9k8g8_o\",\"name\":\"demeanor\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Cheerful\"}]},{\"confirmedValue\":\"Borrowed the Silver Teapot earlier\",\"id\":\"attr_mww9k8ga_1b\",\"name\":\"secret\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Borrowed the Silver Teapot earlier\"}]}],\"category\":\"character\",\"description\":\"Pastry chef carrying spiced walnut tarts.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_l\",\"name\":\"Hedgehog\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_q\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Skiff ferryman\",\"id\":\"attr_mww9k8g8_r\",\"name\":\"craft\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Skiff ferryman\"}]},{\"confirmedValue\":\"Rain slicker\",\"id\":\"attr_mww9k8g8_s\",\"name\":\"coat\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Rain slicker\"}]},{\"confirmedValue\":\"Arrived late by river fog\",\"id\":\"attr_mww9k8gb_1c\",\"name\":\"arrivalTime\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Arrived late by river fog\"}]}],\"category\":\"character\",\"description\":\"River courier delivering sealed invitations.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_p\",\"name\":\"Otter\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"false\",\"id\":\"attr_mww9k8g8_u\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"false\"},{\"name\":\"true\"}]},{\"confirmedValue\":\"Rumor-monger\",\"id\":\"attr_mww9k8g8_v\",\"name\":\"reputation\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Rumor-monger\"}]}],\"category\":\"character\",\"description\":\"Excluded uninvited gossip from the northern ridge.\",\"excluded\":true,\"id\":\"ent_mww9k8g8_t\",\"name\":\"Raven\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_x\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Weathered timber\",\"id\":\"attr_mww9k8g8_y\",\"name\":\"condition\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Weathered timber\"}]}],\"category\":\"location\",\"description\":\"Waterwheel mill overlooking the clearing.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_w\",\"name\":\"Clocktower Mill\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_10\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Engraved silver\",\"id\":\"attr_mww9k8g9_11\",\"name\":\"material\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Engraved silver\"}]},{\"confirmedValue\":\"Faint pine sap\",\"id\":\"attr_mww9k8g9_12\",\"name\":\"clue\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Faint pine sap\"}]},{\"confirmedValue\":\"Belongs to Cat family\",\"id\":\"attr_mww9k8gb_1d\",\"name\":\"inscription\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Belongs to Cat family\"}]}],\"category\":\"object\",\"description\":\"Heirloom teapot missing its lid since dusk.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_z\",\"name\":\"Silver Teapot\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g9_14\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Missing page 4\",\"id\":\"attr_mww9k8g9_15\",\"name\":\"status\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Missing page 4\"}]},{\"confirmedValue\":\"Matches Fox quill nib\",\"id\":\"attr_mww9k8gb_1e\",\"name\":\"handwriting\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Matches Fox quill nib\"}]}],\"category\":\"object\",\"description\":\"Guest list with one torn corner.\",\"excluded\":false,\"id\":\"ent_mww9k8g9_13\",\"name\":\"Sealed Ledger\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g9_17\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Midnight\",\"id\":\"attr_mww9k8g9_18\",\"name\":\"timing\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Midnight\"}]}],\"category\":\"event\",\"description\":\"Midnight toast when the mystery note is read.\",\"excluded\":false,\"id\":\"ent_mww9k8g9_16\",\"name\":\"Lantern Toast\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"}],\"freeformNotes\":\"\",\"mode\":\"story\",\"originalIdea\":\"A cat hosting a party for its animal friends, sitting around a table eating and chatting.\",\"refinedPrompt\":\"A cat hosting a party for its animal friends, sitting around a table eating and chatting.\\n\\nCreative Direction:\\n- Genre: Cozy Woodland Whodunit\\n\\nSeed Overrides & Canonical Identity:\\n- Exclude \\\"Raven\\\" from the output (override any seed mention of \\\"Raven\\\").\\n\\nConfirmed Elements:\\n- Cat (role: Party Host)\\n- Rabbit — An animal friend invited to the cat’s table.\\n- Fox (demeanor: observant and sly)\\n- Banquet Table (food spread: Artisanal pastries, fish tartlets, and herbal tea)\\n- Conservatory Dining Room — The setting where the dinner party takes place.\\n- Lantern Glade (atmosphere: Quiet dusk, lighting: Warm amber lanterns)\\n- Badger (role: Archivist, mood: Cautious, alibi: Cataloguing maps in cellar)\\n- Owl (role: Lookout, eyewear: Brass spectacles, suspicion: Saw shadows near Clocktower Mill)\\n- Hedgehog (specialty: Walnut tarts, demeanor: Cheerful, secret: Borrowed the Silver Teapot earlier)\\n- Otter (craft: Skiff ferryman, coat: Rain slicker, arrivalTime: Arrived late by river fog)\\n- Clocktower Mill (condition: Weathered timber)\\n- Silver Teapot (material: Engraved silver, clue: Faint pine sap, inscription: Belongs to Cat family)\\n- Sealed Ledger (status: Missing page 4, handwriting: Matches Fox quill nib)\\n- Lantern Toast (timing: Midnight)\\n\\nRelationships & Dynamics:\\n- Cat hosting Rabbit\\n- Cat hosting Fox\\n- Rabbit chatting with Fox\\n- Cat presiding over Banquet Table\\n- Cat decorates Lantern Glade\\n- Badger guards Clocktower Mill\\n- Otter delivered mail to Cat\\n- Cat thanked Otter\\n- Cat schedules Lantern Toast\\n\\nDo NOT include (Explicit Exclusions): Raven, Fox.\",\"relationships\":[{\"alternatives\":[{\"name\":\"welcoming\"},{\"name\":\"pouring tea for\"}],\"id\":\"rel_cat_rabbit\",\"label\":\"hosting\",\"provenance\":\"prompt-explicit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Rabbit\",\"targetId\":\"ent_rabbit\"},{\"alternatives\":[{\"name\":\"chatting with\"},{\"name\":\"watching closely\"}],\"id\":\"rel_cat_fox\",\"label\":\"hosting\",\"provenance\":\"prompt-explicit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Fox\",\"targetId\":\"ent_fox\"},{\"alternatives\":[{\"name\":\"debating with\"},{\"name\":\"hidden rivalry with\"}],\"id\":\"rel_rabbit_fox\",\"label\":\"chatting with\",\"provenance\":\"prompt-explicit\",\"source\":\"Rabbit\",\"sourceId\":\"ent_rabbit\",\"status\":\"confirmed\",\"target\":\"Fox\",\"targetId\":\"ent_fox\"},{\"alternatives\":[{\"name\":\"sitting at\"},{\"name\":\"serving dishes at\"}],\"id\":\"rel_cat_table\",\"label\":\"presiding over\",\"provenance\":\"prompt-explicit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Banquet Table\",\"targetId\":\"ent_table\"},{\"alternatives\":[{\"name\":\"centerpiece of\"}],\"id\":\"rel_table_conservatory\",\"label\":\"set inside\",\"provenance\":\"ai-inferred\",\"source\":\"Banquet Table\",\"sourceId\":\"ent_table\",\"status\":\"pending\",\"target\":\"Conservatory Dining Room\",\"targetId\":\"ent_conservatory\"},{\"alternatives\":[{\"name\":\"decorates\"}],\"id\":\"rel_mww9k8g6_b\",\"label\":\"decorates\",\"provenance\":\"user-edit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Lantern Glade\",\"targetId\":\"ent_mww9k8g6_7\"},{\"alternatives\":[{\"name\":\"guards\"}],\"id\":\"rel_mww9k8gc_1f\",\"label\":\"guards\",\"provenance\":\"user-edit\",\"source\":\"Badger\",\"sourceId\":\"ent_mww9k8g7_d\",\"status\":\"confirmed\",\"target\":\"Clocktower Mill\",\"targetId\":\"ent_mww9k8g8_w\"},{\"alternatives\":[{\"name\":\"watches from\"}],\"id\":\"rel_mww9k8gc_1g\",\"label\":\"watches from\",\"provenance\":\"ai-inferred\",\"source\":\"Owl\",\"sourceId\":\"ent_mww9k8g7_h\",\"status\":\"pending\",\"target\":\"Clocktower Mill\",\"targetId\":\"ent_mww9k8g8_w\"},{\"alternatives\":[{\"name\":\"polished\"}],\"id\":\"rel_mww9k8gd_1h\",\"label\":\"polished\",\"provenance\":\"ai-inferred\",\"source\":\"Hedgehog\",\"sourceId\":\"ent_mww9k8g8_l\",\"status\":\"pending\",\"target\":\"Silver Teapot\",\"targetId\":\"ent_mww9k8g8_z\"},{\"alternatives\":[{\"name\":\"delivered mail to\"}],\"id\":\"rel_mww9k8gd_1i\",\"label\":\"delivered mail to\",\"provenance\":\"user-edit\",\"source\":\"Otter\",\"sourceId\":\"ent_mww9k8g8_p\",\"status\":\"confirmed\",\"target\":\"Cat\",\"targetId\":\"ent_cat\"},{\"alternatives\":[{\"name\":\"thanked\"}],\"id\":\"rel_mww9k8gd_1j\",\"label\":\"thanked\",\"provenance\":\"user-edit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Otter\",\"targetId\":\"ent_mww9k8g8_p\"},{\"alternatives\":[{\"name\":\"examined\"}],\"id\":\"rel_mww9k8gd_1k\",\"label\":\"examined\",\"provenance\":\"ai-inferred\",\"source\":\"Fox\",\"sourceId\":\"ent_fox\",\"status\":\"pending\",\"target\":\"Sealed Ledger\",\"targetId\":\"ent_mww9k8g9_13\"},{\"alternatives\":[{\"name\":\"suspects\"}],\"id\":\"rel_mww9k8ge_1l\",\"label\":\"suspects\",\"provenance\":\"ai-inferred\",\"source\":\"Fox\",\"sourceId\":\"ent_fox\",\"status\":\"pending\",\"target\":\"Cat\",\"targetId\":\"ent_cat\"},{\"alternatives\":[{\"name\":\"schedules\"}],\"id\":\"rel_mww9k8ge_1m\",\"label\":\"schedules\",\"provenance\":\"user-edit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Lantern Toast\",\"targetId\":\"ent_mww9k8g9_16\"}],\"skippedQuestions\":[],\"storyBible\":{\"cameraAndLighting\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"centralConflict\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Keeping a surprise dessert secret while old woodland rivalries surface at the table\"},\"continuityRules\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"explicitExclusions\":{\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795620739354,\"value\":\"Fox, Raven\"},\"genre\":{\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":\"Cozy Woodland Whodunit\"},\"intendedAudience\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"narrativePerspective\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Third-person limited (following the Cat)\"},\"pacing\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Unhurried, conversational\"},\"setting\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Lantern-lit conservatory dining room\"},\"themes\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"tone\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Warm and whimsical\"},\"visualStyle\":{\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":\"Storybook gouache with warm brass highlights\"}}}",
+        "semanticProjectionAfter": "{\"answeredQuestions\":[],\"clarifications\":[{\"category\":\"character\",\"id\":\"clar_cat_personality\",\"impact\":\"Shapes how the Cat interacts with every guest around the table.\",\"options\":[\"Gracious and attentive\",\"Mischievous\",\"Mysterious and observant\",\"Fussy perfectionist\"],\"question\":\"What is the cat's personality as the party host?\",\"status\":\"unanswered\",\"target\":{\"attributeName\":\"personality\",\"entityId\":\"ent_cat\",\"entityName\":\"Cat\",\"type\":\"entity_attribute\"}},{\"category\":\"tone\",\"id\":\"clar_party_tone\",\"impact\":\"Determines the narrative mood, dialogue style, and pacing.\",\"options\":[\"Warm and whimsical\",\"Mysterious with hidden secrets\",\"Lively comedic banter\",\"Cozy autumn nostalgia\"],\"question\":\"What overall tone and atmosphere should the dinner party have?\",\"status\":\"unanswered\",\"target\":{\"storyField\":\"tone\",\"type\":\"story_bible\"}},{\"category\":\"setting\",\"id\":\"clar_party_setting\",\"impact\":\"Establishes the sensory backdrop and environmental details.\",\"options\":[\"Lantern-lit conservatory dining room\",\"Sunlit garden under string lights\",\"Snowy mountain cabin by a fireplace\",\"Hollowed-out ancient oak treehouse\"],\"question\":\"Where is the cat hosting this gathering?\",\"status\":\"unanswered\",\"target\":{\"storyField\":\"setting\",\"type\":\"story_bible\"}},{\"category\":\"plot\",\"id\":\"clar_central_conflict\",\"impact\":\"Drives the narrative arc of the scene.\",\"options\":[\"A missing heirloom recipe card that someone at the table took\",\"Trying to keep a surprise midnight dish secret from the curious Fox\",\"An unexpected knock at the door from an uninvited Wolf\",\"Purely slice-of-life storytelling with gentle humor\"],\"question\":\"What sparks tension or intrigue during the dinner conversation?\",\"status\":\"unanswered\",\"target\":{\"storyField\":\"centralConflict\",\"type\":\"story_bible\"}}],\"decisions\":[{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Shapes how the Cat interacts with every guest around the table.\",\"explanation\":\"Targets Cat → personality\",\"groupKey\":\"character\",\"id\":\"dec_clar_clar_cat_personality\",\"options\":[\"Gracious and attentive\",\"Mischievous\",\"Mysterious and observant\",\"Fussy perfectionist\"],\"proposedValue\":\"Gracious and attentive\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_cat_personality\",\"status\":\"pending\",\"targetAttributeName\":\"personality\",\"targetEntityId\":\"ent_cat\",\"targetEntityName\":\"Cat\",\"title\":\"What is the cat's personality as the party host?\"},{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Determines the narrative mood, dialogue style, and pacing.\",\"explanation\":\"Targets Story Bible → tone\",\"groupKey\":\"story\",\"id\":\"dec_clar_clar_party_tone\",\"options\":[\"Warm and whimsical\",\"Mysterious with hidden secrets\",\"Lively comedic banter\",\"Cozy autumn nostalgia\"],\"proposedValue\":\"Warm and whimsical\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_party_tone\",\"status\":\"pending\",\"targetStoryField\":\"tone\",\"title\":\"What overall tone and atmosphere should the dinner party have?\"},{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Establishes the sensory backdrop and environmental details.\",\"explanation\":\"Targets Story Bible → setting\",\"groupKey\":\"setting\",\"id\":\"dec_clar_clar_party_setting\",\"options\":[\"Lantern-lit conservatory dining room\",\"Sunlit garden under string lights\",\"Snowy mountain cabin by a fireplace\",\"Hollowed-out ancient oak treehouse\"],\"proposedValue\":\"Lantern-lit conservatory dining room\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_party_setting\",\"status\":\"pending\",\"targetStoryField\":\"setting\",\"title\":\"Where is the cat hosting this gathering?\"},{\"category\":\"clarification\",\"createdAt\":1795619623110,\"description\":\"Drives the narrative arc of the scene.\",\"explanation\":\"Targets Story Bible → centralConflict\",\"groupKey\":\"plot\",\"id\":\"dec_clar_clar_central_conflict\",\"options\":[\"A missing heirloom recipe card that someone at the table took\",\"Trying to keep a surprise midnight dish secret from the curious Fox\",\"An unexpected knock at the door from an uninvited Wolf\",\"Purely slice-of-life storytelling with gentle humor\"],\"proposedValue\":\"A missing heirloom recipe card that someone at the table took\",\"provenance\":\"ai-inferred\",\"questionId\":\"clar_central_conflict\",\"status\":\"pending\",\"targetStoryField\":\"centralConflict\",\"title\":\"What sparks tension or intrigue during the dinner conversation?\"},{\"category\":\"story-bible\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Warm and whimsical\\\"\",\"explanation\":\"Inferred attribute for explicit entity \\\"The Story\\\".\",\"groupKey\":\"story\",\"id\":\"dec_attr_ent_story_scene_tone\",\"options\":[\"Warm and whimsical\",\"Mysterious\",\"Chaotic\"],\"proposedValue\":\"Warm and whimsical\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"tone\",\"targetEntityId\":\"ent_story_scene\",\"targetEntityName\":\"The Story\",\"title\":\"The Story: tone\"},{\"category\":\"story-bible\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Lantern-lit conservatory dining room\\\"\",\"explanation\":\"Inferred attribute for explicit entity \\\"The Story\\\".\",\"groupKey\":\"story\",\"id\":\"dec_attr_ent_story_scene_setting\",\"options\":[\"Lantern-lit conservatory dining room\",\"Sunlit garden courtyard\",\"Snowy mountain cabin\"],\"proposedValue\":\"Lantern-lit conservatory dining room\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"setting\",\"targetEntityId\":\"ent_story_scene\",\"targetEntityName\":\"The Story\",\"title\":\"The Story: setting\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Young adult\\\"\",\"explanation\":\"Inferred attribute for explicit entity \\\"Cat\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_cat_age\",\"options\":[\"Young adult\",\"Young\",\"Elderly\"],\"proposedValue\":\"Young adult\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"age\",\"targetEntityId\":\"ent_cat\",\"targetEntityName\":\"Cat\",\"title\":\"Cat: age\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Excitable storyteller\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Rabbit\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_rabbit_personality\",\"options\":[\"Excitable storyteller\",\"Cautious\",\"Friendly\"],\"proposedValue\":\"Excitable storyteller\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"personality\",\"targetEntityId\":\"ent_rabbit\",\"targetEntityName\":\"Rabbit\",\"title\":\"Rabbit: personality\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Adult\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Rabbit\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_rabbit_age\",\"options\":[\"Adult\",\"Elderly\",\"Young\"],\"proposedValue\":\"Adult\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"age\",\"targetEntityId\":\"ent_rabbit\",\"targetEntityName\":\"Rabbit\",\"title\":\"Rabbit: age\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Charming raconteur\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Fox\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_fox_personality\",\"options\":[\"Charming raconteur\",\"Sly\",\"Friendly\"],\"proposedValue\":\"Charming raconteur\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"personality\",\"targetEntityId\":\"ent_fox\",\"targetEntityName\":\"Fox\",\"title\":\"Fox: personality\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Middle-aged\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Fox\\\".\",\"groupKey\":\"character\",\"id\":\"dec_attr_ent_fox_age\",\"options\":[\"Middle-aged\",\"Elderly\",\"Young\"],\"proposedValue\":\"Middle-aged\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"age\",\"targetEntityId\":\"ent_fox\",\"targetEntityName\":\"Fox\",\"title\":\"Fox: age\"},{\"category\":\"attribute\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested value: \\\"Candlelit and inviting\\\"\",\"explanation\":\"Suggested attribute for inferred entity \\\"Conservatory Dining Room\\\".\",\"groupKey\":\"setting\",\"id\":\"dec_attr_ent_conservatory_atmosphere\",\"options\":[\"Candlelit and inviting\",\"Mysterious\",\"Festive\"],\"proposedValue\":\"Candlelit and inviting\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetAttributeName\":\"atmosphere\",\"targetEntityId\":\"ent_conservatory\",\"targetEntityName\":\"Conservatory Dining Room\",\"title\":\"Conservatory Dining Room: atmosphere\"},{\"category\":\"relationship\",\"createdAt\":1795619623110,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"set inside\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Banquet Table\\\" to \\\"Conservatory Dining Room\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_table_conservatory\",\"options\":[\"set inside\",\"centerpiece of\"],\"proposedValue\":\"set inside\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_table_conservatory\",\"targetSourceEntityName\":\"Banquet Table\",\"targetTargetEntityName\":\"Conservatory Dining Room\",\"title\":\"Banquet Table → Conservatory Dining Room\"},{\"category\":\"relationship\",\"createdAt\":1795619623116,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"watches from\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Owl\\\" to \\\"Clocktower Mill\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8gc_1g\",\"options\":[\"watches from\"],\"proposedValue\":\"watches from\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8gc_1g\",\"targetSourceEntityName\":\"Owl\",\"targetTargetEntityName\":\"Clocktower Mill\",\"title\":\"Owl → Clocktower Mill\"},{\"category\":\"relationship\",\"createdAt\":1795619623117,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"polished\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Hedgehog\\\" to \\\"Silver Teapot\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8gd_1h\",\"options\":[\"polished\"],\"proposedValue\":\"polished\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8gd_1h\",\"targetSourceEntityName\":\"Hedgehog\",\"targetTargetEntityName\":\"Silver Teapot\",\"title\":\"Hedgehog → Silver Teapot\"},{\"category\":\"relationship\",\"createdAt\":1795619623117,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"examined\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Fox\\\" to \\\"Sealed Ledger\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8gd_1k\",\"options\":[\"examined\"],\"proposedValue\":\"examined\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8gd_1k\",\"targetSourceEntityName\":\"Fox\",\"targetTargetEntityName\":\"Sealed Ledger\",\"title\":\"Fox → Sealed Ledger\"},{\"category\":\"relationship\",\"createdAt\":1795619623118,\"currentValue\":\"Unconfirmed\",\"description\":\"Suggested relationship: \\\"suspects\\\"\",\"explanation\":\"AI-inferred directed relationship from \\\"Fox\\\" to \\\"Cat\\\".\",\"groupKey\":\"character\",\"id\":\"dec_rel_rel_mww9k8ge_1l\",\"options\":[\"suspects\"],\"proposedValue\":\"suspects\",\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"targetRelationshipId\":\"rel_mww9k8ge_1l\",\"targetSourceEntityName\":\"Fox\",\"targetTargetEntityName\":\"Cat\",\"title\":\"Fox → Cat\"}],\"entities\":[{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_story_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Cozy Woodland Whodunit\",\"id\":\"attr_story_genre\",\"name\":\"genre\",\"presence_in_prompt\":true,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":[{\"name\":\"Cozy Woodland Whodunit\"},{\"name\":\"Cozy Anthropomorphic Fable\"},{\"name\":\"Woodland Mystery\"},{\"name\":\"Satirical Comedy\"}]},{\"id\":\"attr_story_tone\",\"name\":\"tone\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Warm and whimsical\"},{\"name\":\"Mysterious\"},{\"name\":\"Chaotic\"}]},{\"id\":\"attr_story_setting\",\"name\":\"setting\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Lantern-lit conservatory dining room\"},{\"name\":\"Sunlit garden courtyard\"},{\"name\":\"Snowy mountain cabin\"}]},{\"confirmedValue\":\"Storybook gouache with warm brass highlights\",\"id\":\"attr_mww9k8gf_1n\",\"name\":\"image_style\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":[{\"name\":\"Storybook gouache with warm brass highlights\"}]}],\"category\":\"scene\",\"description\":\"High-level narrative properties and scene atmosphere.\",\"excluded\":false,\"id\":\"ent_story_scene\",\"name\":\"The Story\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"The Cat\",\"Host Cat\"],\"alternatives\":[{\"name\":\"Tabby Cat\"},{\"name\":\"Tuxedo Cat\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_cat_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Party Host\",\"id\":\"attr_cat_role\",\"name\":\"role\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Party Host\"},{\"name\":\"Master of Ceremonies\"}]},{\"id\":\"attr_cat_personality\",\"name\":\"personality\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Gracious\"},{\"name\":\"Mischievous\"},{\"name\":\"Mysterious\"}]},{\"id\":\"attr_cat_age\",\"name\":\"age\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Young adult\"},{\"name\":\"Young\"},{\"name\":\"Elderly\"}]}],\"category\":\"character\",\"description\":\"The attentive host of the dinner party.\",\"excluded\":false,\"id\":\"ent_cat\",\"name\":\"Cat\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"The Rabbit\"],\"alternatives\":[{\"name\":\"Hare\"},{\"name\":\"Dormouse\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_rabbit_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"id\":\"attr_rabbit_personality\",\"name\":\"personality\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Excitable storyteller\"},{\"name\":\"Cautious\"},{\"name\":\"Friendly\"}]},{\"id\":\"attr_rabbit_age\",\"name\":\"age\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Adult\"},{\"name\":\"Elderly\"},{\"name\":\"Young\"}]}],\"category\":\"character\",\"description\":\"An animal friend invited to the cat’s table.\",\"excluded\":false,\"id\":\"ent_rabbit\",\"name\":\"Rabbit\",\"presence_in_prompt\":false,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"The Fox\"],\"alternatives\":[{\"name\":\"Badger\"},{\"name\":\"Owl\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_fox_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"id\":\"attr_fox_personality\",\"name\":\"personality\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Charming raconteur\"},{\"name\":\"Sly\"},{\"name\":\"Friendly\"}]},{\"id\":\"attr_fox_age\",\"name\":\"age\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Middle-aged\"},{\"name\":\"Elderly\"},{\"name\":\"Young\"}]},{\"confirmedValue\":\"observant and sly\",\"id\":\"attr_mww9k8g7_c\",\"name\":\"demeanor\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"observant and sly\"}]}],\"category\":\"character\",\"description\":\"A sharp-witted woodland friend seated at the dinner table.\",\"excluded\":false,\"id\":\"ent_fox\",\"name\":\"Fox\",\"presence_in_prompt\":false,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"Table\"],\"alternatives\":[{\"name\":\"Oak Dining Table\"},{\"name\":\"Picnic Table\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_table_existence\",\"name\":\"existence\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Artisanal pastries, fish tartlets, and herbal tea\",\"id\":\"attr_table_spread\",\"name\":\"food_spread\",\"presence_in_prompt\":true,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Artisanal pastries, fish tartlets, and herbal tea\"},{\"name\":\"Rustic woodland harvest feast\"},{\"name\":\"Midnight mystery banquet\"}]}],\"category\":\"object\",\"description\":\"The central table where the cat and animal friends dine and chat.\",\"excluded\":false,\"id\":\"ent_table\",\"name\":\"Banquet Table\",\"presence_in_prompt\":true,\"provenance\":\"prompt-explicit\",\"status\":\"confirmed\"},{\"aliases\":[\"Party Setting\",\"Dining Room\"],\"alternatives\":[{\"name\":\"Garden Patio\"},{\"name\":\"Snowy Mountain Cabin\"}],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_loc_existence\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"id\":\"attr_loc_atmosphere\",\"name\":\"atmosphere\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"value\":[{\"name\":\"Candlelit and inviting\"},{\"name\":\"Mysterious\"},{\"name\":\"Festive\"}]}],\"category\":\"location\",\"description\":\"The setting where the dinner party takes place.\",\"excluded\":false,\"id\":\"ent_conservatory\",\"name\":\"Conservatory Dining Room\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g6_8\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Quiet dusk\",\"id\":\"attr_mww9k8g6_9\",\"name\":\"atmosphere\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Quiet dusk\"}]},{\"confirmedValue\":\"Warm amber lanterns\",\"id\":\"attr_mww9k8g6_a\",\"name\":\"lighting\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Warm amber lanterns\"}]}],\"category\":\"location\",\"description\":\"A mossy clearing lit by hanging brass lanterns.\",\"excluded\":false,\"id\":\"ent_mww9k8g6_7\",\"name\":\"Lantern Glade\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g7_e\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Archivist\",\"id\":\"attr_mww9k8g7_f\",\"name\":\"role\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Archivist\"}]},{\"confirmedValue\":\"Cautious\",\"id\":\"attr_mww9k8g7_g\",\"name\":\"mood\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Cautious\"}]},{\"confirmedValue\":\"Cataloguing maps in cellar\",\"id\":\"attr_mww9k8g9_19\",\"name\":\"alibi\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Cataloguing maps in cellar\"}]}],\"category\":\"character\",\"description\":\"Retired mapmaker guarding the cellar key.\",\"excluded\":false,\"id\":\"ent_mww9k8g7_d\",\"name\":\"Badger\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g7_i\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Lookout\",\"id\":\"attr_mww9k8g7_j\",\"name\":\"role\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Lookout\"}]},{\"confirmedValue\":\"Brass spectacles\",\"id\":\"attr_mww9k8g7_k\",\"name\":\"eyewear\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Brass spectacles\"}]},{\"confirmedValue\":\"Saw shadows near Clocktower Mill\",\"id\":\"attr_mww9k8ga_1a\",\"name\":\"suspicion\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Saw shadows near Clocktower Mill\"}]}],\"category\":\"character\",\"description\":\"Night watchman perched above the belfry.\",\"excluded\":false,\"id\":\"ent_mww9k8g7_h\",\"name\":\"Owl\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_m\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Walnut tarts\",\"id\":\"attr_mww9k8g8_n\",\"name\":\"specialty\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Walnut tarts\"}]},{\"confirmedValue\":\"Cheerful\",\"id\":\"attr_mww9k8g8_o\",\"name\":\"demeanor\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Cheerful\"}]},{\"confirmedValue\":\"Borrowed the Silver Teapot earlier\",\"id\":\"attr_mww9k8ga_1b\",\"name\":\"secret\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Borrowed the Silver Teapot earlier\"}]}],\"category\":\"character\",\"description\":\"Pastry chef carrying spiced walnut tarts.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_l\",\"name\":\"Hedgehog\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_q\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Skiff ferryman\",\"id\":\"attr_mww9k8g8_r\",\"name\":\"craft\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Skiff ferryman\"}]},{\"confirmedValue\":\"Rain slicker\",\"id\":\"attr_mww9k8g8_s\",\"name\":\"coat\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Rain slicker\"}]},{\"confirmedValue\":\"Arrived late by river fog\",\"id\":\"attr_mww9k8gb_1c\",\"name\":\"arrivalTime\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Arrived late by river fog\"}]}],\"category\":\"character\",\"description\":\"River courier delivering sealed invitations.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_p\",\"name\":\"Otter\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"false\",\"id\":\"attr_mww9k8g8_u\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"false\"},{\"name\":\"true\"}]},{\"confirmedValue\":\"Rumor-monger\",\"id\":\"attr_mww9k8g8_v\",\"name\":\"reputation\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Rumor-monger\"}]}],\"category\":\"character\",\"description\":\"Excluded uninvited gossip from the northern ridge.\",\"excluded\":true,\"id\":\"ent_mww9k8g8_t\",\"name\":\"Raven\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_x\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Weathered timber\",\"id\":\"attr_mww9k8g8_y\",\"name\":\"condition\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Weathered timber\"}]}],\"category\":\"location\",\"description\":\"Waterwheel mill overlooking the clearing.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_w\",\"name\":\"Clocktower Mill\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g8_10\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Engraved silver\",\"id\":\"attr_mww9k8g9_11\",\"name\":\"material\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Engraved silver\"}]},{\"confirmedValue\":\"Faint pine sap\",\"id\":\"attr_mww9k8g9_12\",\"name\":\"clue\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Faint pine sap\"}]},{\"confirmedValue\":\"Belongs to Cat family\",\"id\":\"attr_mww9k8gb_1d\",\"name\":\"inscription\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Belongs to Cat family\"}]}],\"category\":\"object\",\"description\":\"Heirloom teapot missing its lid since dusk.\",\"excluded\":false,\"id\":\"ent_mww9k8g8_z\",\"name\":\"Silver Teapot\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g9_14\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Missing page 4\",\"id\":\"attr_mww9k8g9_15\",\"name\":\"status\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Missing page 4\"}]},{\"confirmedValue\":\"Matches Fox quill nib\",\"id\":\"attr_mww9k8gb_1e\",\"name\":\"handwriting\",\"presence_in_prompt\":false,\"provenance\":\"ai-inferred\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Matches Fox quill nib\"}]}],\"category\":\"object\",\"description\":\"Guest list with one torn corner.\",\"excluded\":false,\"id\":\"ent_mww9k8g9_13\",\"name\":\"Sealed Ledger\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"},{\"aliases\":[],\"alternatives\":[],\"attributes\":[{\"confirmedValue\":\"true\",\"id\":\"attr_mww9k8g9_17\",\"name\":\"existence\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"true\"},{\"name\":\"false\"}]},{\"confirmedValue\":\"Midnight\",\"id\":\"attr_mww9k8g9_18\",\"name\":\"timing\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"value\":[{\"name\":\"Midnight\"}]}],\"category\":\"event\",\"description\":\"Midnight toast when the mystery note is read.\",\"excluded\":false,\"id\":\"ent_mww9k8g9_16\",\"name\":\"Lantern Toast\",\"presence_in_prompt\":false,\"provenance\":\"user-edit\",\"status\":\"confirmed\"}],\"freeformNotes\":\"\",\"mode\":\"story\",\"originalIdea\":\"A cat hosting a party for its animal friends, sitting around a table eating and chatting.\",\"refinedPrompt\":\"A cat hosting a party for its animal friends, sitting around a table eating and chatting.\\n\\nCreative Direction:\\n- Genre: Cozy Woodland Whodunit\\n\\nSeed Overrides & Canonical Identity:\\n- Exclude \\\"Raven\\\" from the output (override any seed mention of \\\"Raven\\\").\\n\\nConfirmed Elements:\\n- Cat (role: Party Host)\\n- Rabbit — An animal friend invited to the cat’s table.\\n- Fox (demeanor: observant and sly)\\n- Banquet Table (food spread: Artisanal pastries, fish tartlets, and herbal tea)\\n- Conservatory Dining Room — The setting where the dinner party takes place.\\n- Lantern Glade (atmosphere: Quiet dusk, lighting: Warm amber lanterns)\\n- Badger (role: Archivist, mood: Cautious, alibi: Cataloguing maps in cellar)\\n- Owl (role: Lookout, eyewear: Brass spectacles, suspicion: Saw shadows near Clocktower Mill)\\n- Hedgehog (specialty: Walnut tarts, demeanor: Cheerful, secret: Borrowed the Silver Teapot earlier)\\n- Otter (craft: Skiff ferryman, coat: Rain slicker, arrivalTime: Arrived late by river fog)\\n- Clocktower Mill (condition: Weathered timber)\\n- Silver Teapot (material: Engraved silver, clue: Faint pine sap, inscription: Belongs to Cat family)\\n- Sealed Ledger (status: Missing page 4, handwriting: Matches Fox quill nib)\\n- Lantern Toast (timing: Midnight)\\n\\nRelationships & Dynamics:\\n- Cat hosting Rabbit\\n- Cat hosting Fox\\n- Rabbit chatting with Fox\\n- Cat presiding over Banquet Table\\n- Cat decorates Lantern Glade\\n- Badger guards Clocktower Mill\\n- Otter delivered mail to Cat\\n- Cat thanked Otter\\n- Cat schedules Lantern Toast\\n\\nDo NOT include (Explicit Exclusions): Raven, Fox.\",\"relationships\":[{\"alternatives\":[{\"name\":\"welcoming\"},{\"name\":\"pouring tea for\"}],\"id\":\"rel_cat_rabbit\",\"label\":\"hosting\",\"provenance\":\"prompt-explicit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Rabbit\",\"targetId\":\"ent_rabbit\"},{\"alternatives\":[{\"name\":\"chatting with\"},{\"name\":\"watching closely\"}],\"id\":\"rel_cat_fox\",\"label\":\"hosting\",\"provenance\":\"prompt-explicit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Fox\",\"targetId\":\"ent_fox\"},{\"alternatives\":[{\"name\":\"debating with\"},{\"name\":\"hidden rivalry with\"}],\"id\":\"rel_rabbit_fox\",\"label\":\"chatting with\",\"provenance\":\"prompt-explicit\",\"source\":\"Rabbit\",\"sourceId\":\"ent_rabbit\",\"status\":\"confirmed\",\"target\":\"Fox\",\"targetId\":\"ent_fox\"},{\"alternatives\":[{\"name\":\"sitting at\"},{\"name\":\"serving dishes at\"}],\"id\":\"rel_cat_table\",\"label\":\"presiding over\",\"provenance\":\"prompt-explicit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Banquet Table\",\"targetId\":\"ent_table\"},{\"alternatives\":[{\"name\":\"centerpiece of\"}],\"id\":\"rel_table_conservatory\",\"label\":\"set inside\",\"provenance\":\"ai-inferred\",\"source\":\"Banquet Table\",\"sourceId\":\"ent_table\",\"status\":\"pending\",\"target\":\"Conservatory Dining Room\",\"targetId\":\"ent_conservatory\"},{\"alternatives\":[{\"name\":\"decorates\"}],\"id\":\"rel_mww9k8g6_b\",\"label\":\"decorates\",\"provenance\":\"user-edit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Lantern Glade\",\"targetId\":\"ent_mww9k8g6_7\"},{\"alternatives\":[{\"name\":\"guards\"}],\"id\":\"rel_mww9k8gc_1f\",\"label\":\"guards\",\"provenance\":\"user-edit\",\"source\":\"Badger\",\"sourceId\":\"ent_mww9k8g7_d\",\"status\":\"confirmed\",\"target\":\"Clocktower Mill\",\"targetId\":\"ent_mww9k8g8_w\"},{\"alternatives\":[{\"name\":\"watches from\"}],\"id\":\"rel_mww9k8gc_1g\",\"label\":\"watches from\",\"provenance\":\"ai-inferred\",\"source\":\"Owl\",\"sourceId\":\"ent_mww9k8g7_h\",\"status\":\"pending\",\"target\":\"Clocktower Mill\",\"targetId\":\"ent_mww9k8g8_w\"},{\"alternatives\":[{\"name\":\"polished\"}],\"id\":\"rel_mww9k8gd_1h\",\"label\":\"polished\",\"provenance\":\"ai-inferred\",\"source\":\"Hedgehog\",\"sourceId\":\"ent_mww9k8g8_l\",\"status\":\"pending\",\"target\":\"Silver Teapot\",\"targetId\":\"ent_mww9k8g8_z\"},{\"alternatives\":[{\"name\":\"delivered mail to\"}],\"id\":\"rel_mww9k8gd_1i\",\"label\":\"delivered mail to\",\"provenance\":\"user-edit\",\"source\":\"Otter\",\"sourceId\":\"ent_mww9k8g8_p\",\"status\":\"confirmed\",\"target\":\"Cat\",\"targetId\":\"ent_cat\"},{\"alternatives\":[{\"name\":\"thanked\"}],\"id\":\"rel_mww9k8gd_1j\",\"label\":\"thanked\",\"provenance\":\"user-edit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Otter\",\"targetId\":\"ent_mww9k8g8_p\"},{\"alternatives\":[{\"name\":\"examined\"}],\"id\":\"rel_mww9k8gd_1k\",\"label\":\"examined\",\"provenance\":\"ai-inferred\",\"source\":\"Fox\",\"sourceId\":\"ent_fox\",\"status\":\"pending\",\"target\":\"Sealed Ledger\",\"targetId\":\"ent_mww9k8g9_13\"},{\"alternatives\":[{\"name\":\"suspects\"}],\"id\":\"rel_mww9k8ge_1l\",\"label\":\"suspects\",\"provenance\":\"ai-inferred\",\"source\":\"Fox\",\"sourceId\":\"ent_fox\",\"status\":\"pending\",\"target\":\"Cat\",\"targetId\":\"ent_cat\"},{\"alternatives\":[{\"name\":\"schedules\"}],\"id\":\"rel_mww9k8ge_1m\",\"label\":\"schedules\",\"provenance\":\"user-edit\",\"source\":\"Cat\",\"sourceId\":\"ent_cat\",\"status\":\"confirmed\",\"target\":\"Lantern Toast\",\"targetId\":\"ent_mww9k8g9_16\"}],\"skippedQuestions\":[],\"storyBible\":{\"cameraAndLighting\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"centralConflict\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Keeping a surprise dessert secret while old woodland rivalries surface at the table\"},\"continuityRules\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"explicitExclusions\":{\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795620739354,\"value\":\"Fox, Raven\"},\"genre\":{\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":\"Cozy Woodland Whodunit\"},\"intendedAudience\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"narrativePerspective\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Third-person limited (following the Cat)\"},\"pacing\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Unhurried, conversational\"},\"setting\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Lantern-lit conservatory dining room\"},\"themes\":{\"provenance\":\"derived\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"\"},\"tone\":{\"provenance\":\"ai-inferred\",\"status\":\"pending\",\"updatedAt\":1763942400000,\"value\":\"Warm and whimsical\"},\"visualStyle\":{\"provenance\":\"user-edit\",\"status\":\"confirmed\",\"updatedAt\":1795619623119,\"value\":\"Storybook gouache with warm brass highlights\"}}}",
+        "digestBefore": "e3c2588b42739c919069675586378352eee28a18276a0f681d88f71c7b6d9f53",
+        "digestAfter": "e3c2588b42739c919069675586378352eee28a18276a0f681d88f71c7b6d9f53",
+        "foxSelected": true,
+        "toneFieldVisible": true,
+        "storyBibleSelected": "true",
+        "focusedId": "bible-tone",
+        "idbWritesBefore": 1,
+        "idbWritesAfter": 1,
+        "openToneCount": 1
+      },
+      "friction": [
+        "After navigating from Checks to Inspector/Story Bible, there is no explicit \"Back to Checks\" breadcrumb; user must re-click the Checks tab"
+      ],
+      "mockedApiHits": 0,
+      "mockedApiUrls": [],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    },
+    {
+      "id": "J11",
+      "title": "IndexedDB read_error write gate, recovery & failed generation error feedback",
+      "fixture": "FX-SIMPLE",
+      "status": "PASS",
+      "durationMs": 2944,
+      "steps": [
+        "Simulate IDB read_error & reload",
+        "Verify Retry Storage Read banner + 0 IDB puts",
+        "Recover storage read",
+        "Trigger mock 503 generation & verify error message"
+      ],
+      "clicks": 2,
+      "evidence": {
+        "bannerVisible": true,
+        "idbPutsWhileBlocked": 0,
+        "apiErrVisible": true,
+        "apiErrText": "Generation FailedGemini API key is not configured on the server."
+      },
+      "friction": [
+        "On 390px mobile, storage alert banner stacks above PromptInput and squeezes remaining workspace height significantly (see SC-15)"
+      ],
+      "mockedApiHits": 1,
+      "mockedApiUrls": [
+        "http://127.0.0.1:3490/api/generate/story"
+      ],
+      "unmockedApiHits": 2,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities",
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ]
+    },
+    {
+      "id": "J12",
+      "title": "Revision history Restore, safety checkpoint Undo/Redo & export",
+      "fixture": "FX-BUSY",
+      "status": "PASS",
+      "durationMs": 1610,
+      "steps": [
+        "Open History tab",
+        "Scroll to Revision History & click Restore",
+        "Verify safety notification & Undo enabled",
+        "Click Undo & verify Redo enabled"
+      ],
+      "clicks": 3,
+      "evidence": {
+        "statusVisible": true,
+        "undoEnabled": true,
+        "redoEnabled": true,
+        "mdBtnVisible": true
+      },
+      "friction": [
+        "Revision History sits at the very bottom of the History tab below Export, Import, and Saved Projects; requires scrolling to discover",
+        "Restore executes immediately on single click without a preview diff (though safety checkpoint + Undo protects data)"
+      ],
+      "mockedApiHits": 0,
+      "mockedApiUrls": [],
+      "unmockedApiHits": 1,
+      "unmockedApiUrls": [
+        "http://127.0.0.1:3490/api/ai/capabilities"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    }
+  ]
+}
