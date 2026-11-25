@@ -35,7 +35,7 @@ The historical QA harness writes a small set of tracked screenshots and Q06 resu
 
 - Node 24 local qualification: `v24.22.1`, npm `11.19.1`.
 - Node 26 performance measurement: `v26.12.1`, npm `11.20.0`.
-- Node 22 was not available locally. CI's verify matrix now includes `22.x` and `24.x`; hosted exact-head result remains required before acceptance.
+- Node 22 was not available locally. CI's verify matrix includes the approved `22.13.0` floor, latest `22.x`, and `24.x`; hosted exact-head result remains required before acceptance.
 - Development mode with normal HMR: browser opened the app and observed a Vite WebSocket connection at `ws://127.0.0.1:3510/?token=…`.
 - Development mode with `DISABLE_HMR=true`: browser opened the app and observed zero WebSocket constructions. The custom Vite client transform remains because this behavior was verified with Vite 8.3.8.
 - Production server: actual Chromium import of a synthetic 611-byte PDF succeeded. It rendered `PCC synthetic PDF worker smoke test.` as extracted text and loaded `/assets/pdf.worker.min-Cpi8b8z3.mjs` (1,051,259 transferred bytes). Screenshot: `evidence/m5-stage0/pdf-worker-import-preview.png`.

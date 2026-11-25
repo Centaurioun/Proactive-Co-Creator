@@ -42,7 +42,7 @@ The accepted workflow used `actions/checkout@v4`, `actions/setup-node@v4`, and `
 
 The versioned action manifests were fetched from the respective official `actions/*` repositories and returned HTTP 200. The v7.0.1 checkout manifest, v7.1.0 setup-node manifest, and v6.0.0 upload-artifact manifest all specify Node 24. GitHub's documented runtime retirement is recorded at [GitHub Actions Node 20 retirement](https://github.blog/changelog/2026-09-23-node-20-is-no-longer-available-in-github-actions/). The workflow remains on GitHub-hosted Ubuntu and uses no new service, credential, or deployment.
 
-The `verify` job now tests both `22.x` and `24.x`. The separate browser job remains on Node `22.x`; both supported application runtime lines are covered by the unit/typecheck/build matrix, while the browser suite remains one bounded run. The application engine floor remains `^22.13.0 || >=24.0.0`.
+The `verify` job tests the approved Node `22.13.0` minimum, the current `22.x` line, and `24.x`. The separate browser job remains on Node `22.x`; both supported application runtime lines are covered by the unit/typecheck/build matrix, while the browser suite remains one bounded run. The application engine floor remains `^22.13.0 || >=24.0.0`.
 
 Action release references: [checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1), [setup-node v7.1.0](https://github.com/actions/setup-node/releases/tag/v7.1.0), and [upload-artifact v6.0.0](https://github.com/actions/upload-artifact/releases/tag/v6.0.0).
 
