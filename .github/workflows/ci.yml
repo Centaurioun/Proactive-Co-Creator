@@ -18,14 +18,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['22.x']
+        node-version: ['22.13.0', '22.x', '24.x']
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -53,10 +53,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22.x'
           cache: 'npm'
@@ -92,7 +92,7 @@ jobs:
           E2E_BASE_URL: http://127.0.0.1:3000
         run: |
           mkdir -p .playwright-cli
-          node server.ts >.playwright-cli/e2e-server.log 2>&1 &
+          node --experimental-strip-types server.ts >.playwright-cli/e2e-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill $SERVER_PID >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 40); do
@@ -112,7 +112,7 @@ jobs:
 
       - name: Upload Playwright screenshots, traces, results & server log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: playwright-e2e-artifacts
           retention-days: 14

@@ -33,7 +33,7 @@ if [ -z "${E2E_BASE_URL:-}" ]; then
   if [ ! -d dist ]; then
     npm run build
   fi
-  env -u GEMINI_API_KEY -u API_KEY NODE_ENV=production PORT="$PORT_TO_USE" node server.ts >.playwright-cli/stage0-audit-server.log 2>&1 &
+  env -u GEMINI_API_KEY -u API_KEY NODE_ENV=production PORT="$PORT_TO_USE" node --experimental-strip-types server.ts >.playwright-cli/stage0-audit-server.log 2>&1 &
   SERVER_PID=$!
   STARTED_SERVER=1
   for _ in $(seq 1 40); do

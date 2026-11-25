@@ -1,0 +1,83 @@
+{
+  "baseUrl": "http://127.0.0.1:3500",
+  "startedAt": "2026-11-25T15:45:24.723Z",
+  "passed": true,
+  "scenarios": [
+    {
+      "id": "E2E-A",
+      "status": "PASS",
+      "durationMs": 2609,
+      "apiHits": 2,
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "id": "E2E-B",
+      "status": "PASS",
+      "durationMs": 2496,
+      "apiHits": 2,
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "id": "E2E-C",
+      "status": "PASS",
+      "durationMs": 2205,
+      "apiHits": 2,
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "id": "E2E-D",
+      "status": "PASS",
+      "durationMs": 1138,
+      "apiHits": 1,
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "id": "E2E-E",
+      "status": "PASS",
+      "durationMs": 3082,
+      "apiHits": 2,
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "id": "E2E-F",
+      "status": "PASS",
+      "durationMs": 3408,
+      "apiHits": 2,
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "id": "E2E-G",
+      "status": "PASS",
+      "durationMs": 1645,
+      "apiHits": 1,
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "id": "E2E-H+I",
+      "status": "PASS",
+      "durationMs": 9581,
+      "apiHits": 1,
+      "pageErrors": [],
+      "consoleErrors": []
+    }
+  ],
+  "finishedAt": "2026-11-25T15:45:51.025Z",
+  "summary": [
+    "E2E-A: PASS",
+    "E2E-B: PASS",
+    "E2E-C: PASS",
+    "E2E-D: PASS",
+    "E2E-E: PASS",
+    "E2E-F: PASS",
+    "E2E-G: PASS",
+    "E2E-H: PASS",
+    "E2E-I: PASS"
+  ]
+}

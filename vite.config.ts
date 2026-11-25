@@ -1,9 +1,10 @@
-import path from 'path';
+import path from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 const VITE_CLIENT_CONNECT_CALL = 'transport.connect(createHMRHandler(handleMessage));';
+const projectDir = import.meta.dirname;
 
 export function disableViteHmrClientPlugin(disableHmr: boolean): Plugin | null {
   if (!disableHmr) {
@@ -45,7 +46,7 @@ export default defineConfig(() => {
     plugins: [react(), tailwindcss(), ...(noHmrPlugin ? [noHmrPlugin] : [])],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(projectDir, '.'),
       },
     },
   };

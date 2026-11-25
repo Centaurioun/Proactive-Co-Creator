@@ -1,0 +1,95 @@
+# M5 — Final modernization qualification record
+
+Date: 2026-11-25
+
+## Candidate and environment
+
+Local M5 qualification was run against the integrated modernization source candidate `4f70e0af1705c3f22593fae35c2e528e79019742` (tree `e005e77dcae5e5a31f227c476e4b2b4bdf68f1e3`) on Node `v24.22.1` / npm `11.19.1`, macOS arm64. This host does not have Node 22 installed; Node 22 is included in the hosted CI matrix. The separately measured warm-cache compiler/build comparison was collected on the same Node 26.12.1 host as M0 and is recorded in `M4-build-ci.md`.
+
+The app reported `/api/health` `configured:false`. Browser routes blocked non-capability API calls; the import cancellation test used its deterministic local mocks. No real manuscript, provider key, paid API call, or production service was used.
+
+## Automated qualification
+
+All listed commands completed with exit code 0 against the candidate above:
+
+| Check | Result |
+| --- | --- |
+| Clean `npm ci` | PASS; 292 packages installed, 299 audited, 0 vulnerabilities |
+| `npm ls --all` | PASS; exit 0; only platform-optional dependencies were absent as expected |
+| `npm run typecheck` | PASS; `node_modules/.bin/tsc` resolves to `@typescript/native-compiler7`, version 7.0.2 |
+| `node_modules/.bin/tsc6 --noEmit` | PASS; compatibility CLI reports TypeScript 6.0.3; its package alias is `@typescript/typescript6` 6.0.2 |
+| `npm run lint` | PASS |
+| `npm test` | PASS; 302 tests, 26 suites, 0 failed, 0 skipped |
+| `npm run build` | PASS; Vite 8.3.8; main JS 1,006.32 kB / 274.80 kB gzip, PDF text parser 401.32 kB / 117.78 kB gzip, PDF worker 1,050.95 kB, CSS 82.00 kB / 13.32 kB gzip |
+| `npm audit` and `npm audit --omit=dev` | PASS; 0 vulnerabilities in both reports |
+| Stage0 J01–J12 | PASS; 12/12 journeys |
+| Browser E2E A–I | PASS; 9/9 named scenarios; no paid API route hits, page errors or scenario console errors |
+| Narrative Workspace browser scenario | PASS |
+| Q06 import cancellation | PASS; manuscript digest and workspace preference unchanged; cancellation signal observed; delayed response rejected |
+
+The M5 build retains Vite's existing >500 kB chunk warning. No warning threshold was changed. `npm ci` emits npm 11 install-script approval notices for `protobufjs` and `esbuild`; installation, typecheck, tests, and build all completed successfully.
+
+The historical QA harness writes a small set of tracked screenshots and Q06 results under `docs/qa/evidence`. Candidate screenshots/results were copied to `evidence/m5-stage0`, `evidence/m5-browser`, and `evidence/m5-q06`; the tracked historical files were restored byte-for-byte from the pre-test candidate. No historical QA artifact change is included in this modernization.
+
+## Runtime, HMR and asset checks
+
+- Node 24 local qualification: `v24.22.1`, npm `11.19.1`.
+- Node 26 performance measurement: `v26.12.1`, npm `11.20.0`.
+- Node 22 was not available locally. CI's verify matrix includes the approved `22.13.0` floor, latest `22.x`, and `24.x`; hosted exact-head result remains required before acceptance.
+- Development mode with normal HMR: browser opened the app and observed a Vite WebSocket connection at `ws://127.0.0.1:3510/?token=…`.
+- Development mode with `DISABLE_HMR=true`: browser opened the app and observed zero WebSocket constructions. The custom Vite client transform remains because this behavior was verified with Vite 8.3.8.
+- Production server: actual Chromium import of a synthetic 611-byte PDF succeeded. It rendered `PCC synthetic PDF worker smoke test.` as extracted text and loaded `/assets/pdf.worker.min-Cpi8b8z3.mjs` (1,051,259 transferred bytes). Screenshot: `evidence/m5-stage0/pdf-worker-import-preview.png`.
+- Browser smoke responsive widths 1440, 1280, 768, 390 and 320 CSS px all had no horizontal overflow or right-clipped controls. 200% zoom-equivalent 720×450 also had no overflow.
+
+## Preserved behavioral guarantees exercised
+
+The regression evidence exercises persistent project and manuscript flows, semantic J10 invariance, Undo/Redo, workspace preference restoration, stale proposal protections, synthetic import cancellation, backup/recovery paths, Turkish and Unicode content, dark/light themes, responsive navigation, and key-free AI-unavailable behavior. The full suite retains its existing 302 assertions; no test coverage was removed or strictness reduced.
+
+Q01–Q05 are accepted baseline QA packages, with their existing screenshots retained unchanged. No standalone Q01–Q05 browser runner exists in the current `scripts/qa` directory; relevant automated safety regressions were run through the full unit suite, Stage0, E2E and Narrative Workspace scenario. Q06 has a dedicated exact-candidate browser scenario and is attached under `evidence/m5-q06`.
+
+## Accessibility and visual limitations
+
+The toolchain update did not modify the accepted Adaptive Draftroom UI. Stage0 observed no overflow at any tested viewport and detected reduced-motion CSS support. It also found 4 visible controls below 24×24 px; 23 mobile controls were below 44×44 px. One sampled light-theme 12 px metadata/helper text contrast ratio was 4.03:1 against white, below 4.5:1; the sampled dark-theme pairs passed. These are inherited UI observations and remain a deferred design backlog. No screen-reader evaluation or full WCAG 2.2 AA certification is claimed.
+
+## Security assessment
+
+The M0 audit's seven moderate rows were a single advisory cascade: GHSA-g3hv-75wg-m249 / CVE-2026-118764 in minimatch 10.2.6 through the development-only typescript-eslint tree. Updating `typescript-eslint` from 8.72.2 to 8.74.0 resolves minimatch 11.0.8, outside the affected range. Final full and production-only npm audits both report zero advisories. The prior dev-only dependency location did not alone establish harmlessness; this supported upstream fix was applied. npm audit is a snapshot of registry advisory data at qualification time and does not certify absence of unknown vulnerabilities.
+
+## Compatibility and remaining acceptance evidence
+
+The accepted Node engine is `^22.13.0 || >=24.0.0`; React 19 and Tailwind 4 remain unchanged. Vite 8.3.8 and `@vitejs/plugin-react` 6.3.0 are stable releases with verified peer compatibility. The TypeScript native compiler/compatibility package division is confirmed by the actual executable symlinks and version output, not inferred from the dependency declarations.
+
+A candidate-specific CodeScene comparison could not be produced because no CodeScene connector/tool is available in this environment; the exact commit identity of the previously opened hosted analysis remains unverified. No merge or deployment is authorized by this record.
+
+Evidence files in this directory are synthetic QA artifacts. The consolidated pull request body records exact final base, head, tree and hosted CI status after publication.
+
+## Post-publication Node 22.13 correction
+
+The first hosted run on the published candidate `4b2b62d07bec73edd14801f540985db722290a96` (run `45659512863`) passed the Node 22.x and Node 24.x jobs but exposed one failure in the exact Node 22.13.0 job: `node server.ts` did not enable Node's experimental native type stripping and failed with `ERR_UNKNOWN_FILE_EXTENSION`. This contradicted the declared Node floor and the intended production start command. The same test passed on the candidate's other Node matrix entries.
+
+The correction makes the runtime opt-in explicit in `npm start`, CI's production browser server, and the local Stage0 server launchers; the regression test now asserts that startup contract and imports the server using the same flag. On corrected head `a6319732fbac2c376ac208420a14e64f9d803340`, clean `npm ci`, `npm ls --all`, typecheck, lint, the 302-test suite under Node 22.13.0, production build, both npm audits, focused Node 22.13.0/24.0.0 checks, and a key-free Node 22.13.0 production startup smoke all passed. Hosted exact-head run [`45660707659`](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45660707659) passed the Node 22.13.0, Node 22.x, and Node 24.x verification jobs plus Chromium E2E-A through E2E-I. The run's SHA is the corrected code candidate; any subsequent documentation-only head still requires its own exact-head CI result before final handoff.
+
+## Principal Architect bounded closure — F01–F03
+
+Evidence chronology is tied to the actual candidate identities:
+
+- The broad local browser qualification (Stage0, E2E A–I, Narrative Workspace and Q06) was captured on `4f70e0af1705c3f22593fae35c2e528e79019742`. It is historical evidence and is not attributed to later commits.
+- The Node runtime floor/launcher correction followed. The exact Node `22.13.0` check exposed the need for `--experimental-strip-types`; `a6319732fbac2c376ac208420a14e64f9d803340` contains that correction.
+- Hosted CI run [`45660707659`](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45660707659) passed on `a6319732`, including Node `22.13.0`, Node `22.x`, Node `24.x`, and Chromium E2E A–I.
+- The focused F01–F02 checks below were run after that review on this branch; their screenshots and results are included here. Exact final-head hosted CI is reported with the closure outcome.
+
+### F01 — React Fast Refresh behavior
+
+On Node `v26.12.1` / npm `11.20.0`, an isolated synthetic Vite development page at `http://127.0.0.1:4381` established in Chromium `ws://127.0.0.1:4381/?token=…`. A temporary exported React component had a local counter incremented to `2`; changing its rendered marker from `delta` to `epsilon` updated the browser without navigation. `performance.timeOrigin` stayed `1795627132382.6` before and after, the counter remained `2`, and the Vite log reported `hmr update /hmr-probe.tsx`. The final successful browser console had no errors. All three temporary source files were removed after the check. Screenshot: [F01 Fast Refresh](evidence/f01-fast-refresh.png). This qualifies the normal HMR/React Refresh path; the accepted disabled-HMR path was not changed or repeated.
+
+### F02 — EPUB production import
+
+A 1,254-byte synthetic EPUB was imported through the production UI in Chromium on Node `v26.12.1` / npm `11.20.0`. PCC showed its extracted 197 characters / 34 words and one source heading, including Turkish characters. The emitted EPUB inflate worker asset returned HTTP 200 during the import. Source-only import created `M5 F02 Imported EPUB` without analysis. The persisted IndexedDB record had `persistedRevision: 1`, the original filename and matching SHA-256 digest; its Unicode manuscript text remained present after a full page reload. The only `/api/ai/*` request observed was `/api/ai/capabilities` (configuration discovery); non-capability AI routes were guarded and none were requested or blocked. No provider/model request or page error occurred. Screenshot: [F02 source-only EPUB import](evidence/f02-epub-source-only.png).
+
+### F03 — Architecture and dependency provenance
+
+The README now describes Vite 8 and the compiler split: `npm run typecheck` invokes native TypeScript 7; TypeScript 6 is the classic compiler API compatibility package for tools that need it.
+
+The accepted-base lockfile contained 38 production-classified records that are absent from the normalized lockfile; all 38 were marked `peer: true` and `optional: true`. They form the optional `@modelcontextprotocol/sdk` `1.32.2` peer subtree of `@google/genai` `3.3.0` (21 entries nested under the SDK and 17 hoisted dependency records). The current install has no SDK package (`npm ls @modelcontextprotocol/sdk --all` returns empty), and repository source has no direct SDK import. `@google/genai` remains installed at `3.3.0` with its required `google-auth-library`, `p-retry`, `protobufjs`, and `ws` dependencies present. This is normalization/removal of an optional peer subtree, not loss of a required application runtime dependency; obsolete lock entries were not restored.
+
+The custom disabled-HMR transform is an inherited compatibility workaround for the existing `DISABLE_HMR=true` contract. It rewrites Vite's internal client connection call only when that flag is set, alongside `server.hmr: false` and `server.ws: false`; normal HMR remains enabled and passed F01. Its dependence on an internal Vite client path remains a maintenance risk, documented in [M3 Vite migration](M3-vite.md). The existing large bundle warning remains (main JS 1,006.32 kB, PDF worker 1,050.95 kB); the inherited small-target/contrast findings and absence of screen-reader testing/full WCAG 2.2 AA certification remain as documented above. No UI or dependency scope was added for this closure.
