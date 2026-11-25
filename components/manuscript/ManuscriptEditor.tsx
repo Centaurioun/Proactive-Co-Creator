@@ -11,6 +11,24 @@ import ManuscriptOutlineSidebar from './ManuscriptOutlineSidebar';
 import StyleProfilePanel from './StyleProfilePanel';
 import type { WritingAssistAction } from '../../shared/narrativeAiSchemas';
 
+export function resolveReturnSelection(
+  currentText: string,
+  position: { textIdentity: string; start: number; end: number },
+): { start: number; end: number; textMatches: boolean } {
+  if (position.textIdentity !== currentText) return { start: 0, end: 0, textMatches: false };
+
+  let start = Math.min(position.start, currentText.length);
+  let end = Math.min(Math.max(start, position.end), currentText.length);
+  if (start === end) {
+    while (start > 0 && !isTextBoundary(currentText, start)) start -= 1;
+    end = start;
+  } else {
+    while (start > 0 && !isTextBoundary(currentText, start)) start -= 1;
+    while (end < currentText.length && !isTextBoundary(currentText, end)) end += 1;
+  }
+  return { start, end, textMatches: true };
+}
+
 export const workspaceButton = 'min-h-10 rounded-md border border-pcc-line bg-pcc-surface px-3 py-2 text-sm font-medium text-pcc-ink transition-colors hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45 dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink dark:hover:bg-pcc-dark-canvas';
 const field = 'w-full rounded-md border border-pcc-line bg-pcc-surface px-3 py-2 text-pcc-ink focus-visible:outline-none dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink';
 
@@ -84,6 +102,7 @@ export default function ManuscriptEditor({
   const textareaScrollTop = useRef(0);
   const returnPosition = useRef<{
     sectionId: string;
+    textIdentity: string;
     start: number;
     end: number;
     textareaScrollTop: number;
@@ -125,12 +144,13 @@ export default function ManuscriptEditor({
     const editor = textarea.current;
     returnPosition.current = {
       sectionId: selected?.id ?? '',
+      textIdentity: editor?.value ?? selected?.text ?? '',
       start: editor?.selectionStart ?? selectionRange.start,
       end: editor?.selectionEnd ?? selectionRange.end,
       textareaScrollTop: editor?.scrollTop ?? textareaScrollTop.current,
       editorScrollTop: editorMain.current?.scrollTop ?? 0,
     };
-  }, [selected?.id, selectionRange.start, selectionRange.end]);
+  }, [selected?.id, selected?.text, selectionRange.start, selectionRange.end]);
 
   function toggleFocus() {
     if (composingRef.current) return;
@@ -163,15 +183,7 @@ export default function ManuscriptEditor({
     let restoredStart = position.start;
     let restoredEnd = position.end;
     if (editor) {
-      restoredStart = Math.min(position.start, editor.value.length);
-      restoredEnd = Math.min(Math.max(restoredStart, position.end), editor.value.length);
-      if (restoredStart === restoredEnd) {
-        while (restoredStart > 0 && !isTextBoundary(editor.value, restoredStart)) restoredStart -= 1;
-        restoredEnd = restoredStart;
-      } else {
-        while (restoredStart > 0 && !isTextBoundary(editor.value, restoredStart)) restoredStart -= 1;
-        while (restoredEnd < editor.value.length && !isTextBoundary(editor.value, restoredEnd)) restoredEnd += 1;
-      }
+      ({ start: restoredStart, end: restoredEnd } = resolveReturnSelection(editor.value, position));
       editor.setSelectionRange(restoredStart, restoredEnd);
       editor.scrollTop = position.textareaScrollTop;
       if (restoreFocus.current) editor.focus({ preventScroll: true });
@@ -346,6 +358,7 @@ export default function ManuscriptEditor({
                     const editor = event.currentTarget;
                     returnPosition.current = {
                       sectionId: selected?.id ?? '',
+                      textIdentity: editor.value,
                       start: editor.selectionStart,
                       end: editor.selectionEnd,
                       textareaScrollTop: editor.scrollTop,
