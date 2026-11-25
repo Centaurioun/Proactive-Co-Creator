@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { NarrativeExtractionSchema, type NarrativeExtractionRequest } from '../../shared/importSchemas';
 import type { CreativeProject } from '../../shared/types';
-import type { ImportEnhancementProposal } from '../../shared/narrativeAiSchemas';
 import { buildClientBudgetDisclosure } from '../../lib/narrative/aiBudgetClient';
 import { assembleImportedProject } from '../../lib/narrative/import/assembleProject';
 import {
@@ -15,6 +14,12 @@ import { deduplicateChunkProposals, verifyExtractionEvidence, type VerifiedExtra
 import { MAX_IMPORT_CHUNKS, calculateProcessedCoverage, segmentNarrativeSource, type SourceChunk } from '../../lib/narrative/import/segmentation';
 import { countNarrativeWords, MAX_RETAINED_ORIGINAL_BYTES, parseNarrativeSource, type ParsedNarrativeSource } from '../../lib/narrative/import/sourceParser';
 import { manuscriptSections } from '../../lib/narrative/manuscriptModel';
+import {
+  attachAcceptedStage2Opportunities,
+  createStage2EnhancementController,
+  type Stage2EnhancementController,
+  type Stage2EnhancementState,
+} from '../../lib/narrative/import/stage2Enhancements';
 import { extractNarrativeChunk, isAbortError, requestImportEnhancements } from '../../services/apiClient';
 import { workspaceButton } from '../manuscript/ManuscriptEditor';
 
@@ -92,12 +97,25 @@ export default function ImportWorkflow({
   const [identityDecisions, setIdentityDecisions] = useState<Record<string, CrossProjectIdentityDecision>>({});
   const [allowDuplicateSource, setAllowDuplicateSource] = useState(false);
 
-  // Stage 2: Reconstruct & Enhance proposals (Package D + I)
+  // Stage 2: Reconstruct & Enhance proposals (Package D + I + R0-A identity guard)
   const [enhanceGoals, setEnhanceGoals] = useState('');
-  const [enhanceBusy, setEnhanceBusy] = useState(false);
-  const [enhanceError, setEnhanceError] = useState('');
-  const [enhancements, setEnhancements] = useState<ImportEnhancementProposal[]>([]);
-  const [acceptedEnhancementIds, setAcceptedEnhancementIds] = useState<Set<string>>(new Set());
+  const [stage2State, setStage2State] = useState<Stage2EnhancementState>({
+    busy: false,
+    error: '',
+    batch: null,
+    proposals: [],
+    acceptedIds: new Set<string>(),
+  });
+  const stage2ControllerRef = useRef<Stage2EnhancementController | null>(null);
+  if (stage2ControllerRef.current == null) {
+    stage2ControllerRef.current = createStage2EnhancementController((next) => {
+      setStage2State(next);
+    });
+  }
+  const enhanceBusy = stage2State.busy;
+  const enhanceError = stage2State.error;
+  const enhancements = stage2State.proposals;
+  const acceptedEnhancementIds = stage2State.acceptedIds;
 
   const abortRef = useRef<AbortController | null>(null);
   const epochRef = useRef(0);
@@ -112,6 +130,7 @@ export default function ImportWorkflow({
     sourceReadAbortRef.current = null;
     epochRef.current += 1;
     abortRef.current?.abort();
+    stage2ControllerRef.current?.dispose();
   }, []);
 
   const parsedHasFileRetentionGap = Boolean(file && source?.retention === 'extracted-only');
@@ -209,12 +228,17 @@ export default function ImportWorkflow({
     [enhanceRequestPreview]
   );
 
-  const resetAnalysis = () => {
+  const resetAnalysis = (clearSourceIdentity = false) => {
     setChunks([]); setSegmentationComplete(false); setResults([]); setCompletedChunkIds(new Set());
     setFailedChunks([]); setRejectedEvidenceCount(0); setCancelled(false); setCallsUsed(0);
     setRequestError(''); setAcceptedIds(new Set()); setRejectedIds(new Set()); setCreateError('');
-    setAllowIncomplete(false); setAnalysisConfiguration(null); setEnhancements([]); setAcceptedEnhancementIds(new Set());
+    setAllowIncomplete(false); setAnalysisConfiguration(null);
     setIdentityDecisions({}); setAllowDuplicateSource(false);
+    if (clearSourceIdentity) {
+      stage2ControllerRef.current?.setActiveSource(null);
+    } else {
+      stage2ControllerRef.current?.invalidate();
+    }
     epochRef.current += 1; abortRef.current?.abort(); abortRef.current = null;
   };
 
@@ -223,7 +247,7 @@ export default function ImportWorkflow({
     const controller = new AbortController();
     const readEpoch = ++sourceReadEpochRef.current;
     sourceReadAbortRef.current = controller;
-    setSourceError(''); setRequestError(''); setSource(null); resetAnalysis(); setConfirmExtractedOnly(false);
+    setSourceError(''); setRequestError(''); setSource(null); setSourceId(''); resetAnalysis(true); setConfirmExtractedOnly(false);
     try {
       let parsed: ParsedNarrativeSource;
       if (file) {
@@ -233,7 +257,13 @@ export default function ImportWorkflow({
       }
       if (readEpoch !== sourceReadEpochRef.current) return;
       sourceReadAbortRef.current = null;
-      setSource(parsed); setSourceId(crypto.randomUUID());
+      const nextSourceId = crypto.randomUUID();
+      setSource(parsed); setSourceId(nextSourceId);
+      stage2ControllerRef.current?.setActiveSource({
+        sourceId: nextSourceId,
+        sourceVersion: 'v1',
+        digest: parsed.digest,
+      });
       setProjectName(file ? file.name.replace(/\.[^.]+$/, '').slice(0, 100) : 'Imported narrative');
     } catch (error) {
       if (readEpoch !== sourceReadEpochRef.current) return;
@@ -250,8 +280,8 @@ export default function ImportWorkflow({
     sourceReadAbortRef.current?.abort();
     sourceReadAbortRef.current = null;
     abortRef.current?.abort();
-    setFile(next); setSource(null); setSourceError(''); setPastedText('');
-    resetAnalysis();
+    setFile(next); setSource(null); setSourceId(''); setSourceError(''); setPastedText('');
+    resetAnalysis(true);
   };
 
   const startAnalysis = async (retry = false, smallerChunks = false) => {
@@ -322,24 +352,24 @@ export default function ImportWorkflow({
   };
 
   const runStage2Enhancements = async () => {
-    if (!enhanceRequestPreview || enhanceBusy) return;
-    if (!aiConfigured) {
-      setEnhanceError('Server Gemini API key is not configured. Stage 2 enhancements require server AI credentials.');
-      return;
-    }
-    setEnhanceBusy(true);
-    setEnhanceError('');
-    try {
-      const res = await requestImportEnhancements(enhanceRequestPreview);
-      setEnhancements(res.proposals);
-    } catch (cause) {
-      setEnhanceError(cause instanceof Error ? cause.message : 'Enhancement proposal generation failed.');
-    } finally {
-      setEnhanceBusy(false);
-    }
+    if (!enhanceRequestPreview || !source || !sourceId || enhanceBusy) return;
+    await stage2ControllerRef.current?.run({
+      request: enhanceRequestPreview,
+      aiConfigured,
+      identity: {
+        sourceId,
+        sourceVersion: 'v1',
+        digest: source.digest,
+      },
+      transport: requestImportEnhancements,
+    });
   };
 
-  const cancelAnalysis = () => { abortRef.current?.abort(); setCancelled(true); };
+  const cancelAnalysis = () => {
+    abortRef.current?.abort();
+    stage2ControllerRef.current?.invalidate();
+    setCancelled(true);
+  };
 
   const toggleAccepted = (id: string, checked: boolean) => {
     setAcceptedIds((previous) => { const next = new Set(previous); if (checked) next.add(id); else next.delete(id); return next; });
@@ -369,34 +399,14 @@ export default function ImportWorkflow({
         calls: callsUsed,
       },
     });
-    // Record accepted Stage 2 enhancements strictly as tracked pending opportunities (never mutating immutable original source or mixing with extracted facts)
-    const selectedEnhancements = enhancements.filter((e) => acceptedEnhancementIds.has(e.id));
-    if (selectedEnhancements.length > 0 && assembled.narrative) {
-      const now = Date.now();
-      assembled.narrative.opportunities = [
-        ...(assembled.narrative.opportunities ?? []),
-        ...selectedEnhancements.map((enh) => ({
-          id: `opp_enh_${enh.id.slice(0, 12)}_${now.toString(36).slice(-4)}`,
-          projectId: assembled.id,
-          description: `[Import Enhancement · ${enh.category}] ${enh.title}`,
-          sourceRefs: [sourceId],
-          rationale: enh.rationale,
-          benefit: enh.afterExcerpt,
-          tradeOff: 'Post-faithful creative enhancement proposal — immutable source remains unchanged.',
-          assumptions: enh.assumptions,
-          status: 'pending' as const,
-          origin: 'ai' as const,
-          category: enh.category,
-          options: [enh.afterExcerpt],
-          baseRevision: assembled.revision,
-          lifecycleRevision: assembled.revision,
-          createdAt: now,
-          updatedAt: now,
-          history: [],
-        })),
-      ];
-    }
-    return assembled;
+    // Record accepted Stage 2 enhancements strictly as tracked pending opportunities
+    // only when the stored Stage 2 batch matches the current source identity (R0-A).
+    const selectedEnhancements = stage2ControllerRef.current?.getValidatedAcceptedProposals({
+      sourceId,
+      sourceVersion: 'v1',
+      digest: source.digest,
+    }) ?? [];
+    return attachAcceptedStage2Opportunities(assembled, selectedEnhancements, sourceId);
   };
 
   const commitImport = async () => {
@@ -454,6 +464,7 @@ export default function ImportWorkflow({
               sourceReadAbortRef.current = null;
               epochRef.current += 1;
               abortRef.current?.abort();
+              stage2ControllerRef.current?.invalidate();
               onCancelImport();
             }}
           >
@@ -477,7 +488,8 @@ export default function ImportWorkflow({
               setPastedText(event.target.value);
               if (file) setFile(null);
               setSource(null);
-              resetAnalysis();
+              setSourceId('');
+              resetAnalysis(true);
             }}
             placeholder="Paste text to preview locally"
           />
@@ -492,7 +504,8 @@ export default function ImportWorkflow({
                   sourceReadAbortRef.current = null;
                   setRetainOriginal(event.target.checked);
                   setSource(null);
-                  resetAnalysis();
+                  setSourceId('');
+                  resetAnalysis(true);
                 }}
               />
               Retain original file bytes in project and portable backup (up to {Math.round(MAX_RETAINED_ORIGINAL_BYTES / 1024 / 1024)} MiB)
@@ -716,12 +729,7 @@ export default function ImportWorkflow({
                             type="checkbox"
                             checked={acceptedEnhancementIds.has(enh.id)}
                             onChange={(e) =>
-                              setAcceptedEnhancementIds((prev) => {
-                                const next = new Set(prev);
-                                if (e.target.checked) next.add(enh.id);
-                                else next.delete(enh.id);
-                                return next;
-                              })
+                              stage2ControllerRef.current?.toggleAccepted(enh.id, e.target.checked)
                             }
                           />
                           <span>{enh.title}</span>

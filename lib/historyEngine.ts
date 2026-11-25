@@ -6,10 +6,14 @@
 import { recordNarrativeChange } from './narrative/changeAudit.ts';
 import { makeStableId } from './canonicalModel.ts';
 import type {
+  Clarification,
   CreativeProject,
+  DecisionItem,
+  Entity,
   PersistedUndoHistory,
   ProjectRevision,
   ProjectSnapshot,
+  Relationship,
 } from '../shared/types.ts';
 
 export interface UndoRedoEntry {
@@ -42,6 +46,67 @@ export function serializeUndoHistory(state: UndoRedoState): PersistedUndoHistory
   };
 }
 
+function reconstructFromPersistedHistory(
+  initialSnapshot: ProjectSnapshot,
+  persistedUndoHistory: PersistedUndoHistory
+): UndoRedoState {
+  const now = Date.now();
+  return {
+    past: persistedUndoHistory.past.slice(-MAX_UNDO_STACK).map((entry, idx) => ({
+      id: makeStableId(`undo_${idx}`),
+      label: entry.label || `Step ${idx + 1}`,
+      timestamp: now,
+      snapshot: structuredClone(entry.snapshot),
+    })),
+    present: structuredClone(initialSnapshot),
+    future: persistedUndoHistory.future.slice(0, MAX_UNDO_STACK).map((entry, idx) => ({
+      id: makeStableId(`redo_${idx}`),
+      label: entry.label || `Redo ${idx + 1}`,
+      timestamp: now,
+      snapshot: structuredClone(entry.snapshot),
+    })),
+  };
+}
+
+function reconstructFromRevisions(
+  initialSnapshot: ProjectSnapshot,
+  revisions: ProjectRevision[]
+): UndoRedoState | null {
+  const oldest = revisions[revisions.length - 1];
+  if (!oldest?.snapshot) return null;
+
+  let state: UndoRedoState = {
+    past: [],
+    present: structuredClone(oldest.snapshot),
+    future: [],
+  };
+  for (let i = revisions.length - 2; i >= 0; i--) {
+    const rev = revisions[i];
+    if (!rev?.snapshot) continue;
+    const label = rev.label || `Revision #${rev.revisionNumber ?? i}`;
+    if (
+      label.startsWith('Undo: ') &&
+      state.past.length > 0 &&
+      isSnapshotSemanticallyEqual(state.past[state.past.length - 1].snapshot, rev.snapshot)
+    ) {
+      state = performUndo(state).state;
+    } else if (
+      label.startsWith('Redo: ') &&
+      state.future.length > 0 &&
+      isSnapshotSemanticallyEqual(state.future[0].snapshot, rev.snapshot)
+    ) {
+      state = performRedo(state).state;
+    } else {
+      state = pushUndoableTransaction(state, rev.snapshot, label, rev.coalesceKey);
+    }
+  }
+  return {
+    past: state.past.slice(-MAX_UNDO_STACK),
+    present: structuredClone(initialSnapshot),
+    future: state.future.slice(0, MAX_UNDO_STACK),
+  };
+}
+
 export function createUndoRedoState(
   initialSnapshot: ProjectSnapshot,
   revisions?: ProjectRevision[],
@@ -52,58 +117,12 @@ export function createUndoRedoState(
     Array.isArray(persistedUndoHistory.past) &&
     Array.isArray(persistedUndoHistory.future)
   ) {
-    const now = Date.now();
-    return {
-      past: persistedUndoHistory.past.slice(-MAX_UNDO_STACK).map((entry, idx) => ({
-        id: makeStableId(`undo_${idx}`),
-        label: entry.label || `Step ${idx + 1}`,
-        timestamp: now,
-        snapshot: structuredClone(entry.snapshot),
-      })),
-      present: structuredClone(initialSnapshot),
-      future: persistedUndoHistory.future.slice(0, MAX_UNDO_STACK).map((entry, idx) => ({
-        id: makeStableId(`redo_${idx}`),
-        label: entry.label || `Redo ${idx + 1}`,
-        timestamp: now,
-        snapshot: structuredClone(entry.snapshot),
-      })),
-    };
+    return reconstructFromPersistedHistory(initialSnapshot, persistedUndoHistory);
   }
 
   if (Array.isArray(revisions) && revisions.length > 1) {
-    const oldest = revisions[revisions.length - 1];
-    if (oldest?.snapshot) {
-      let state: UndoRedoState = {
-        past: [],
-        present: structuredClone(oldest.snapshot),
-        future: [],
-      };
-      for (let i = revisions.length - 2; i >= 0; i--) {
-        const rev = revisions[i];
-        if (!rev?.snapshot) continue;
-        const label = rev.label || `Revision #${rev.revisionNumber ?? i}`;
-        if (
-          label.startsWith('Undo: ') &&
-          state.past.length > 0 &&
-          isSnapshotSemanticallyEqual(state.past[state.past.length - 1].snapshot, rev.snapshot)
-        ) {
-          state = performUndo(state).state;
-        } else if (
-          label.startsWith('Redo: ') &&
-          state.future.length > 0 &&
-          isSnapshotSemanticallyEqual(state.future[0].snapshot, rev.snapshot)
-        ) {
-          state = performRedo(state).state;
-        } else {
-          state = pushUndoableTransaction(state, rev.snapshot, label, rev.coalesceKey);
-        }
-      }
-      return {
-        past: state.past.slice(-MAX_UNDO_STACK),
-        present: structuredClone(initialSnapshot),
-        future: state.future.slice(0, MAX_UNDO_STACK),
-      };
-    }
+    const reconstructed = reconstructFromRevisions(initialSnapshot, revisions);
+    if (reconstructed) return reconstructed;
   }
 
   return {
@@ -117,6 +136,94 @@ export function createUndoRedoStateFromProject(project: CreativeProject): UndoRe
   return createUndoRedoState(project.snapshot, project.revisions, project.undoHistory);
 }
 
+function normalizeEntityForComparison(e: Entity) {
+  return {
+    id: e.id,
+    name: e.name,
+    category: e.category,
+    presence_in_prompt: Boolean(e.presence_in_prompt),
+    description: e.description,
+    alternatives: Array.isArray(e.alternatives) ? e.alternatives.map((c) => c.name) : null,
+    excluded: Boolean(e.excluded),
+    status: e.status,
+    provenance: e.provenance,
+    groupId: e.groupId,
+    aliases: e.aliases ?? [],
+    attributes: e.attributes.map((a) => ({
+      id: a.id,
+      name: a.name,
+      presence_in_prompt: Boolean(a.presence_in_prompt),
+      confirmedValue: a.confirmedValue,
+      status: a.status,
+      provenance: a.provenance,
+      value: a.value.map((v) => v.name),
+    })),
+  };
+}
+
+function normalizeRelationshipForComparison(r: Relationship) {
+  return {
+    id: r.id,
+    sourceId: r.sourceId,
+    targetId: r.targetId,
+    source: r.source,
+    target: r.target,
+    label: r.label,
+    alternatives: Array.isArray(r.alternatives) ? r.alternatives.map((c) => c.name) : [],
+    status: r.status,
+    provenance: r.provenance,
+    presence_in_prompt: Boolean(r.presence_in_prompt),
+    evidenceExcerpt: r.evidenceExcerpt,
+  };
+}
+
+function normalizeClarificationForComparison(c: Clarification) {
+  return {
+    id: c.id,
+    question: c.question,
+    options: c.options ?? [],
+    target: c.target
+      ? {
+          type: c.target.type,
+          entityId: c.target.entityId,
+          entityName: c.target.entityName,
+          attributeName: c.target.attributeName,
+          relationshipId: c.target.relationshipId,
+          storyField: c.target.storyField,
+        }
+      : undefined,
+    category: c.category,
+    impact: c.impact,
+    status: c.status,
+    outdatedReason: c.outdatedReason,
+  };
+}
+
+function normalizeDecisionForComparison(d: DecisionItem) {
+  return {
+    id: d.id,
+    category: d.category,
+    title: d.title,
+    description: d.description,
+    explanation: d.explanation,
+    provenance: d.provenance,
+    status: d.status,
+    groupKey: d.groupKey,
+    targetEntityId: d.targetEntityId,
+    targetEntityName: d.targetEntityName,
+    targetAttributeName: d.targetAttributeName,
+    targetRelationshipId: d.targetRelationshipId,
+    targetSourceEntityName: d.targetSourceEntityName,
+    targetTargetEntityName: d.targetTargetEntityName,
+    targetStoryField: d.targetStoryField,
+    questionId: d.questionId,
+    currentValue: d.currentValue,
+    proposedValue: d.proposedValue,
+    options: d.options ?? [],
+    conflictWith: d.conflictWith,
+  };
+}
+
 /**
  * Normalizes a ProjectSnapshot for semantic comparison, ignoring only ephemeral timestamps.
  */
@@ -127,88 +234,16 @@ export function normalizeSnapshotForComparison(snapshot: ProjectSnapshot): unkno
     refinedPrompt: snapshot.refinedPrompt,
     freeformNotes: snapshot.freeformNotes,
     mode: snapshot.mode,
-    entities: snapshot.entities.map((e) => ({
-      id: e.id,
-      name: e.name,
-      category: e.category,
-      presence_in_prompt: Boolean(e.presence_in_prompt),
-      description: e.description,
-      alternatives: Array.isArray(e.alternatives) ? e.alternatives.map((c) => c.name) : null,
-      excluded: Boolean(e.excluded),
-      status: e.status,
-      provenance: e.provenance,
-      groupId: e.groupId,
-      aliases: e.aliases ?? [],
-      attributes: e.attributes.map((a) => ({
-        id: a.id,
-        name: a.name,
-        presence_in_prompt: Boolean(a.presence_in_prompt),
-        confirmedValue: a.confirmedValue,
-        status: a.status,
-        provenance: a.provenance,
-        value: a.value.map((v) => v.name),
-      })),
-    })),
-    relationships: snapshot.relationships.map((r) => ({
-      id: r.id,
-      sourceId: r.sourceId,
-      targetId: r.targetId,
-      source: r.source,
-      target: r.target,
-      label: r.label,
-      alternatives: Array.isArray(r.alternatives) ? r.alternatives.map((c) => c.name) : [],
-      status: r.status,
-      provenance: r.provenance,
-      presence_in_prompt: Boolean(r.presence_in_prompt),
-      evidenceExcerpt: r.evidenceExcerpt,
-    })),
+    entities: snapshot.entities.map(normalizeEntityForComparison),
+    relationships: snapshot.relationships.map(normalizeRelationshipForComparison),
     storyBible: Object.fromEntries(
       Object.entries(snapshot.storyBible).map(([k, v]) => [
         k,
         { value: v.value, status: v.status, provenance: v.provenance },
       ])
     ),
-    clarifications: snapshot.clarifications.map((c) => ({
-      id: c.id,
-      question: c.question,
-      options: c.options ?? [],
-      target: c.target
-        ? {
-            type: c.target.type,
-            entityId: c.target.entityId,
-            entityName: c.target.entityName,
-            attributeName: c.target.attributeName,
-            relationshipId: c.target.relationshipId,
-            storyField: c.target.storyField,
-          }
-        : undefined,
-      category: c.category,
-      impact: c.impact,
-      status: c.status,
-      outdatedReason: c.outdatedReason,
-    })),
-    decisions: snapshot.decisions.map((d) => ({
-      id: d.id,
-      category: d.category,
-      title: d.title,
-      description: d.description,
-      explanation: d.explanation,
-      provenance: d.provenance,
-      status: d.status,
-      groupKey: d.groupKey,
-      targetEntityId: d.targetEntityId,
-      targetEntityName: d.targetEntityName,
-      targetAttributeName: d.targetAttributeName,
-      targetRelationshipId: d.targetRelationshipId,
-      targetSourceEntityName: d.targetSourceEntityName,
-      targetTargetEntityName: d.targetTargetEntityName,
-      targetStoryField: d.targetStoryField,
-      questionId: d.questionId,
-      currentValue: d.currentValue,
-      proposedValue: d.proposedValue,
-      options: d.options ?? [],
-      conflictWith: d.conflictWith,
-    })),
+    clarifications: snapshot.clarifications.map(normalizeClarificationForComparison),
+    decisions: snapshot.decisions.map(normalizeDecisionForComparison),
     answeredQuestions: snapshot.answeredQuestions ?? [],
     skippedQuestions: snapshot.skippedQuestions ?? [],
   };
@@ -484,5 +519,8 @@ export function restoreProjectRevision(
     undoHistory: serializeUndoHistory(nextUndoState),
   };
 
-  return { project: recordNarrativeChange(project, nextProject, 'restore', targetRev.label), undoState: nextUndoState };
+  return {
+    project: recordNarrativeChange(project, nextProject, 'restore', targetRev.label),
+    undoState: nextUndoState,
+  };
 }

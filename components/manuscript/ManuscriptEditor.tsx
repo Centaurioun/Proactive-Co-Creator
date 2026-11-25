@@ -3,9 +3,11 @@ import type { ArtifactAnchor, ManuscriptSection } from '../../shared/narrativeTy
 import type { CreativeProject } from '../../shared/types';
 import { applyManuscriptOperation, manuscriptSections, narrativeBase, type NarrativeBase } from '../../lib/narrative/manuscriptModel';
 import { filterManuscriptSections } from '../../lib/narrative/manuscriptNavigation';
-import { createStyleObservation, createStyleProfile, reviewStyleObservation, selectStyleContext, type StyleProfile, type StyleTrait } from '../../lib/narrative/context/styleProfile';
+import { createStyleProfile, type StyleProfile } from '../../lib/narrative/context/styleProfile';
 import AdoptArtifactDialog from './AdoptArtifactDialog';
 import WritingAssistantPanel from './WritingAssistantPanel';
+import ManuscriptOutlineSidebar from './ManuscriptOutlineSidebar';
+import StyleProfilePanel from './StyleProfilePanel';
 import type { WritingAssistAction } from '../../shared/narrativeAiSchemas';
 
 export const workspaceButton = 'rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800 disabled:opacity-45';
@@ -66,20 +68,12 @@ export default function ManuscriptEditor({
   const styleVersionKey = JSON.stringify([project.id, project.snapshot.manuscriptVersionId]);
   const [previousStyleVersionKey, setPreviousStyleVersionKey] = useState(styleVersionKey);
   const [styleProfile, setStyleProfile] = useState<StyleProfile>(() => profileForCurrentVersion);
-  const [styleSourceId, setStyleSourceId] = useState('');
-  const [styleTrait, setStyleTrait] = useState<StyleTrait>('voice');
-  const [styleValue, setStyleValue] = useState('');
-  const [styleExcerpt, setStyleExcerpt] = useState('');
-  const [styleInterpretation, setStyleInterpretation] = useState<'observation' | 'interpretation'>('observation');
-  const [styleScope, setStyleScope] = useState<'manuscript' | 'section'>('manuscript');
-  const [styleError, setStyleError] = useState('');
   const [adopting, setAdopting] = useState(Boolean(initialArtifactId));
   const [confirming, setConfirming] = useState<'delete' | 'merge' | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const inFlight = useRef(false);
   const sections = draft?.sections ?? manuscriptSections(project);
   const styleSources = project.narrative?.sources ?? [];
-  const selectedStyleSource = styleSources.find(source => `${source.id}:${source.version}:${source.digest}` === styleSourceId) ?? styleSources[0];
   const visibleSections = filterManuscriptSections(sections, {
     query: search,
     chapterId: chapterFilter && chapterFilter !== '__unchaptered' ? chapterFilter : undefined,
@@ -96,8 +90,6 @@ export default function ManuscriptEditor({
   if (previousStyleVersionKey !== styleVersionKey) {
     setPreviousStyleVersionKey(styleVersionKey);
     setStyleProfile(profileForCurrentVersion);
-    setStyleSourceId('');
-    setStyleError('');
   }
 
   if (focusedSectionId !== prevFocusedSectionId) {
@@ -107,59 +99,7 @@ export default function ManuscriptEditor({
     }
   }
 
-  function resolveStyleSource(ref: { recordId: string; version: string; digest: string }) {
-    const source = styleSources.find(item => item.id === ref.recordId && item.version === ref.version && item.digest === ref.digest);
-    return source ? { digest: source.digest, text: source.text } : undefined;
-  }
-
-  const currentStyleObservations = styleProfile.observations.filter(observation => {
-    const source = resolveStyleSource(observation.evidence);
-    return source !== undefined && source.text.slice(observation.evidence.start, observation.evidence.end) === observation.evidence.excerpt;
-  });
-  const currentStyleProfile = { ...styleProfile, observations: currentStyleObservations };
   const styleProfileDirty = JSON.stringify(styleProfile) !== JSON.stringify(profileForCurrentVersion);
-  const styleContext = selected
-    ? selectStyleContext(currentStyleProfile, project.id, selected.id)
-    : { guidance: [], conflicts: [] };
-
-  function addStyleObservation() {
-    const value = styleValue.trim();
-    const source = selectedStyleSource;
-    if (!source || !value || !styleExcerpt.trim() || !selected && styleScope === 'section') {
-      setStyleError('Choose a source, add a style note and exact source excerpt, and select a section for section-specific notes.');
-      return;
-    }
-    if (styleValue.length > 240 || styleExcerpt.length > 2000) {
-      setStyleError('Style notes are limited to 240 characters and source excerpts to 2,000 characters.');
-      return;
-    }
-    const start = source.text.indexOf(styleExcerpt);
-    if (start < 0 || source.text.indexOf(styleExcerpt, start + 1) >= 0) {
-      setStyleError('The exact excerpt must appear once in the selected project source.');
-      return;
-    }
-    const observation = createStyleObservation({
-      id: crypto.randomUUID(), trait: styleTrait, value, interpretation: styleInterpretation,
-      scope: styleScope === 'section' && selected ? { kind: 'section', sectionId: selected.id } : { kind: 'manuscript' },
-      evidence: { kind: 'source', recordId: source.id, version: source.version, digest: source.digest,
-        start, end: start + styleExcerpt.length, excerpt: styleExcerpt },
-    });
-    setStyleProfile(profile => ({ ...profile, observations: [...profile.observations, observation] }));
-    onDirty(true);
-    setStyleValue('');
-    setStyleExcerpt('');
-    setStyleError('');
-  }
-
-  function reviewStyle(id: string, status: 'confirmed' | 'rejected') {
-    try {
-      setStyleProfile(profile => reviewStyleObservation(profile, id, status, resolveStyleSource));
-      onDirty(true);
-      setStyleError('');
-    } catch (cause) {
-      setStyleError(cause instanceof Error ? cause.message : 'This style note could not be reviewed.');
-    }
-  }
 
   function edit(next: ManuscriptSection[]) {
     setDraft({ base: draft?.base ?? narrativeBase(project), sections: next });
@@ -225,48 +165,30 @@ export default function ManuscriptEditor({
           </button>
         )}
         {!focus && (
-          <aside id="manuscript-outline" className={`${outlineOpen ? 'block' : 'hidden'} min-w-0 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900 lg:block`} aria-label="Manuscript outline">
-            <h2 className="font-semibold">Outline</h2>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button className={workspaceButton} disabled={!enabled || saving || adopting} onClick={() => add('chapter')}>Add chapter</button>
-              <button className={workspaceButton} disabled={!enabled || saving || adopting} onClick={() => add('scene')}>Add scene</button>
-            </div>
-            <label className="mt-4 block text-sm">
-              Find in manuscript
-              <input className={field} value={search} onChange={event => setSearch(event.target.value)} />
-            </label>
-            <label className="mt-3 block text-sm">
-              Chapter
-              <select className={field} value={chapterFilter} onChange={event => setChapterFilter(event.target.value)}>
-                <option value="">All sections</option>
-                {chapters.map((chapter, position) => <option key={chapter.id} value={chapter.id}>{chapter.title || `Chapter ${position + 1}`}</option>)}
-                <option value="__unchaptered">Unchaptered scenes</option>
-              </select>
-            </label>
-            <label className="mt-3 block text-sm">
-              Story chronology
-              <select className={field} value={chronologyFilter} onChange={event => setChronologyFilter(event.target.value)}>
-                <option value="">All chronology markers</option>
-                {chronologyMarkers.map(marker => <option key={marker} value={marker}>{marker}</option>)}
-              </select>
-            </label>
-            <ol className="mt-3 space-y-1">
-              {visibleSections.map(section => {
-                return (
-                  <li key={section.id} className={section.chapterId ? 'pl-3' : ''}>
-                    <button type="button" disabled={adopting} onClick={() => { setSelectedId(section.id); setConfirming(null); }}
-                      aria-current={section.id === selected?.id ? 'true' : undefined}
-                      className="w-full rounded px-2 py-1.5 text-left break-words aria-[current=true]:bg-amber-100 dark:aria-[current=true]:bg-amber-950">
-                      {section.title || `${section.kind === 'chapter' ? 'Chapter' : 'Scene'} ${sections.indexOf(section) + 1}`}
-                      {section.kind === 'scene' && !section.chapterId ? <span className="ml-2 text-xs text-gray-500">Unchaptered</span> : null}
-                      {section.kind === 'scene' && section.chapterId && !chapters.some(chapter => chapter.id === section.chapterId) ? <span className="ml-2 text-xs text-amber-700">Orphaned chapter link</span> : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
-            {visibleSections.length === 0 && <p className="mt-2 text-sm text-gray-600">No sections match these filters.</p>}
-          </aside>
+          <ManuscriptOutlineSidebar
+            outlineOpen={outlineOpen}
+            sections={sections}
+            visibleSections={visibleSections}
+            chapters={chapters}
+            chronologyMarkers={chronologyMarkers}
+            selectedSectionId={selected?.id}
+            search={search}
+            chapterFilter={chapterFilter}
+            chronologyFilter={chronologyFilter}
+            enabled={enabled}
+            saving={saving}
+            adopting={adopting}
+            buttonClassName={workspaceButton}
+            fieldClassName={field}
+            onAddSection={add}
+            onChangeSearch={setSearch}
+            onChangeChapterFilter={setChapterFilter}
+            onChangeChronologyFilter={setChronologyFilter}
+            onSelectSection={(id) => {
+              setSelectedId(id);
+              setConfirming(null);
+            }}
+          />
         )}
         <article className="min-w-0 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900 sm:p-6">
           <header className="flex flex-wrap items-center justify-between gap-3">
@@ -308,84 +230,29 @@ export default function ManuscriptEditor({
               busy={saving} onCancel={() => { setAdopting(false); setDraft(null); setError(''); onDirty(false); }}
               onApply={(next, anchor, base) => void save(base, next, anchor)} />
           )}
-          <details className="mb-4 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
-            <summary className="cursor-pointer font-semibold">User-reviewed style profile</summary>
-            <p className="my-2 text-sm text-gray-600 dark:text-gray-300">
-              Notes use existing imported sources and are separate from canonical facts. Save the profile to the project; no analysis or provider call is triggered.
-            </p>
-            <section aria-label="Confirmed style context" className="mb-3 rounded bg-gray-50 p-3 dark:bg-gray-950">
-              <h3 className="font-medium">Current style context{selected ? ` · ${selected.title || selected.kind}` : ''}</h3>
-              {styleContext.guidance.length ? (
-                <ul className="mt-2 list-disc space-y-2 pl-5 text-sm">
-                  {styleContext.guidance.map(item => (
-                    <li key={item.id}><strong>{item.trait}:</strong> {item.value} <span className="text-gray-600 dark:text-gray-300">({item.interpretation})</span>
-                      <blockquote className="mt-1 border-l-2 border-gray-300 pl-2 text-xs">{item.evidence.excerpt}</blockquote>
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">No current confirmed style notes apply here.</p>}
-              {styleContext.conflicts.map(conflict => <p key={conflict.trait} role="status" className="mt-2 text-sm text-amber-800">Conflicting confirmed notes for {conflict.trait} are excluded.</p>)}
-            </section>
-            {styleSources.length ? (
-              <fieldset className="grid gap-3" disabled={!selectedStyleSource || saving}>
-                <legend className="font-medium">Add a note for review</legend>
-                <label className="grid gap-1 text-sm">Source record
-                  <select className={field} value={selectedStyleSource ? `${selectedStyleSource.id}:${selectedStyleSource.version}:${selectedStyleSource.digest}` : ''}
-                    onChange={event => setStyleSourceId(event.target.value)}>
-                    {styleSources.map(source => <option key={`${source.id}:${source.version}:${source.digest}`} value={`${source.id}:${source.version}:${source.digest}`}>
-                      {source.filename || 'Imported source'} · {source.version}
-                    </option>)}
-                  </select>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-1 text-sm">Trait
-                    <select className={field} value={styleTrait} onChange={event => setStyleTrait(event.target.value as StyleTrait)}>
-                      <option value="pov">Point of view</option><option value="voice">Voice</option><option value="tense">Tense</option>
-                      <option value="rhythm">Rhythm</option><option value="dialogue">Dialogue</option><option value="atmosphere">Atmosphere</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 text-sm">Note type
-                    <select className={field} value={styleInterpretation} onChange={event => setStyleInterpretation(event.target.value as typeof styleInterpretation)}>
-                      <option value="observation">Observation</option><option value="interpretation">Interpretation</option>
-                    </select>
-                  </label>
-                </div>
-                <label className="grid gap-1 text-sm">Style note
-                  <input className={field} maxLength={240} value={styleValue} onChange={event => setStyleValue(event.target.value)} placeholder="Write a short note; nothing is inferred automatically." />
-                </label>
-                <label className="grid gap-1 text-sm">Exact source excerpt (must appear once)
-                  <textarea className={field} maxLength={2000} rows={3} value={styleExcerpt} onChange={event => setStyleExcerpt(event.target.value)} />
-                </label>
-                <label className="grid gap-1 text-sm">Applies to
-                  <select className={field} value={styleScope} onChange={event => setStyleScope(event.target.value as typeof styleScope)}>
-                    <option value="manuscript">Whole manuscript</option><option value="section" disabled={!selected}>Selected section only</option>
-                  </select>
-                </label>
-                <button type="button" className={`${workspaceButton} justify-self-start`} onClick={addStyleObservation}>Add pending note</button>
-              </fieldset>
-            ) : <p className="mt-2 text-sm">No imported source records are available to anchor style notes.</p>}
-            {styleError && <p role="alert" className="mt-2 text-sm text-red-700">{styleError}</p>}
-            {styleProfileDirty && <button type="button" className={`${workspaceButton} mt-3`} disabled={!enabled || saving || isComposing}
-              onClick={() => void save(draft?.base ?? narrativeBase(project), draft?.sections ?? sections, draft?.artifact, styleProfile)}>
-              Save style profile
-            </button>}
-            {styleProfile.observations.length > 0 && (
-              <section aria-label="Style note review queue" className="mt-4 space-y-2">
-                <h3 className="font-medium">Review queue</h3>
-                {styleProfile.observations.map(item => {
-                  const isCurrent = currentStyleObservations.some(current => current.id === item.id);
-                  return <article key={item.id} className="rounded border border-gray-200 p-3 text-sm dark:border-gray-700">
-                    <p><strong>{item.trait} · {item.interpretation}:</strong> {item.value} <span className="ml-2">Status: {isCurrent ? item.status : 'stale source'}</span></p>
-                    <blockquote className="my-2 border-l-2 border-gray-300 pl-2">{item.evidence.excerpt}</blockquote>
-                    {item.status === 'pending' && <div className="flex flex-wrap gap-2">
-                      <button type="button" className={workspaceButton} disabled={!isCurrent} onClick={() => reviewStyle(item.id, 'confirmed')}>Confirm</button>
-                      <button type="button" className={workspaceButton} onClick={() => reviewStyle(item.id, 'rejected')}>Reject</button>
-                    </div>}
-                  </article>;
-                })}
-              </section>
-            )}
-          </details>
+          <StyleProfilePanel
+            projectId={project.id}
+            styleVersionKey={styleVersionKey}
+            selectedSection={selected}
+            styleSources={styleSources}
+            styleProfile={styleProfile}
+            styleProfileDirty={styleProfileDirty}
+            enabled={enabled}
+            saving={saving}
+            isComposing={isComposing}
+            buttonClassName={workspaceButton}
+            fieldClassName={field}
+            onChangeStyleProfile={setStyleProfile}
+            onMarkDirty={() => onDirty(true)}
+            onSaveStyleProfile={() =>
+              void save(
+                draft?.base ?? narrativeBase(project),
+                draft?.sections ?? sections,
+                draft?.artifact,
+                styleProfile
+              )
+            }
+          />
           <WritingAssistantPanel
             project={project}
             section={selected}

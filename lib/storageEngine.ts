@@ -3,610 +3,54 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { createSampleProject } from './canonicalModel.ts';
+import { createUndoRedoState, type UndoRedoState } from './historyEngine.ts';
+import type { CreativeProject } from '../shared/types.ts';
 import {
-  buildDecisionInboxFromSnapshot,
-  createEmptyStoryBible,
-  createSampleProject,
-  makeStableId,
-  syncStoryBibleWithSceneEntity,
-} from './canonicalModel.ts';
-import { inferEntityCategory } from './beliefGraphUtils.ts';
+  CURRENT_SCHEMA_VERSION,
+  IDB_NAME,
+  IDB_STORE,
+  LOCAL_STORAGE_ACTIVE_ID_KEY,
+  LOCAL_STORAGE_BACKUP_V2_KEY,
+  LOCAL_STORAGE_DELETED_IDS_KEY,
+  LOCAL_STORAGE_PROJECTS_KEY,
+  NARRATIVE_SCHEMA_VERSION,
+  type DurableWriteOptions,
+  type IndexedDbLoadResult,
+  type IndexedDbLoadStatus,
+  type StorageSaveResult,
+} from './storage/constants.ts';
 import {
-  computeSnapshotDigest,
-  createUndoRedoState,
-  isSnapshotSemanticallyEqual,
-  type UndoRedoState,
-} from './historyEngine.ts';
-import { computePromptDigest, synthesizeRefinedPrompt } from './promptBuilder.ts';
-import type {
-  CreativeProject,
-  Entity,
-  GenerationArtifact,
-  GenerationMode,
-  PersistedUndoHistoryEntry,
-  ProjectSnapshot,
-  Relationship,
-  StoryBibleFields,
-} from '../shared/types.ts';
-import { epistemicKindSchema } from '../shared/narrativeSchemas.ts';
+  exportProjectToJson,
+  exportStoryBibleMarkdown,
+  migrateProjectPayload,
+} from './storage/migration.ts';
+import { evaluateCasConflict, mergeIntentIds } from './storage/casPolicy.ts';
+import { verifyProjectCacheParity } from './storage/cacheParity.ts';
+import {
+  reconcileHydratedProjectsCore,
+  selectReloadActiveProject,
+} from './storage/hydrationReconciliation.ts';
 
-import { validateNarrativeRecords } from './narrative/evidenceRegistry.ts';
+export {
+  CURRENT_SCHEMA_VERSION,
+  LOCAL_STORAGE_ACTIVE_ID_KEY,
+  LOCAL_STORAGE_BACKUP_V2_KEY,
+  LOCAL_STORAGE_DELETED_IDS_KEY,
+  LOCAL_STORAGE_PROJECTS_KEY,
+  NARRATIVE_SCHEMA_VERSION,
+  exportProjectToJson,
+  exportStoryBibleMarkdown,
+  migrateProjectPayload,
+  verifyProjectCacheParity,
+  type DurableWriteOptions,
+  type IndexedDbLoadResult,
+  type IndexedDbLoadStatus,
+  type StorageSaveResult,
+};
 
-export const CURRENT_SCHEMA_VERSION = 3;
-export const NARRATIVE_SCHEMA_VERSION = 4;
-export const LOCAL_STORAGE_PROJECTS_KEY = 'proactive_co_creator_projects_v2';
-export const LOCAL_STORAGE_ACTIVE_ID_KEY = 'proactive_co_creator_active_id_v2';
-export const LOCAL_STORAGE_BACKUP_V2_KEY = 'proactive_co_creator_backup_v2';
-export const LOCAL_STORAGE_DELETED_IDS_KEY = 'proactive_co_creator_deleted_ids_v2';
-const IDB_NAME = 'proactive_co_creator_db_v2';
-const IDB_STORE = 'projects';
-
+// Single mutable tombstone/deletion authority for the browser runtime.
 const deletedProjectIdsMemorySet = new Set<string>();
-
-export interface DurableWriteOptions {
-  expectedPersistedRevision?: number;
-  expectedManuscriptVersionId?: string;
-  expectedBaseSnapshotDigest?: string;
-  intentId?: string;
-  forceOverwrite?: boolean;
-  allowDeleted?: boolean;
-  requireExactBase?: boolean;
-}
-
-export interface StorageSaveResult {
-  ok: boolean;
-  saved?: boolean;
-  idempotentHit?: boolean;
-  conflictDetected?: boolean;
-  quotaExceeded?: boolean;
-  storedProject?: CreativeProject;
-  persistedRevision?: number;
-  authoritativeStore?: 'indexeddb' | 'localstorage';
-  idbSaved?: boolean;
-  localSaved?: boolean;
-  cacheSynced?: boolean;
-  cacheWarning?: string;
-  error?: string;
-}
-
-export type IndexedDbLoadStatus = 'ok' | 'empty' | 'unavailable' | 'read_error';
-
-export interface IndexedDbLoadResult {
-  ok: boolean;
-  status: IndexedDbLoadStatus;
-  projects: CreativeProject[];
-  corruptRecordCount: number;
-  corruptRecordErrors: string[];
-  error?: string;
-}
-
-/**
- * Migrates older v0/v1/v2 saved project states (including legacy states with `mode: 'video'`)
- * into a valid schemaVersion 3 CreativeProject without losing recoverable story or image data.
- */
-export function migrateProjectPayload(raw: unknown): CreativeProject {
-  if (!raw || typeof raw !== 'object') {
-    throw new Error('Invalid project file: expected a JSON object.');
-  }
-
-  const obj = raw as Record<string, unknown>;
-
-  if (typeof obj.schemaVersion === 'number' && obj.schemaVersion > NARRATIVE_SCHEMA_VERSION) {
-    throw new Error(
-      `Unsupported project schema version (${obj.schemaVersion}). This application supports up to schema version ${NARRATIVE_SCHEMA_VERSION}.`
-    );
-  }
-
-  const hasNarrative = obj.schemaVersion === NARRATIVE_SCHEMA_VERSION;
-  if (!hasNarrative && obj.narrative !== undefined) throw new Error('Narrative data requires project schema 4.');
-  if (hasNarrative && (!obj.snapshot || typeof obj.snapshot !== 'object')) throw new Error('Missing schema 4 project snapshot.');
-
-  const now = Date.now();
-
-  // Case 1: Already a v2/v3-like structure with `snapshot`
-  if (obj.snapshot && typeof obj.snapshot === 'object') {
-    const rawSnap = obj.snapshot as Record<string, unknown>;
-    const rawMode = String(rawSnap.mode ?? 'story');
-    const safeMode: GenerationMode = rawMode === 'image' ? 'image' : 'story';
-    const hasImportedSourceEvidence = Boolean(hasNarrative && obj.narrative && typeof obj.narrative === 'object' &&
-      Array.isArray((obj.narrative as { sources?: unknown }).sources) && (obj.narrative as { sources: unknown[] }).sources.length > 0);
-
-    const originalIdea =
-      typeof rawSnap.originalIdea === 'string' && rawSnap.originalIdea.trim()
-        ? rawSnap.originalIdea
-        : typeof rawSnap.prompt === 'string'
-          ? rawSnap.prompt
-          : 'Untitled creative project';
-
-    const normalizedEntities = normalizeMigratedEntities(
-      Array.isArray(rawSnap.entities) ? rawSnap.entities : []
-    );
-    const entities = normalizedEntities.map(entity => ({
-      ...entity,
-      ...(entity.sourceBacked === true || entity.provenance === 'imported' || hasImportedSourceEvidence && entity.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
-      attributes: entity.attributes.map(attribute => ({
-        ...attribute,
-        ...(attribute.sourceBacked === true || attribute.provenance === 'imported' || hasImportedSourceEvidence && attribute.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
-      })),
-    }));
-    const normalizedRelationships = normalizeMigratedRelationships(
-      Array.isArray(rawSnap.relationships) ? rawSnap.relationships : [],
-      entities
-    );
-    const relationships = normalizedRelationships.map(relationship => ({
-      ...relationship,
-      ...(relationship.sourceBacked === true || relationship.provenance === 'imported' || hasImportedSourceEvidence && relationship.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
-    }));
-
-    const baseBible = createEmptyStoryBible(now);
-    if (rawSnap.storyBible && typeof rawSnap.storyBible === 'object') {
-      const incomingBible = rawSnap.storyBible as Record<string, unknown>;
-      for (const key of Object.keys(baseBible) as Array<keyof StoryBibleFields>) {
-        const entry = incomingBible[key];
-        if (entry && typeof entry === 'object' && 'value' in entry) {
-          const typedEntry = entry as {
-            value?: unknown;
-            status?: unknown;
-            provenance?: unknown;
-            updatedAt?: unknown;
-            epistemicKind?: unknown;
-            sourceBacked?: unknown;
-          };
-          baseBible[key] = {
-            value: typeof typedEntry.value === 'string' ? typedEntry.value : '',
-            status:
-              typedEntry.status === 'confirmed' || typedEntry.status === 'rejected'
-                ? typedEntry.status
-                : 'pending',
-            provenance:
-              typeof typedEntry.provenance === 'string'
-                ? (typedEntry.provenance as never)
-                : 'imported',
-            updatedAt: typeof typedEntry.updatedAt === 'number' ? typedEntry.updatedAt : now,
-            ...(typedEntry.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(typedEntry.epistemicKind) }),
-            ...(typedEntry.sourceBacked === true || typedEntry.provenance === 'imported' || hasImportedSourceEvidence && typedEntry.provenance === 'accepted-suggestion' ? { sourceBacked: true } : {}),
-          };
-        }
-      }
-    }
-
-    let snapshot: ProjectSnapshot = {
-      ...(hasNarrative ? { manuscriptVersionId: rawSnap.manuscriptVersionId as string | undefined } : {}),
-      originalIdea,
-      refinedPrompt:
-        typeof rawSnap.refinedPrompt === 'string' ? rawSnap.refinedPrompt : '',
-      freeformNotes:
-        typeof rawSnap.freeformNotes === 'string' ? rawSnap.freeformNotes : '',
-      mode: safeMode,
-      entities,
-      relationships,
-      storyBible: baseBible,
-      clarifications: Array.isArray(rawSnap.clarifications)
-        ? (rawSnap.clarifications as ProjectSnapshot['clarifications'])
-        : [],
-      decisions: Array.isArray(rawSnap.decisions)
-        ? (rawSnap.decisions as ProjectSnapshot['decisions'])
-        : [],
-      answeredQuestions: Array.isArray(rawSnap.answeredQuestions)
-        ? (rawSnap.answeredQuestions as string[]).filter((q) => typeof q === 'string')
-        : [],
-      skippedQuestions: Array.isArray(rawSnap.skippedQuestions)
-        ? (rawSnap.skippedQuestions as string[]).filter((q) => typeof q === 'string')
-        : [],
-    };
-
-    snapshot = syncStoryBibleWithSceneEntity(snapshot);
-    snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot);
-    if (!snapshot.refinedPrompt.trim()) {
-      snapshot.refinedPrompt = synthesizeRefinedPrompt(snapshot);
-    }
-
-    const projectId = typeof obj.id === 'string' && obj.id ? obj.id : makeStableId('proj');
-    const logicalRev =
-      typeof obj.revision === 'number' && obj.revision >= 1
-        ? obj.revision
-        : Array.isArray(obj.revisions) && obj.revisions.length > 0
-          ? obj.revisions.length
-          : 1;
-    const persistedRev =
-      typeof obj.persistedRevision === 'number' && obj.persistedRevision >= 1
-        ? obj.persistedRevision
-        : logicalRev;
-
-    const currentDigest = computePromptDigest(snapshot.refinedPrompt, snapshot.mode);
-    const artifacts = Array.isArray(obj.artifacts)
-      ? (obj.artifacts as CreativeProject['artifacts'])
-          .filter((a) => a && (a.mode === 'story' || a.mode === 'image'))
-          .map((a) => {
-            const digest = a.promptDigest ?? computePromptDigest(a.promptUsed ?? '', a.mode);
-            return {
-              ...a,
-              projectId: a.projectId ?? projectId,
-              sourceRevision: a.sourceRevision ?? logicalRev,
-              promptDigest: digest,
-              isOutdated: digest !== computePromptDigest(snapshot.refinedPrompt, a.mode),
-            };
-          })
-      : [];
-
-    void currentDigest;
-
-    const project: CreativeProject = {
-      schemaVersion: hasNarrative ? NARRATIVE_SCHEMA_VERSION : CURRENT_SCHEMA_VERSION,
-      ...(hasNarrative ? { narrative: obj.narrative as CreativeProject['narrative'] } : {}),
-      id: projectId,
-      name:
-        typeof obj.name === 'string' && obj.name.trim()
-          ? obj.name.trim()
-          : originalIdea.slice(0, 48),
-      createdAt: typeof obj.createdAt === 'number' ? obj.createdAt : now,
-      updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : now,
-      revision: logicalRev,
-      persistedRevision: persistedRev,
-      snapshot,
-      artifacts,
-      revisions:
-        Array.isArray(obj.revisions) && obj.revisions.length > 0
-          ? (obj.revisions as CreativeProject['revisions']).map((r, idx) => ({
-              ...r,
-              revisionNumber: r.revisionNumber ?? Math.max(1, logicalRev - idx),
-            }))
-          : [
-              {
-                id: makeStableId('rev'),
-                revisionNumber: logicalRev,
-                timestamp: now,
-                label: 'Imported Revision',
-                summary: 'Migrated project state',
-                changeCount: 0,
-                snapshot: structuredClone(snapshot),
-              },
-            ],
-      undoHistory:
-        obj.undoHistory &&
-        typeof obj.undoHistory === 'object' &&
-        Array.isArray((obj.undoHistory as { past?: unknown }).past) &&
-        Array.isArray((obj.undoHistory as { future?: unknown }).future)
-          ? (obj.undoHistory as CreativeProject['undoHistory'])
-          : undefined,
-      ...(Array.isArray(obj.recentIntentIds)
-        ? {
-            recentIntentIds: (obj.recentIntentIds as unknown[])
-              .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
-              .slice(-50),
-          }
-        : {}),
-    };
-    if (hasNarrative) validateNarrativeRecords(project);
-    return project;
-  }
-
-  // Case 2: Legacy v1 project or raw BeliefState payload (may have `mode: 'video'`, `prompt`, `beliefGraph`, `story`, `images`)
-  const legacyPrompt =
-    typeof obj.prompt === 'string' && obj.prompt.trim()
-      ? obj.prompt.trim()
-      : typeof (obj.beliefGraph as { prompt?: unknown } | undefined)?.prompt === 'string'
-        ? String((obj.beliefGraph as { prompt?: string }).prompt)
-        : '';
-
-  if (!legacyPrompt && !Array.isArray(obj.entities) && !obj.beliefGraph) {
-    throw new Error('Malformed project JSON: missing snapshot or legacy beliefGraph fields.');
-  }
-
-  const rawMode = String(obj.mode ?? 'story');
-  // Migrate 'video' mode safely to 'story' without losing data
-  const migratedMode: GenerationMode = rawMode === 'image' ? 'image' : 'story';
-
-  const rawGraph =
-    obj.beliefGraph && typeof obj.beliefGraph === 'object'
-      ? (obj.beliefGraph as Record<string, unknown>)
-      : obj;
-
-  const entities = normalizeMigratedEntities(
-    Array.isArray(rawGraph.entities) ? rawGraph.entities : []
-  );
-  const relationships = normalizeMigratedRelationships(
-    Array.isArray(rawGraph.relationships) ? rawGraph.relationships : [],
-    entities
-  );
-
-  let snapshot: ProjectSnapshot = {
-    originalIdea: legacyPrompt || 'Migrated Creative Project',
-    refinedPrompt: '',
-    freeformNotes: '',
-    mode: migratedMode,
-    entities,
-    relationships,
-    storyBible: createEmptyStoryBible(now),
-    clarifications: Array.isArray(obj.clarifications)
-      ? (obj.clarifications as ProjectSnapshot['clarifications'])
-      : [],
-    decisions: [],
-    answeredQuestions: Array.isArray(obj.answeredQuestions)
-      ? (obj.answeredQuestions as string[])
-      : [],
-    skippedQuestions: Array.isArray(obj.skippedQuestions)
-      ? (obj.skippedQuestions as string[])
-      : [],
-  };
-
-  snapshot = syncStoryBibleWithSceneEntity(snapshot);
-  snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot);
-  snapshot.refinedPrompt = synthesizeRefinedPrompt(snapshot);
-
-  const projectId = typeof obj.id === 'string' ? obj.id : makeStableId('proj');
-  const artifacts: CreativeProject['artifacts'] = [];
-  if (typeof obj.story === 'string' && obj.story.trim()) {
-    artifacts.push({
-      id: makeStableId('art_story'),
-      projectId,
-      mode: 'story',
-      createdAt: now,
-      revisionId: 'rev_migrated',
-      sourceRevision: 1,
-      promptUsed: snapshot.refinedPrompt,
-      promptDigest: computePromptDigest(snapshot.refinedPrompt, 'story'),
-      storyText: obj.story,
-      isOutdated: false,
-    });
-  }
-  if (Array.isArray(obj.images) && obj.images.length > 0) {
-    artifacts.push({
-      id: makeStableId('art_img'),
-      projectId,
-      mode: 'image',
-      createdAt: now,
-      revisionId: 'rev_migrated',
-      sourceRevision: 1,
-      promptUsed: snapshot.refinedPrompt,
-      promptDigest: computePromptDigest(snapshot.refinedPrompt, 'image'),
-      images: (obj.images as unknown[]).filter((i): i is string => typeof i === 'string'),
-      isOutdated: false,
-    });
-  }
-
-  return {
-    schemaVersion: CURRENT_SCHEMA_VERSION,
-    id: projectId,
-    name:
-      typeof obj.name === 'string' && obj.name.trim()
-        ? obj.name.trim()
-        : (legacyPrompt || 'Migrated Project').slice(0, 48),
-    createdAt: now,
-    updatedAt: now,
-    revision: 1,
-    persistedRevision: 1,
-    snapshot,
-    artifacts,
-    revisions: [
-      {
-        id: 'rev_migrated',
-        revisionNumber: 1,
-        timestamp: now,
-        label: 'Migrated v1 Project',
-        summary:
-          rawMode === 'video'
-            ? 'Migrated legacy video-mode project to Story mode, preserving all creative entities and outputs.'
-            : 'Migrated legacy project state.',
-        changeCount: 0,
-        snapshot: structuredClone(snapshot),
-      },
-    ],
-  };
-}
-
-function normalizeMigratedEntities(rawEntities: unknown[]): Entity[] {
-  const results: Entity[] = [];
-  for (const item of rawEntities) {
-    if (!item || typeof item !== 'object') continue;
-    const raw = item as Record<string, unknown>;
-    if (typeof raw.name !== 'string' || !raw.name.trim()) continue;
-    // Skip legacy 'The Video' scene entity or rename it to 'The Story'
-    const rawName = raw.name.trim();
-    const migratedName =
-      rawName.toLowerCase() === 'the video' || rawName.toLowerCase() === 'video'
-        ? 'The Story'
-        : rawName;
-
-    const rawAttrs = Array.isArray(raw.attributes) ? raw.attributes : [];
-    const attributes: Entity['attributes'] = rawAttrs
-      .filter((a): a is Record<string, unknown> => Boolean(a && typeof a === 'object'))
-      .map((a) => {
-        const vals = Array.isArray(a.value)
-          ? a.value.map((v) =>
-              typeof v === 'string'
-                ? { name: v }
-                : v && typeof v === 'object' && typeof (v as { name?: unknown }).name === 'string'
-                  ? { name: (v as { name: string }).name }
-                  : { name: 'Unknown' }
-            )
-          : [{ name: 'Unknown' }];
-        const status: 'confirmed' | 'rejected' | 'pending' =
-          a.status === 'confirmed'
-            ? 'confirmed'
-            : a.status === 'rejected'
-              ? 'rejected'
-              : a.presence_in_prompt
-                ? 'confirmed'
-                : 'pending';
-        return {
-          id: typeof a.id === 'string' ? a.id : makeStableId('attr'),
-          name: typeof a.name === 'string' ? a.name : 'property',
-          presence_in_prompt: Boolean(a.presence_in_prompt),
-          value: vals,
-          confirmedValue:
-            typeof a.confirmedValue === 'string'
-              ? a.confirmedValue
-              : a.presence_in_prompt
-                ? vals[0]?.name
-                : undefined,
-          status,
-          provenance:
-            typeof a.provenance === 'string'
-              ? (a.provenance as never)
-              : a.presence_in_prompt
-                ? ('prompt-explicit' as const)
-                : ('ai-inferred' as const),
-          ...(a.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(a.epistemicKind) }),
-        };
-      });
-
-    const entity: Entity = {
-      id: typeof raw.id === 'string' ? raw.id : makeStableId('ent'),
-      name: migratedName,
-      category:
-        typeof raw.category === 'string' ? (raw.category as Entity['category']) : undefined,
-      presence_in_prompt: Boolean(raw.presence_in_prompt),
-      description: typeof raw.description === 'string' ? raw.description : '',
-      alternatives: Array.isArray(raw.alternatives)
-        ? raw.alternatives.map((alt) =>
-            typeof alt === 'string'
-              ? { name: alt }
-              : alt && typeof alt === 'object' && typeof (alt as { name?: unknown }).name === 'string'
-                ? { name: (alt as { name: string }).name }
-                : { name: '' }
-          ).filter((c) => Boolean(c.name))
-        : [],
-      attributes,
-      status:
-        raw.status === 'confirmed' || raw.status === 'rejected'
-          ? raw.status
-          : ('confirmed' as const),
-      provenance:
-        typeof raw.provenance === 'string' ? (raw.provenance as never) : 'imported',
-      ...(raw.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(raw.epistemicKind) }),
-      excluded: Boolean(raw.excluded),
-      aliases: Array.isArray(raw.aliases)
-        ? (raw.aliases as unknown[]).filter((s): s is string => typeof s === 'string')
-        : [],
-    };
-    entity.category = inferEntityCategory(entity);
-    results.push(entity);
-  }
-  return results;
-}
-
-function normalizeMigratedRelationships(
-  rawRelationships: unknown[],
-  entities: Entity[]
-): Relationship[] {
-  const results: Relationship[] = [];
-  for (const item of rawRelationships) {
-    if (!item || typeof item !== 'object') continue;
-    const raw = item as Record<string, unknown>;
-    if (typeof raw.source !== 'string' || typeof raw.target !== 'string' || typeof raw.label !== 'string') {
-      continue;
-    }
-    const srcEnt = entities.find(
-      (e) => e.id === raw.sourceId || e.name.toLowerCase() === raw.source!.toString().toLowerCase()
-    );
-    const tgtEnt = entities.find(
-      (e) => e.id === raw.targetId || e.name.toLowerCase() === raw.target!.toString().toLowerCase()
-    );
-    results.push({
-      id: typeof raw.id === 'string' ? raw.id : makeStableId('rel'),
-      sourceId: srcEnt?.id,
-      targetId: tgtEnt?.id,
-      source: srcEnt?.name ?? raw.source,
-      target: tgtEnt?.name ?? raw.target,
-      label: raw.label,
-      alternatives: Array.isArray(raw.alternatives)
-        ? raw.alternatives.map((alt) =>
-            typeof alt === 'string'
-              ? { name: alt }
-              : alt && typeof alt === 'object' && typeof (alt as { name?: unknown }).name === 'string'
-                ? { name: (alt as { name: string }).name }
-                : { name: '' }
-          ).filter((c) => Boolean(c.name))
-        : [],
-      status: raw.status === 'pending' || raw.status === 'rejected' ? raw.status : 'confirmed',
-      provenance:
-        typeof raw.provenance === 'string' ? (raw.provenance as never) : 'imported',
-      ...(raw.epistemicKind === undefined ? {} : { epistemicKind: epistemicKindSchema.parse(raw.epistemicKind) }),
-    });
-  }
-  return results;
-}
-
-/**
- * Exports a CreativeProject as a formatted versioned JSON string.
- */
-export function exportProjectToJson(project: CreativeProject): string {
-  return JSON.stringify(
-    {
-      ...project,
-      exportedAt: new Date().toISOString(),
-    },
-    null,
-    2
-  );
-}
-
-/**
- * Exports the Story Bible and confirmed Entity/Relationship catalog as readable Markdown.
- */
-export function exportStoryBibleMarkdown(project: CreativeProject): string {
-  const { snapshot } = project;
-  const lines: string[] = [
-    `# Story Bible: ${project.name}`,
-    ``,
-    `> **Original Idea:** ${snapshot.originalIdea}`,
-    `> **Primary Mode:** ${snapshot.mode === 'story' ? 'Story' : 'Image'}`,
-    `> **Revision:** r${project.revision ?? 1}`,
-    `> **Last Updated:** ${new Date(project.updatedAt).toISOString()}`,
-    ``,
-    `## 1. Narrative & Creative Properties`,
-    ``,
-  ];
-
-  const bibleEntries: Array<[string, keyof StoryBibleFields]> = [
-    ['Genre', 'genre'],
-    ['Tone & Mood', 'tone'],
-    ['Narrative Perspective', 'narrativePerspective'],
-    ['Intended Audience', 'intendedAudience'],
-    ['Setting', 'setting'],
-    ['Themes', 'themes'],
-    ['Central Conflict', 'centralConflict'],
-    ['Pacing', 'pacing'],
-    ['Continuity Rules', 'continuityRules'],
-    ['Explicit Exclusions', 'explicitExclusions'],
-    ['Visual Style', 'visualStyle'],
-    ['Camera & Lighting', 'cameraAndLighting'],
-  ];
-
-  for (const [label, key] of bibleEntries) {
-    const item = snapshot.storyBible[key];
-    if (item && item.value.trim()) {
-      lines.push(`- **${label}** (${item.status}): ${item.value.trim()}`);
-    }
-  }
-
-  lines.push(``, `## 2. Entities & Characters`, ``);
-  for (const ent of snapshot.entities) {
-    if (ent.category === 'scene') continue;
-    const statusBadge = ent.excluded ? 'Excluded' : ent.status ?? 'confirmed';
-    lines.push(`### ${ent.name} (${ent.category ?? 'entity'} — ${statusBadge})`);
-    if (ent.description) {
-      lines.push(`${ent.description}`);
-    }
-    for (const attr of ent.attributes) {
-      if (attr.name === 'existence' || attr.name === 'existence_in_image') continue;
-      const val = attr.confirmedValue ?? attr.value[0]?.name ?? 'Unknown';
-      lines.push(`- **${attr.name.replace(/_/g, ' ')}**: ${val} _(${attr.status ?? 'pending'}, ${attr.provenance ?? 'ai-inferred'})_`);
-    }
-    lines.push(``);
-  }
-
-  lines.push(`## 3. Relationships`, ``);
-  for (const rel of snapshot.relationships) {
-    lines.push(`- **${rel.source}** → _${rel.label}_ → **${rel.target}** (${rel.status ?? 'confirmed'})`);
-  }
-
-  lines.push(``, `## 4. Refined Prompt`, ``, '```text', snapshot.refinedPrompt, '```', ``);
-  return lines.join('\n');
-}
-
-// --- Browser Local Storage + IndexedDB Persistence Engine ---
 
 export function getDeletedProjectIds(): Set<string> {
   const combined = new Set<string>(deletedProjectIdsMemorySet);
@@ -692,230 +136,37 @@ export function simulateBrowserProcessRestartForTesting(): void {
   }
 }
 
-const MAX_RECENT_INTENT_IDS = 50;
-
-function stableIntentSerialization(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(stableIntentSerialization).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().filter((key) => record[key] !== undefined)
-    .map((key) => `${JSON.stringify(key)}:${stableIntentSerialization(record[key])}`).join(',')}}`;
-}
-
-function intentOperationFingerprint(project: CreativeProject): string {
-  const operationContent = Object.fromEntries(
-    Object.entries(project).filter(([key]) => !['revision', 'persistedRevision', 'updatedAt', 'recentIntentIds'].includes(key))
-  );
-  const text = stableIntentSerialization(operationContent);
-  let a = 0x811c9dc5;
-  let b = 0x9e3779b9;
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    a = Math.imul(a ^ code, 0x01000193);
-    b = Math.imul(b ^ code, 0x85ebca6b);
-  }
-  return `${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
-}
-
-function intentRecordId(project: CreativeProject, intentId?: string, expectedBaseRevision?: number): string | undefined {
-  const baseRevision = expectedBaseRevision ?? project.persistedRevision ?? 0;
-  return intentId ? `${intentId}:${baseRevision}:${intentOperationFingerprint(project)}` : undefined;
-}
-
-function mergeIntentIds(existing: CreativeProject | undefined, candidate: CreativeProject, intentId?: string, expectedBaseRevision?: number): string[] | undefined {
-  const combined = [
-    ...(existing?.recentIntentIds ?? []),
-    ...(candidate.recentIntentIds ?? []),
-    ...(intentRecordId(candidate, intentId, expectedBaseRevision) ? [intentRecordId(candidate, intentId, expectedBaseRevision)!] : []),
-  ].filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
-  if (combined.length === 0) return undefined;
-  const deduped: string[] = [];
-  for (const id of combined) {
-    if (!deduped.includes(id)) deduped.push(id);
-  }
-  return deduped.slice(-MAX_RECENT_INTENT_IDS);
-}
-
-function safeMigrateExisting(existing: CreativeProject): CreativeProject {
-  try {
-    return migrateProjectPayload(existing);
-  } catch {
-    return existing;
-  }
-}
-
-function evaluateCasConflict(params: {
-  existing: CreativeProject | undefined;
-  candidate: CreativeProject;
-  rawExpected?: number;
-  expectedManuscriptVersionId?: string;
-  expectedBaseSnapshotDigest?: string;
-  intentId?: string;
-  requireExactBase?: boolean;
-  forceOverwrite: boolean;
-  storeLabel: 'localStorage' | 'IndexedDB';
-}): StorageSaveResult | null {
-  const {
-    existing,
-    candidate,
-    rawExpected,
-    expectedManuscriptVersionId,
-    expectedBaseSnapshotDigest,
-    intentId,
-    forceOverwrite,
-    storeLabel,
-  } = params;
-  if (existing && (existing.schemaVersion > NARRATIVE_SCHEMA_VERSION ||
-    (existing.schemaVersion === NARRATIVE_SCHEMA_VERSION && candidate.schemaVersion < NARRATIVE_SCHEMA_VERSION))) {
-    return { ok: false, saved: false, conflictDetected: true, error: 'Storage contains a newer project schema.' };
-  }
-  const existingIntent = intentId ? existing?.recentIntentIds?.find((id) => id.startsWith(`${intentId}:`) || id === intentId) : undefined;
-  if (existing && intentId && existingIntent) {
-    if (existingIntent !== intentRecordId(candidate, intentId, rawExpected)) {
-      return { ok: false, saved: false, conflictDetected: true, storedProject: safeMigrateExisting(existing), error: 'This intent ID was already used for different operation content.' };
-    }
-    return {
-      ok: true,
-      saved: true,
-      idempotentHit: true,
-      persistedRevision: typeof existing.revision === 'number' ? existing.revision : 1,
-      storedProject: safeMigrateExisting(existing),
-    };
-  }
-  if (params.requireExactBase && (!existing || existing.revision !== rawExpected)) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      ...(existing ? { storedProject: safeMigrateExisting(existing) } : {}),
-      error: 'The durable project revision changed. Reload storage before retrying.',
-    };
-  }
-  if (forceOverwrite || !existing) return null;
-
-  const normalizedExisting = safeMigrateExisting(existing);
-
-  if (
-    expectedManuscriptVersionId !== undefined &&
-    (normalizedExisting.snapshot.manuscriptVersionId ?? '') !== expectedManuscriptVersionId
-  ) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error: `Storage conflict detected: ${storeLabel} holds a newer manuscript version than this change expected. Re-preview before applying.`,
-    };
-  }
-
-  if (
-    expectedBaseSnapshotDigest !== undefined &&
-    computeSnapshotDigest(existing.snapshot) !== expectedBaseSnapshotDigest &&
-    computeSnapshotDigest(normalizedExisting.snapshot) !== expectedBaseSnapshotDigest
-  ) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error: `Storage conflict detected: ${storeLabel} snapshot changed since this operation was prepared. Re-preview before applying.`,
-    };
-  }
-
-  const existingRev = typeof existing.revision === 'number' ? existing.revision : 1;
-  const candidateRev = typeof candidate.revision === 'number' ? candidate.revision : 1;
-  const isTimestampExpectation =
-    typeof rawExpected === 'number' && rawExpected > 1_000_000_000_000;
-
-  if (isTimestampExpectation) {
-    if (existing.updatedAt > rawExpected) {
-      return {
-        ok: false,
-        saved: false,
-        conflictDetected: true,
-        storedProject: normalizedExisting,
-        error: 'A newer version of this project was saved in another browser tab.',
-      };
-    }
-    return null;
-  }
-
-  const baseRev = rawExpected !== undefined ? rawExpected : candidate.persistedRevision;
-
-  if (baseRev !== undefined && existingRev > baseRev) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error:
-        storeLabel === 'IndexedDB'
-          ? `IndexedDB has a newer revision (r${existingRev}) than expected base r${baseRev}.`
-          : `Storage conflict detected: another tab saved revision r${existingRev} while this tab was based on r${baseRev}.`,
-    };
-  }
-
-  if (candidateRev < existingRev) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error: `Storage conflict detected: ${storeLabel} holds revision r${existingRev}, which is newer than candidate r${candidateRev}.`,
-    };
-  }
-
-  if (
-    baseRev !== undefined &&
-    existingRev === baseRev &&
-    candidateRev === baseRev
-  ) {
-    const snapshotsEqual =
-      isSnapshotSemanticallyEqual(existing.snapshot, candidate.snapshot) ||
-      isSnapshotSemanticallyEqual(
-        normalizedExisting.snapshot,
-        safeMigrateExisting(candidate).snapshot
-      );
-    if (!snapshotsEqual) {
-      return {
-        ok: false,
-        saved: false,
-        conflictDetected: true,
-        storedProject: normalizedExisting,
-        error: `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with a divergent snapshot.`,
-      };
-    }
-    if (existing.updatedAt > candidate.updatedAt) {
-      return {
-        ok: false,
-        saved: false,
-        conflictDetected: true,
-        storedProject: normalizedExisting,
-        error: 'A newer version of this project was saved in another browser tab.',
-      };
-    }
-  }
-
-  return null;
+function normalizeWriteOptions(
+  expectedBaseRevisionOrOptions?: number | DurableWriteOptions,
+  options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
+) {
+  const opts =
+    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
+      ? expectedBaseRevisionOrOptions
+      : undefined;
+  return {
+    opts,
+    normalizedForce: opts ? Boolean(opts.forceOverwrite) : Boolean(options?.forceOverwrite),
+    allowDeleted: opts ? Boolean(opts.allowDeleted) : Boolean(options?.allowDeleted),
+    requireExactBase: opts?.requireExactBase,
+    rawExpected:
+      typeof expectedBaseRevisionOrOptions === 'number'
+        ? expectedBaseRevisionOrOptions
+        : opts?.expectedPersistedRevision,
+  };
 }
 
 export function saveProjectToLocalStorage(
   project: CreativeProject,
-  expectedBaseRevisionOrOptions?:
-    | number
-    | DurableWriteOptions,
+  expectedBaseRevisionOrOptions?: number | DurableWriteOptions,
   options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): StorageSaveResult {
   if (typeof window === 'undefined' || !window.localStorage) {
     return { ok: false, saved: false, error: 'Browser localStorage is unavailable.' };
   }
 
-  const opts =
-    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
-      ? expectedBaseRevisionOrOptions
-      : undefined;
-  const normalizedForce = opts ? Boolean(opts.forceOverwrite) : Boolean(options?.forceOverwrite);
-  const allowDeleted = opts ? Boolean(opts.allowDeleted) : Boolean(options?.allowDeleted);
+  const { opts, normalizedForce, allowDeleted, requireExactBase, rawExpected } =
+    normalizeWriteOptions(expectedBaseRevisionOrOptions, options);
 
   if (allowDeleted) {
     clearDeletedProjectId(project.id);
@@ -926,12 +177,6 @@ export function saveProjectToLocalStorage(
       error: `Project "${project.id}" was deleted and cannot be resurrected by an in-flight save.`,
     };
   }
-
-  const requireExactBase = opts?.requireExactBase;
-  const rawExpected =
-    typeof expectedBaseRevisionOrOptions === 'number'
-      ? expectedBaseRevisionOrOptions
-      : opts?.expectedPersistedRevision;
 
   try {
     const raw = window.localStorage.getItem(LOCAL_STORAGE_PROJECTS_KEY);
@@ -1044,7 +289,7 @@ export function loadProjectsFromLocalStorage(options?: {
         val &&
         typeof val === 'object' &&
         typeof (val as { schemaVersion?: unknown }).schemaVersion === 'number' &&
-        ((val as { schemaVersion: number }).schemaVersion < CURRENT_SCHEMA_VERSION)
+        (val as { schemaVersion: number }).schemaVersion < CURRENT_SCHEMA_VERSION
       ) {
         needsPreMigrationBackup = true;
       }
@@ -1168,6 +413,13 @@ export async function deleteProjectFromIndexedDb(
       settled = true;
       resolve(result);
     };
+    const safeClose = (db: IDBDatabase) => {
+      try {
+        db.close();
+      } catch {
+        // Ignore close error
+      }
+    };
 
     try {
       const req = window.indexedDB.open(IDB_NAME, 1);
@@ -1186,45 +438,25 @@ export async function deleteProjectFromIndexedDb(
           delReq.onerror = () => {
             const errMsg =
               delReq.error?.message ?? tx.error?.message ?? 'IndexedDB delete request failed.';
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            safeClose(db);
             finish({ ok: false, error: errMsg });
           };
           tx.oncomplete = () => {
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            safeClose(db);
             finish({ ok: true });
           };
           tx.onerror = () => {
             const errMsg = tx.error?.message ?? 'IndexedDB delete transaction failed.';
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            safeClose(db);
             finish({ ok: false, error: errMsg });
           };
           tx.onabort = () => {
             const errMsg = tx.error?.message ?? 'IndexedDB delete transaction aborted.';
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            safeClose(db);
             finish({ ok: false, error: errMsg });
           };
         } catch (txErr) {
-          try {
-            db.close();
-          } catch {
-            // Ignore close error
-          }
+          safeClose(db);
           finish({
             ok: false,
             error: txErr instanceof Error ? txErr.message : 'IndexedDB transaction setup failed.',
@@ -1243,145 +475,6 @@ export async function deleteProjectFromIndexedDb(
       });
     }
   });
-}
-
-function areStringArraysExactEqual(a?: string[], b?: string[]): boolean {
-  const listA = Array.isArray(a) ? a : [];
-  const listB = Array.isArray(b) ? b : [];
-  if (listA.length !== listB.length) return false;
-  for (let i = 0; i < listA.length; i++) {
-    if (listA[i] !== listB[i]) return false;
-  }
-  return true;
-}
-
-function areArtifactsContentEqual(
-  localArt: GenerationArtifact,
-  idbArt: GenerationArtifact,
-  requireSameOutdated: boolean
-): boolean {
-  if (localArt.id !== idbArt.id) return false;
-  if (localArt.mode !== idbArt.mode) return false;
-  if (localArt.revisionId !== idbArt.revisionId) return false;
-  if ((localArt.sourceRevision ?? null) !== (idbArt.sourceRevision ?? null)) return false;
-  if (localArt.promptUsed !== idbArt.promptUsed) return false;
-  if ((localArt.promptDigest ?? null) !== (idbArt.promptDigest ?? null)) return false;
-  if ((localArt.storyText ?? null) !== (idbArt.storyText ?? null)) return false;
-  if ((localArt.warning ?? null) !== (idbArt.warning ?? null)) return false;
-  if (!areStringArraysExactEqual(localArt.images, idbArt.images)) return false;
-  if (requireSameOutdated && Boolean(localArt.isOutdated) !== Boolean(idbArt.isOutdated)) {
-    return false;
-  }
-  return true;
-}
-
-function areUndoEntriesEqual(
-  a: PersistedUndoHistoryEntry[] = [],
-  b: PersistedUndoHistoryEntry[] = []
-): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].label !== b[i].label) return false;
-    if (!isSnapshotSemanticallyEqual(a[i].snapshot, b[i].snapshot)) return false;
-  }
-  return true;
-}
-
-/**
- * Verifies strict full-content parity before local cache compaction or eviction (T4 / ST-04..ST-08).
- * Compares identity, name, snapshot / lineage, every artifact's payload & images, every revision
- * snapshot, and persisted Undo/Redo stacks. Fails closed on any mismatch.
- */
-export function verifyProjectCacheParity(
-  localProject: CreativeProject,
-  idbProject: CreativeProject
-): boolean {
-  if (!localProject || !idbProject) return false;
-  if (localProject.id !== idbProject.id) return false;
-  if ((localProject.name ?? '') !== (idbProject.name ?? '')) return false;
-  if (JSON.stringify(localProject.narrative) !== JSON.stringify(idbProject.narrative)) return false;
-
-  const localRev = localProject.revision ?? 1;
-  const idbRev = idbProject.revision ?? 1;
-  if (idbRev < localRev) return false;
-
-  if (idbRev === localRev) {
-    if (!isSnapshotSemanticallyEqual(localProject.snapshot, idbProject.snapshot)) {
-      return false;
-    }
-  } else if (!hasRevisionLineage(idbProject, localProject)) {
-    return false;
-  }
-
-  const localArtifacts = Array.isArray(localProject.artifacts) ? localProject.artifacts : [];
-  const idbArtifacts = Array.isArray(idbProject.artifacts) ? idbProject.artifacts : [];
-  if (idbRev === localRev && localArtifacts.length !== idbArtifacts.length) {
-    return false;
-  }
-  for (const localArt of localArtifacts) {
-    const idbArt = idbArtifacts.find((candidate) => candidate.id === localArt.id);
-    if (!idbArt || !areArtifactsContentEqual(localArt, idbArt, idbRev === localRev)) {
-      return false;
-    }
-  }
-
-  const localRevs = Array.isArray(localProject.revisions) ? localProject.revisions : [];
-  const idbRevs = Array.isArray(idbProject.revisions) ? idbProject.revisions : [];
-  if (idbRev === localRev && localRevs.length !== idbRevs.length) {
-    return false;
-  }
-  for (const localRevEntry of localRevs) {
-    const idbRevEntry = idbRevs.find((candidate) => candidate.id === localRevEntry.id);
-    if (!idbRevEntry) return false;
-    if ((localRevEntry.revisionNumber ?? null) !== (idbRevEntry.revisionNumber ?? null)) {
-      return false;
-    }
-    if (localRevEntry.label !== idbRevEntry.label) return false;
-    if (localRevEntry.summary !== idbRevEntry.summary) return false;
-    if (localRevEntry.changeCount !== idbRevEntry.changeCount) return false;
-    if ((localRevEntry.coalesceKey ?? null) !== (idbRevEntry.coalesceKey ?? null)) return false;
-    if (!isSnapshotSemanticallyEqual(localRevEntry.snapshot, idbRevEntry.snapshot)) {
-      return false;
-    }
-  }
-
-  const localPast = localProject.undoHistory?.past ?? [];
-  const localFuture = localProject.undoHistory?.future ?? [];
-  const idbPast = idbProject.undoHistory?.past ?? [];
-  const idbFuture = idbProject.undoHistory?.future ?? [];
-
-  if (idbRev === localRev) {
-    if (!areUndoEntriesEqual(localPast, idbPast)) return false;
-    if (!areUndoEntriesEqual(localFuture, idbFuture)) return false;
-  } else {
-    for (const pastEntry of localPast) {
-      const recoveredInPastOrRevs =
-        idbPast.some(
-          (candidate) =>
-            candidate.label === pastEntry.label &&
-            isSnapshotSemanticallyEqual(candidate.snapshot, pastEntry.snapshot)
-        ) ||
-        idbRevs.some((revEntry) =>
-          isSnapshotSemanticallyEqual(revEntry.snapshot, pastEntry.snapshot)
-        );
-      if (!recoveredInPastOrRevs) return false;
-    }
-    for (const futureEntry of localFuture) {
-      const recoveredInFutureOrRevs =
-        idbFuture.some(
-          (candidate) =>
-            candidate.label === futureEntry.label &&
-            isSnapshotSemanticallyEqual(candidate.snapshot, futureEntry.snapshot)
-        ) ||
-        idbRevs.some((revEntry) =>
-          isSnapshotSemanticallyEqual(revEntry.snapshot, futureEntry.snapshot)
-        ) ||
-        isSnapshotSemanticallyEqual(idbProject.snapshot, futureEntry.snapshot);
-      if (!recoveredInFutureOrRevs) return false;
-    }
-  }
-
-  return true;
 }
 
 /**
@@ -1498,22 +591,21 @@ export async function deleteProjectCompletely(projectId: string): Promise<{
   };
 }
 
+/**
+ * Atomic IndexedDB read-check-put write transaction.
+ * Retained strictly as a single live `readwrite` transaction (`getReq.onsuccess` -> `evaluateCasConflict` -> `store.put`)
+ * with zero async gaps inserted inside the transaction.
+ */
 export async function saveProjectToIndexedDb(
   project: CreativeProject,
-  expectedBaseRevisionOrOptions?:
-    | number
-    | DurableWriteOptions,
+  expectedBaseRevisionOrOptions?: number | DurableWriteOptions,
   options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): Promise<StorageSaveResult> {
   if (typeof window === 'undefined' || !('indexedDB' in window) || !window.indexedDB) {
     return { ok: false, saved: false, error: 'IndexedDB is unavailable in this environment.' };
   }
-  const opts =
-    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
-      ? expectedBaseRevisionOrOptions
-      : undefined;
-  const normalizedForce = opts ? Boolean(opts.forceOverwrite) : Boolean(options?.forceOverwrite);
-  const allowDeleted = opts ? Boolean(opts.allowDeleted) : Boolean(options?.allowDeleted);
+  const { opts, normalizedForce, allowDeleted, requireExactBase, rawExpected } =
+    normalizeWriteOptions(expectedBaseRevisionOrOptions, options);
 
   if (allowDeleted) {
     clearDeletedProjectId(project.id);
@@ -1525,18 +617,19 @@ export async function saveProjectToIndexedDb(
     };
   }
 
-  const requireExactBase = opts?.requireExactBase;
-  const rawExpected =
-    typeof expectedBaseRevisionOrOptions === 'number'
-      ? expectedBaseRevisionOrOptions
-      : opts?.expectedPersistedRevision;
-
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result: StorageSaveResult) => {
       if (settled) return;
       settled = true;
       resolve(result);
+    };
+    const safeClose = (db: IDBDatabase) => {
+      try {
+        db.close();
+      } catch {
+        // Ignore close error
+      }
     };
 
     try {
@@ -1550,11 +643,7 @@ export async function saveProjectToIndexedDb(
       req.onsuccess = () => {
         const db = req.result;
         if (!allowDeleted && getDeletedProjectIds().has(project.id)) {
-          try {
-            db.close();
-          } catch {
-            // Ignore close error
-          }
+          safeClose(db);
           finish({
             ok: false,
             saved: false,
@@ -1577,11 +666,7 @@ export async function saveProjectToIndexedDb(
                 } catch {
                   // Ignore abort error
                 }
-                try {
-                  db.close();
-                } catch {
-                  // Ignore close error
-                }
+                safeClose(db);
                 finish({
                   ok: false,
                   saved: false,
@@ -1609,11 +694,7 @@ export async function saveProjectToIndexedDb(
                 } catch {
                   // Ignore abort error
                 }
-                try {
-                  db.close();
-                } catch {
-                  // Ignore close error
-                }
+                safeClose(db);
                 finish(casConflict);
                 return;
               }
@@ -1631,11 +712,7 @@ export async function saveProjectToIndexedDb(
                 const errMsg = errObj?.message ?? 'IndexedDB put request failed.';
                 const isQuota =
                   errObj?.name === 'QuotaExceededError' || /quota/i.test(errMsg);
-                try {
-                  db.close();
-                } catch {
-                  // Ignore close error
-                }
+                safeClose(db);
                 finish({
                   ok: false,
                   saved: false,
@@ -1647,14 +724,20 @@ export async function saveProjectToIndexedDb(
             } catch (error) {
               // A synchronous put/validation exception leaves no write request in the transaction.
               // Abort it explicitly so oncomplete cannot acknowledge an unwritten project.
-              try { tx.abort(); } catch { /* Transaction already closed. */ }
-              db.close();
+              try {
+                tx.abort();
+              } catch {
+                /* Transaction already closed. */
+              }
+              safeClose(db);
               const message = error instanceof Error ? error.message : 'IndexedDB write failed.';
               finish({
                 ok: false,
                 saved: false,
                 error: message,
-                quotaExceeded: error instanceof Error && (error.name === 'QuotaExceededError' || /quota/i.test(message)),
+                quotaExceeded:
+                  error instanceof Error &&
+                  (error.name === 'QuotaExceededError' || /quota/i.test(message)),
               });
             }
           };
@@ -1662,20 +745,12 @@ export async function saveProjectToIndexedDb(
           getReq.onerror = () => {
             const errMsg =
               getReq.error?.message ?? tx.error?.message ?? 'IndexedDB read before write failed.';
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            safeClose(db);
             finish({ ok: false, saved: false, error: errMsg });
           };
 
           tx.oncomplete = () => {
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            safeClose(db);
             if (!allowDeleted && getDeletedProjectIds().has(project.id)) {
               void deleteProjectFromIndexedDb(project.id);
               finish({
@@ -1691,13 +766,8 @@ export async function saveProjectToIndexedDb(
           tx.onerror = () => {
             const errObj = tx.error;
             const errMsg = errObj?.message ?? 'IndexedDB transaction failed.';
-            const isQuota =
-              errObj?.name === 'QuotaExceededError' || /quota/i.test(errMsg);
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            const isQuota = errObj?.name === 'QuotaExceededError' || /quota/i.test(errMsg);
+            safeClose(db);
             finish({
               ok: false,
               saved: false,
@@ -1710,13 +780,8 @@ export async function saveProjectToIndexedDb(
           tx.onabort = () => {
             const errObj = tx.error;
             const errMsg = errObj?.message ?? 'IndexedDB transaction aborted.';
-            const isQuota =
-              errObj?.name === 'QuotaExceededError' || /quota/i.test(errMsg);
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
+            const isQuota = errObj?.name === 'QuotaExceededError' || /quota/i.test(errMsg);
+            safeClose(db);
             finish({
               ok: false,
               saved: false,
@@ -1726,11 +791,7 @@ export async function saveProjectToIndexedDb(
             });
           };
         } catch (txErr) {
-          try {
-            db.close();
-          } catch {
-            // Ignore close error
-          }
+          safeClose(db);
           finish({
             ok: false,
             saved: false,
@@ -1752,32 +813,16 @@ export async function saveProjectToIndexedDb(
 
 /**
  * Persists a project with revision-based Compare-And-Swap (CAS) protection.
- * Persistence contract:
- * - When IndexedDB is available, IndexedDB is the single authoritative durable store (holding full snapshots,
- *   revision history, Undo/Redo history, and media artifacts) using an atomic read-check-put IndexedDB transaction.
- * - localStorage is treated strictly as a non-authoritative fast-hydration cache and legacy compatibility layer.
- * - A localStorage cache failure or stale localStorage entry never invalidates an already-committed IndexedDB write;
- *   instead, `saved: true` is returned alongside `cacheSynced: false` and `cacheWarning`.
- * - When IndexedDB is unavailable in the environment, falls back to localStorage as the durable store.
+ * IndexedDB is the single authoritative durable store when available; localStorage is
+ * synchronized as a non-authoritative fast-hydration cache and legacy fallback.
  */
 export async function persistProjectDurably(
   project: CreativeProject,
-  expectedBaseRevisionOrOptions?:
-    | number
-    | DurableWriteOptions,
+  expectedBaseRevisionOrOptions?: number | DurableWriteOptions,
   options?: { forceOverwrite?: boolean; allowDeleted?: boolean }
 ): Promise<StorageSaveResult> {
-  const opts =
-    typeof expectedBaseRevisionOrOptions === 'object' && expectedBaseRevisionOrOptions !== null
-      ? expectedBaseRevisionOrOptions
-      : undefined;
-  const normalizedForce = opts ? Boolean(opts.forceOverwrite) : Boolean(options?.forceOverwrite);
-  const allowDeleted = opts ? Boolean(opts.allowDeleted) : Boolean(options?.allowDeleted);
-  const requireExactBase = opts?.requireExactBase;
-  const rawExpected =
-    typeof expectedBaseRevisionOrOptions === 'number'
-      ? expectedBaseRevisionOrOptions
-      : opts?.expectedPersistedRevision;
+  const { opts, normalizedForce, allowDeleted, requireExactBase, rawExpected } =
+    normalizeWriteOptions(expectedBaseRevisionOrOptions, options);
 
   if (allowDeleted) {
     clearDeletedProjectId(project.id);
@@ -1789,8 +834,7 @@ export async function persistProjectDurably(
     };
   }
 
-  const hasLocalStorage =
-    typeof window !== 'undefined' && Boolean(window.localStorage);
+  const hasLocalStorage = typeof window !== 'undefined' && Boolean(window.localStorage);
   const hasIndexedDb =
     typeof window !== 'undefined' && 'indexedDB' in window && Boolean(window.indexedDB);
 
@@ -1818,9 +862,10 @@ export async function persistProjectDurably(
     }
 
     if (idbRes.idempotentHit) {
-      const localRes = hasLocalStorage && idbRes.storedProject
-        ? saveProjectToLocalStorage(idbRes.storedProject, { forceOverwrite: true, allowDeleted })
-        : undefined;
+      const localRes =
+        hasLocalStorage && idbRes.storedProject
+          ? saveProjectToLocalStorage(idbRes.storedProject, { forceOverwrite: true, allowDeleted })
+          : undefined;
       const cacheSynced = Boolean(localRes?.saved);
       return {
         ...idbRes,
@@ -1828,10 +873,14 @@ export async function persistProjectDurably(
         idbSaved: true,
         localSaved: cacheSynced,
         cacheSynced,
-        ...(!cacheSynced && hasLocalStorage ? {
-          quotaExceeded: Boolean(localRes?.quotaExceeded),
-          cacheWarning: localRes?.error ?? 'The authoritative IndexedDB result could not be synchronized to the localStorage cache.',
-        } : {}),
+        ...(!cacheSynced && hasLocalStorage
+          ? {
+              quotaExceeded: Boolean(localRes?.quotaExceeded),
+              cacheWarning:
+                localRes?.error ??
+                'The authoritative IndexedDB result could not be synchronized to the localStorage cache.',
+            }
+          : {}),
       };
     }
 
@@ -1850,7 +899,6 @@ export async function persistProjectDurably(
     const mergedIntents = mergeIntentIds(undefined, project, opts?.intentId, rawExpected);
 
     if (hasLocalStorage) {
-      // Synchronize non-authoritative localStorage cache with the authoritative IndexedDB state
       const localRes = saveProjectToLocalStorage(
         {
           ...project,
@@ -1922,11 +970,7 @@ export async function persistProjectDurably(
 }
 
 /**
- * Loads projects from IndexedDB with explicit status differentiation so callers can distinguish:
- * - `'ok'`: 1 or more valid records loaded
- * - `'empty'`: database opened and read cleanly, 0 non-deleted valid records exist
- * - `'unavailable'`: IndexedDB API is not supported/present in this environment
- * - `'read_error'`: IndexedDB open, transaction, or getAll request failed (must NEVER be treated as empty storage)
+ * Loads projects from IndexedDB with explicit status differentiation (`ok`, `empty`, `unavailable`, `read_error`).
  */
 export async function loadProjectsFromIndexedDbDetailed(): Promise<IndexedDbLoadResult> {
   if (typeof window === 'undefined' || !('indexedDB' in window) || !window.indexedDB) {
@@ -1946,6 +990,23 @@ export async function loadProjectsFromIndexedDbDetailed(): Promise<IndexedDbLoad
       if (settled) return;
       settled = true;
       resolve(res);
+    };
+    const failRead = (db: IDBDatabase | null, error: string) => {
+      if (db) {
+        try {
+          db.close();
+        } catch {
+          // Ignore close error
+        }
+      }
+      finish({
+        ok: false,
+        status: 'read_error',
+        projects: [],
+        corruptRecordCount: 0,
+        corruptRecordErrors: [],
+        error,
+      });
     };
 
     try {
@@ -1995,89 +1056,24 @@ export async function loadProjectsFromIndexedDbDetailed(): Promise<IndexedDbLoad
               corruptRecordErrors,
             });
           };
-          allReq.onerror = () => {
-            const errMsg =
-              allReq.error?.message ?? tx.error?.message ?? 'IndexedDB getAll read failed.';
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
-            finish({
-              ok: false,
-              status: 'read_error',
-              projects: [],
-              corruptRecordCount: 0,
-              corruptRecordErrors: [],
-              error: errMsg,
-            });
-          };
-          tx.onerror = () => {
-            const errMsg = tx.error?.message ?? 'IndexedDB read transaction failed.';
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
-            finish({
-              ok: false,
-              status: 'read_error',
-              projects: [],
-              corruptRecordCount: 0,
-              corruptRecordErrors: [],
-              error: errMsg,
-            });
-          };
-          tx.onabort = () => {
-            const errMsg = tx.error?.message ?? 'IndexedDB read transaction aborted.';
-            try {
-              db.close();
-            } catch {
-              // Ignore close error
-            }
-            finish({
-              ok: false,
-              status: 'read_error',
-              projects: [],
-              corruptRecordCount: 0,
-              corruptRecordErrors: [],
-              error: errMsg,
-            });
-          };
+          allReq.onerror = () =>
+            failRead(
+              db,
+              allReq.error?.message ?? tx.error?.message ?? 'IndexedDB getAll read failed.'
+            );
+          tx.onerror = () => failRead(db, tx.error?.message ?? 'IndexedDB read transaction failed.');
+          tx.onabort = () =>
+            failRead(db, tx.error?.message ?? 'IndexedDB read transaction aborted.');
         } catch (txErr) {
-          try {
-            db.close();
-          } catch {
-            // Ignore close error
-          }
-          finish({
-            ok: false,
-            status: 'read_error',
-            projects: [],
-            corruptRecordCount: 0,
-            corruptRecordErrors: [],
-            error: txErr instanceof Error ? txErr.message : 'IndexedDB read transaction exception.',
-          });
+          failRead(
+            db,
+            txErr instanceof Error ? txErr.message : 'IndexedDB read transaction exception.'
+          );
         }
       };
-      req.onerror = () =>
-        finish({
-          ok: false,
-          status: 'read_error',
-          projects: [],
-          corruptRecordCount: 0,
-          corruptRecordErrors: [],
-          error: req.error?.message ?? 'Failed to open IndexedDB for reading.',
-        });
+      req.onerror = () => failRead(null, req.error?.message ?? 'Failed to open IndexedDB for reading.');
     } catch (err) {
-      finish({
-        ok: false,
-        status: 'read_error',
-        projects: [],
-        corruptRecordCount: 0,
-        corruptRecordErrors: [],
-        error: err instanceof Error ? err.message : 'IndexedDB read exception.',
-      });
+      failRead(null, err instanceof Error ? err.message : 'IndexedDB read exception.');
     }
   });
 }
@@ -2087,37 +1083,8 @@ export async function loadProjectsFromIndexedDb(): Promise<CreativeProject[]> {
   return res.projects;
 }
 
-function isAutoSeededUntouchedSample(project: CreativeProject): boolean {
-  return (
-    project.id === 'proj_default_cat_party' &&
-    (project.revision ?? 1) === 1 &&
-    project.revisions.length <= 1 &&
-    project.artifacts.length === 0
-  );
-}
-
-function hasRevisionLineage(newer: CreativeProject, older: CreativeProject): boolean {
-  const olderRev = older.revision ?? 1;
-  if (olderRev <= 1 && older.revisions.length <= 1) {
-    return true;
-  }
-  const olderHeadId = older.revisions[0]?.id;
-  if (olderHeadId && newer.revisions.some((r) => r.id === olderHeadId)) {
-    return true;
-  }
-  return newer.revisions.some(
-    (r) =>
-      r.revisionNumber === olderRev &&
-      isSnapshotSemanticallyEqual(r.snapshot, older.snapshot)
-  );
-}
-
 /**
  * Reconciles initial localStorage projects with asynchronous IndexedDB hydration (F-02, IA-04, IA-05).
- * Ensures that when IndexedDB holds a newer revision (e.g. r6 after a localStorage quota failure on r5),
- * the COMPLETE project (snapshot, revision, persistedRevision, revisions, artifacts, and undoState)
- * is recovered atomically without splicing old snapshots with newer artifacts.
- * Also detects and surfaces hydration conflicts rather than silently ignoring them.
  */
 export function reconcileHydratedProjects(params: {
   localProjects: CreativeProject[];
@@ -2135,248 +1102,16 @@ export function reconcileHydratedProjects(params: {
   upgradedFromIndexedDb: boolean;
   conflictWithHydrated: CreativeProject | null;
 } {
-  const {
-    localProjects,
-    idbProjects,
-    activeProject,
-    activeUndoState,
-    hasLocalEditsSinceMount = false,
-    localWasAutoSeededSample = false,
-    deletedProjectIds,
-    ignoreDivergenceConflict = false,
-  } = params;
-
-  const deletedSet = new Set<string>(deletedProjectIds ?? getDeletedProjectIds());
-  const validLocal = localProjects.filter((p) => !deletedSet.has(p.id));
-  const validIdb = idbProjects.filter((p) => !deletedSet.has(p.id));
-
-  if (validIdb.length === 0) {
-    const reconstructedUndo =
-      activeUndoState.past.length === 0 &&
-      activeUndoState.future.length === 0 &&
-      (activeProject.revisions.length > 1 || Boolean(activeProject.undoHistory))
-        ? createUndoRedoState(
-            activeProject.snapshot,
-            activeProject.revisions,
-            activeProject.undoHistory
-          )
-        : activeUndoState;
-    return {
-      savedProjects: validLocal,
-      activeProject,
-      activeUndoState: reconstructedUndo,
-      upgradedFromIndexedDb: false,
-      conflictWithHydrated: null,
-    };
-  }
-
-  // If localStorage only had an auto-seeded untouched sample because localStorage was empty/cleared,
-  // while IndexedDB holds authoritative project records, yield cleanly to IndexedDB so a freshly
-  // generated sample never eclipses or conflicts with durable IndexedDB state.
-  const localWasOnlyAutoSample =
-    !hasLocalEditsSinceMount &&
-    validLocal.length === 1 &&
-    isAutoSeededUntouchedSample(validLocal[0]) &&
-    (localWasAutoSeededSample || !validIdb.some((ip) => ip.id === validLocal[0].id));
-
-  const mergedById = new Map<string, CreativeProject>();
-  if (!localWasOnlyAutoSample) {
-    for (const lp of validLocal) {
-      mergedById.set(lp.id, lp);
-    }
-  }
-
-  const divergenceConflictsById = new Map<string, CreativeProject>();
-
-  for (const ip of validIdb) {
-    const normalizedIp: CreativeProject = {
-      ...ip,
-      persistedRevision: ip.persistedRevision ?? ip.revision,
-    };
-    const lp = mergedById.get(ip.id);
-    if (!lp) {
-      mergedById.set(ip.id, normalizedIp);
-      continue;
-    }
-
-    const idbRev = ip.revision ?? 1;
-    const localRev = lp.revision ?? 1;
-
-    if (idbRev > localRev) {
-      if (!ignoreDivergenceConflict && !hasRevisionLineage(ip, lp)) {
-        divergenceConflictsById.set(ip.id, normalizedIp);
-      } else {
-        // IndexedDB has a strictly newer revision on the same lineage: adopt the ENTIRE IndexedDB project atomically
-        mergedById.set(ip.id, normalizedIp);
-      }
-    } else if (idbRev === localRev) {
-      const sameSnapshot = isSnapshotSemanticallyEqual(lp.snapshot, ip.snapshot) &&
-        JSON.stringify(lp.narrative) === JSON.stringify(ip.narrative);
-      if (!sameSnapshot && !ignoreDivergenceConflict) {
-        // Divergent creative decisions at the same revision: preserve local in mergedById and surface IDB as conflict
-        divergenceConflictsById.set(ip.id, normalizedIp);
-      } else {
-        // Choose a single complete winning record without splicing snapshots and revisions across stores
-        const preferIdb =
-          ip.artifacts.length > lp.artifacts.length ||
-          ip.revisions.length > lp.revisions.length ||
-          Boolean(ip.undoHistory && !lp.undoHistory) ||
-          ip.updatedAt >= lp.updatedAt;
-        const winner = preferIdb ? normalizedIp : lp;
-        mergedById.set(ip.id, {
-          ...winner,
-          undoHistory: winner.undoHistory ?? ip.undoHistory ?? lp.undoHistory,
-          persistedRevision: Math.max(
-            ip.persistedRevision ?? idbRev,
-            lp.persistedRevision ?? localRev
-          ),
-        });
-      }
-    } else {
-      // localRev > idbRev: adopt the complete localStorage project without splicing old IDB artifacts
-      if (!ignoreDivergenceConflict && !hasRevisionLineage(lp, ip)) {
-        divergenceConflictsById.set(lp.id, normalizedIp);
-      }
-      mergedById.set(lp.id, {
-        ...lp,
-        persistedRevision: Math.max(
-          lp.persistedRevision ?? localRev,
-          ip.persistedRevision ?? idbRev
-        ),
-      });
-    }
-  }
-
-  const savedProjects = Array.from(mergedById.values()).sort(
-    (a, b) => b.updatedAt - a.updatedAt
-  );
-
-  const idbMatch = validIdb.find((ip) => ip.id === activeProject.id);
-  const localMatch = validLocal.find((lp) => lp.id === activeProject.id);
-  const reconciledActiveCandidate = mergedById.get(activeProject.id);
-
-  if (!reconciledActiveCandidate) {
-    const fallback = savedProjects[0] ?? activeProject;
-    return {
-      savedProjects,
-      activeProject: fallback,
-      activeUndoState: createUndoRedoState(
-        fallback.snapshot,
-        fallback.revisions,
-        fallback.undoHistory
-      ),
-      upgradedFromIndexedDb: true,
-      conflictWithHydrated: null,
-    };
-  }
-
-  const idbRev = idbMatch?.revision ?? 0;
-  const activeRev = activeProject.revision ?? 1;
-  const basePersistedRev = activeProject.persistedRevision ?? 1;
-
-  // If the user already edited the active project in memory since mount and IDB had a newer or divergent revision
-  if (hasLocalEditsSinceMount) {
-    const idbDivergedFromBase =
-      Boolean(idbMatch) &&
-      (idbRev > basePersistedRev ||
-        (idbRev === basePersistedRev &&
-          localMatch !== undefined &&
-          !isSnapshotSemanticallyEqual(idbMatch!.snapshot, localMatch.snapshot)));
-
-    if (idbDivergedFromBase && idbMatch) {
-      return {
-        savedProjects,
-        activeProject,
-        activeUndoState,
-        upgradedFromIndexedDb: false,
-        conflictWithHydrated: idbMatch,
-      };
-    }
-    return {
-      savedProjects: savedProjects.map((p) =>
-        p.id === activeProject.id ? activeProject : p
-      ),
-      activeProject,
-      activeUndoState,
-      upgradedFromIndexedDb: false,
-      conflictWithHydrated: null,
-    };
-  }
-
-  const divergenceConflict = divergenceConflictsById.get(activeProject.id) ?? null;
-  if (divergenceConflict) {
-    return {
-      savedProjects,
-      activeProject,
-      activeUndoState:
-        activeUndoState.past.length === 0 &&
-        activeUndoState.future.length === 0 &&
-        (activeProject.revisions.length > 1 || Boolean(activeProject.undoHistory))
-          ? createUndoRedoState(
-              activeProject.snapshot,
-              activeProject.revisions,
-              activeProject.undoHistory
-            )
-          : activeUndoState,
-      upgradedFromIndexedDb: false,
-      conflictWithHydrated: divergenceConflict,
-    };
-  }
-
-  const upgradedFromIndexedDb =
-    Boolean(idbMatch) &&
-    (localWasOnlyAutoSample ||
-      idbRev > activeRev ||
-      (idbRev === activeRev &&
-        (idbMatch!.updatedAt > activeProject.updatedAt ||
-          idbMatch!.artifacts.length > activeProject.artifacts.length ||
-          idbMatch!.revisions.length > activeProject.revisions.length)));
-
-  if (upgradedFromIndexedDb) {
-    return {
-      savedProjects,
-      activeProject: reconciledActiveCandidate,
-      activeUndoState: createUndoRedoState(
-        reconciledActiveCandidate.snapshot,
-        reconciledActiveCandidate.revisions,
-        reconciledActiveCandidate.undoHistory
-      ),
-      upgradedFromIndexedDb: true,
-      conflictWithHydrated: null,
-    };
-  }
-
-  const finalUndoState =
-    activeUndoState.past.length === 0 &&
-    activeUndoState.future.length === 0 &&
-    (reconciledActiveCandidate.revisions.length > 1 ||
-      Boolean(reconciledActiveCandidate.undoHistory))
-      ? createUndoRedoState(
-          reconciledActiveCandidate.snapshot,
-          reconciledActiveCandidate.revisions,
-          reconciledActiveCandidate.undoHistory
-        )
-      : activeUndoState;
-
-  return {
-    savedProjects,
-    activeProject: reconciledActiveCandidate,
-    activeUndoState: finalUndoState,
-    upgradedFromIndexedDb: false,
-    conflictWithHydrated: null,
-  };
+  const deletedSet = new Set<string>(params.deletedProjectIds ?? getDeletedProjectIds());
+  return reconcileHydratedProjectsCore({
+    ...params,
+    deletedSet,
+  });
 }
 
 /**
  * Reloads the truly latest valid projects across both IndexedDB and localStorage,
- * preserving complete snapshots, revisions, Undo/Redo history (including Redo future stack), and media artifacts.
- *
- * Non-destructive conflict & error contract (FIX 1 & FIX 2):
- * - If IndexedDB fails to read (`idbStatus === 'read_error'`), never overwrites IndexedDB or seeds sample data over it.
- * - If localStorage and IndexedDB hold divergent snapshots at the same revision or divergent lineages,
- *   does NOT silently overwrite the losing branch unless `options.resolution` is explicitly provided;
- *   returns `conflictDetected: true` with both `activeProject` (local) and `conflictProject` (IndexedDB) preserved.
- * - Verifies persistence results before reporting `persisted: true`.
+ * preserving complete snapshots, revisions, Undo/Redo history, and media artifacts.
  */
 export async function reloadLatestProjectsFromStorage(
   preferredActiveProjectId?: string | null,
@@ -2420,8 +1155,7 @@ export async function reloadLatestProjectsFromStorage(
   if (idbLoad.status === 'read_error') {
     const fallbackProjects =
       effectiveLocalProjects.length > 0 ? effectiveLocalProjects : [createSampleProject()];
-    const activeFallback =
-      fallbackProjects.find((p) => p.id === targetId) ?? fallbackProjects[0];
+    const activeFallback = fallbackProjects.find((p) => p.id === targetId) ?? fallbackProjects[0];
     return {
       projects: fallbackProjects,
       activeProject: activeFallback,
@@ -2494,32 +1228,12 @@ export async function reloadLatestProjectsFromStorage(
     };
   }
 
-  let chosenActive = reconciled.activeProject;
-  if (localMatch && idbMatch) {
-    const idbRev = idbMatch.revision ?? 1;
-    const localRev = localMatch.revision ?? 1;
-    if (options?.resolution === 'prefer-idb') {
-      chosenActive = { ...idbMatch, persistedRevision: idbRev };
-    } else if (options?.resolution === 'prefer-local') {
-      chosenActive = { ...localMatch, persistedRevision: localRev };
-    } else if (idbRev > localRev) {
-      chosenActive = { ...idbMatch, persistedRevision: idbRev };
-    } else if (localRev > idbRev) {
-      chosenActive = { ...localMatch, persistedRevision: localRev };
-    } else {
-      const preferIdb =
-        idbMatch.artifacts.length > localMatch.artifacts.length ||
-        idbMatch.revisions.length > localMatch.revisions.length ||
-        Boolean(idbMatch.undoHistory && !localMatch.undoHistory) ||
-        idbMatch.updatedAt >= localMatch.updatedAt;
-      const winner = preferIdb ? idbMatch : localMatch;
-      chosenActive = {
-        ...winner,
-        undoHistory: winner.undoHistory ?? idbMatch.undoHistory ?? localMatch.undoHistory,
-        persistedRevision: idbRev,
-      };
-    }
-  }
+  let chosenActive = selectReloadActiveProject({
+    reconciledActive: reconciled.activeProject,
+    localMatch,
+    idbMatch,
+    resolution: options?.resolution,
+  });
 
   const finalProjects = reconciled.savedProjects.map((p) =>
     p.id === chosenActive.id ? chosenActive : p
@@ -2544,7 +1258,8 @@ export async function reloadLatestProjectsFromStorage(
         };
       }
       if (!idbSave.saved) {
-        persistenceWarning = idbSave.error ?? 'Failed to synchronize reloaded project to IndexedDB.';
+        persistenceWarning =
+          idbSave.error ?? 'Failed to synchronize reloaded project to IndexedDB.';
       } else if (!localSave.saved) {
         persistenceWarning =
           localSave.error ?? 'Synchronized to IndexedDB, but localStorage cache could not be updated.';
@@ -2575,5 +1290,3 @@ export async function reloadLatestProjectsFromStorage(
     persistenceWarning,
   };
 }
-
-

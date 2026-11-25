@@ -10,10 +10,22 @@ import ImportWorkflow from './components/narrativeImport/ImportWorkflow';
 import { manuscriptSections, manuscriptText, prepareManuscriptChange, type NarrativeBase } from './lib/narrative/manuscriptModel';
 import type { StyleProfile } from './lib/narrative/context/styleProfile';
 import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplacement, registryReport, safeFilename, saveBackup } from './lib/narrative/recovery';
-import { projectContentExport, type ContentExportSelection } from './lib/narrative/recovery/contentExport';
+import { projectContentExport } from './lib/narrative/recovery/contentExport';
 import { projectContentBundle } from './lib/narrative/recovery/bundleExporter';
-import { buildDeterministicExportFilename, buildManuscriptDocxBytes } from './lib/narrative/recovery/docxExport';
 import { restoreArchiveProjectsSequentially, type ArchiveRestoreSequenceResult } from './lib/narrative/recovery/allProjectsArchive';
+import {
+  buildContentExportEntries,
+  downloadBinaryFile,
+  downloadTextFile,
+  triggerManuscriptDocxDownload,
+  triggerManuscriptMarkdownDownload,
+  triggerManuscriptTextDownload,
+  triggerProjectBackupDownload,
+  triggerRefinedPromptDownload,
+  triggerStoryBibleMarkdownDownload,
+} from './lib/workspace/projectExports';
+import StorageAlertBanner, { type StorageConflictAlert } from './components/workspace/StorageAlertBanner';
+import ReviewDiffModal from './components/workspace/ReviewDiffModal';
 import {
   applyDiagnosticFixAlternative,
   collectLocalDiagnosticFindings,
@@ -79,26 +91,26 @@ import {
 } from './lib/nlBatchEngine';
 import {
   acceptPolishProposal,
-  applyAsyncAnalysisCompletion,
-  applyAsyncGenerationCompletion,
   buildReviewDiffModel,
-  clearTicket,
   commitBatchPreviewToProject,
   commitRedoTransaction,
   commitSnapshotTransaction,
   commitUndoTransaction,
+  createAiTicketAuthority,
   createPolishProposal,
-  createRequestTicket,
   createSerializedProjectSaveQueue,
   isProjectActionLoading,
   prepareProjectSwitch,
   reconcileAsyncSaveAcknowledgement,
   refreshArtifactsCurrentness,
-  registerTicket,
   resolveHydrationWriteGate,
+  runAsyncAnalysisSlot,
+  runAsyncClarifySlot,
+  runAsyncGenerationSlot,
   shouldAllowUnsolicitedPersistence,
   upsertProjectInSavedList,
   validatePolishProposalAcceptance,
+  type AiTicketAuthority,
   type HydrationWriteGate,
   type InFlightTicketsMap,
   type SerializedSaveOptions,
@@ -109,8 +121,6 @@ import { projectRelationships } from './lib/narrative/projections/relationshipPr
 import { createOpportunityProposal, transitionOpportunityProposal, type OpportunityProposalInput, type OpportunityProposalStatus } from './lib/narrative/opportunityProposals';
 import {
   deleteProjectCompletely,
-  exportProjectToJson,
-  exportStoryBibleMarkdown,
   getDeletedProjectIds,
   LOCAL_STORAGE_ACTIVE_ID_KEY,
   loadProjectsFromIndexedDbDetailed,
@@ -154,43 +164,12 @@ import type {
 
 type MobileTab = 'decisions' | 'graph' | 'inspector' | 'output';
 
-interface StorageConflictAlert {
-  type: 'conflict' | 'quota' | 'error';
-  message: string;
-  projectId: string;
-  conflictingProject?: CreativeProject;
-}
-
 const AUTO_BACKUP_PREF_KEY = 'pcc_auto_backup_pref_v1';
 
 function getReadableErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ClientApiError) return error.message;
   if (error instanceof Error && error.message) return error.message;
   return fallback;
-}
-
-function downloadTextFile(filename: string, content: string, mimeType: string = 'text/plain;charset=utf-8') {
-  const element = document.createElement('a');
-  const file = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(file);
-  element.href = url;
-  element.download = filename;
-  document.body.appendChild(element);
-  element.click();
-  document.body.removeChild(element);
-  setTimeout(() => URL.revokeObjectURL(url), 100);
-}
-
-function downloadBinaryFile(filename: string, content: Uint8Array, mimeType: string) {
-  const blob = new Blob([content as BlobPart], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const element = document.createElement('a');
-  element.href = url;
-  element.download = filename;
-  document.body.appendChild(element);
-  element.click();
-  document.body.removeChild(element);
-  setTimeout(() => URL.revokeObjectURL(url), 100);
 }
 
 function App() {
@@ -238,12 +217,6 @@ function App() {
   const restorePendingRef = useRef(false);
   const creatingImportedProjectRef = useRef(false);
 
-  function allowNavigation(): boolean {
-    if (!draftDirtyRef.current && !restorePendingRef.current) return true;
-    setStatusNotification('Save the open manuscript draft or wait for the restore before leaving this workspace.');
-    return false;
-  }
-
   const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
   const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(true);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
@@ -251,6 +224,12 @@ function App() {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState<boolean>(false);
   const [statusNotification, setStatusNotification] = useState<string | null>(null);
   const [storageAlert, setStorageAlert] = useState<StorageConflictAlert | null>(null);
+
+  function allowNavigation(): boolean {
+    if (!draftDirtyRef.current && !restorePendingRef.current) return true;
+    setStatusNotification('Save the open manuscript draft or wait for the restore before leaving this workspace.');
+    return false;
+  }
 
   // Staged state mirrored from DecisionInboxPanel for the Review Modal diff view (U-01)
   const [stagedBatchPreview, setStagedBatchPreview] = useState<BatchEditProposalResult | null>(null);
@@ -263,8 +242,14 @@ function App() {
     seq: number;
   } | null>(null);
 
-  // Scoped Request Tickets & Staged Proposals
+  // Scoped Request Tickets (single synchronous controller authority; React state is a UI projection)
   const [inFlightTickets, setInFlightTickets] = useState<InFlightTicketsMap>({});
+  const [aiTicketAuthority] = useState<AiTicketAuthority>(() =>
+    createAiTicketAuthority((nextTickets) => {
+      setInFlightTickets(nextTickets);
+    })
+  );
+  const aiTicketAuthorityRef = useRef<AiTicketAuthority>(aiTicketAuthority);
   const [polishProposalsByProject, setPolishProposalsByProject] = useState<
     Record<string, AiPolishProposal>
   >({});
@@ -288,15 +273,16 @@ function App() {
     setHydrationGate(nextGate);
   }, []);
 
-  const abortControllersRef = useRef<Record<string, AbortController>>({});
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedBatchProposalIdsRef = useRef<Set<string>>(new Set());
   const hasLocalEditsSinceMountRef = useRef<boolean>(false);
   const saveQueueRef = useRef(createSerializedProjectSaveQueue(persistProjectDurably));
 
+  useEffect(() => () => {
+    aiTicketAuthorityRef.current?.invalidateAll();
+  }, []);
+
   const reviewButtonRef = useRef<HTMLButtonElement | null>(null);
-  const reviewModalDialogRef = useRef<HTMLDivElement | null>(null);
-  const reviewModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
   // Derive synchronized active project with current undoState.present snapshot and persisted Undo/Redo stacks
   const activeProject = useMemo<CreativeProject>(() => {
@@ -769,7 +755,7 @@ function App() {
       throw new Error('IndexedDB must be available and the workspace must finish loading.');
     }
     const before = activeProjectRef.current;
-    if (Object.values(inFlightTickets).some(ticket => ticket.projectId === before.id)) {
+    if (aiTicketAuthorityRef.current?.hasProjectTickets(before.id)) {
       throw new Error('Wait for the current project operation to finish before saving.');
     }
     const prepared = prepareManuscriptChange(before, undoStateRef.current, base, sections, artifact, styleProfile);
@@ -1626,29 +1612,33 @@ function App() {
     }
     if (promptDecision.warning) setStatusNotification(promptDecision.warning);
 
-    const ticket = createRequestTicket(targetProject, 'batch');
-    setInFlightTickets((prev) => registerTicket(prev, ticket));
+    const authority = aiTicketAuthorityRef.current!;
+    const { ticket, signal } = authority.beginSlot(targetProject, 'batch');
     try {
-      const aiResult = await requestBatchEditInterpretation(instruction, {
-        prompt: promptDecision.prompt,
-        entities: promptDecision.contextSnapshot.entities.map((e) => ({
-          id: e.id,
-          name: e.name,
-          category: e.category,
-          excluded: e.excluded,
-          attributes: e.attributes.map((a) => ({
-            name: a.name,
-            value: a.confirmedValue ?? a.value[0]?.name ?? 'Unknown',
-            status: a.status,
+      const aiResult = await requestBatchEditInterpretation(
+        instruction,
+        {
+          prompt: promptDecision.prompt,
+          entities: promptDecision.contextSnapshot.entities.map((e) => ({
+            id: e.id,
+            name: e.name,
+            category: e.category,
+            excluded: e.excluded,
+            attributes: e.attributes.map((a) => ({
+              name: a.name,
+              value: a.confirmedValue ?? a.value[0]?.name ?? 'Unknown',
+              status: a.status,
+            })),
           })),
-        })),
-        relationships: promptDecision.contextSnapshot.relationships.map((r) => ({
-          id: r.id,
-          source: r.source,
-          target: r.target,
-          label: r.label,
-        })),
-      });
+          relationships: promptDecision.contextSnapshot.relationships.map((r) => ({
+            id: r.id,
+            source: r.source,
+            target: r.target,
+            label: r.label,
+          })),
+        },
+        signal
+      );
       if (aiResult.operations.length > 0 || aiResult.ambiguities.length > 0) {
         return {
           ...aiResult,
@@ -1660,7 +1650,7 @@ function App() {
     } catch {
       return localResult;
     } finally {
-      setInFlightTickets((prev) => clearTicket(prev, ticket));
+      authority.clearIfCurrent(ticket);
     }
   };
 
@@ -1684,7 +1674,7 @@ function App() {
     return res.result;
   };
 
-  // --- AI Analysis, Clarifications & Generation with Scoped Tickets ---
+  // --- AI Analysis, Clarifications & Generation with Authoritative Scoped Tickets (R0-B) ---
 
   const handleAnalyzeIdea = useCallback(async () => {
     const originProject = activeProjectRef.current;
@@ -1707,73 +1697,62 @@ function App() {
       return;
     }
 
-    const slotKey = `${originProject.id}:analyze`;
-    abortControllersRef.current[slotKey]?.abort();
-    const controller = new AbortController();
-    abortControllersRef.current[slotKey] = controller;
-
-    const ticket = createRequestTicket(originProject, 'analyze');
-    setInFlightTickets((prev) => registerTicket(prev, ticket));
-    setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: null }));
-    setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
-
-    try {
-      const [newGraph, newClarifications] = await Promise.all([
-        analyzePromptToBeliefGraph(providerInputs.prompt, providerInputs.mode, controller.signal).catch((err) => {
-          if (!isAbortError(err)) {
-            setAnalysisErrors((prev) => ({
-              ...prev,
-              [originProject.id]: getReadableErrorMessage(
-                err,
-                'Could not reach AI analysis service; local plan preserved.'
-              ),
-            }));
-          }
-          return null;
-        }),
+    await runAsyncAnalysisSlot({
+      authority: aiTicketAuthorityRef.current!,
+      originProject,
+      getState: () => ({
+        activeProject: activeProjectRef.current,
+        activeUndoState: undoStateRef.current,
+        savedProjects: savedProjectsRef.current,
+      }),
+      commitState: (applied) => {
+        activeProjectRef.current = applied.activeProject;
+        undoStateRef.current = applied.activeUndoState;
+        savedProjectsRef.current = applied.savedProjects;
+        setProject(applied.activeProject);
+        setUndoState(applied.activeUndoState);
+        setSavedProjects(applied.savedProjects);
+      },
+      analyzeGraph: (signal) =>
+        analyzePromptToBeliefGraph(providerInputs.prompt, providerInputs.mode, signal),
+      fetchClarifications: (signal) =>
         generateClarifications(
           providerInputs.prompt,
           providerInputs.askedQuestions,
           providerInputs.mode,
-          controller.signal,
+          signal,
           providerInputs.confirmedFacts
-        ).catch((err) => {
-          if (!isAbortError(err)) {
-            setClarificationErrors((prev) => ({
-              ...prev,
-              [originProject.id]: getReadableErrorMessage(
-                err,
-                'Could not fetch new AI questions; existing decisions preserved.'
-              ),
-            }));
-          }
-          return null;
-        }),
-      ]);
-
-      if (newGraph || newClarifications) {
-        const applied = applyAsyncAnalysisCompletion({
-          ticket,
-          activeProject: activeProjectRef.current,
-          activeUndoState: undoStateRef.current,
-          savedProjects: savedProjectsRef.current,
-          newGraph,
-          newClarifications,
-          label: 'Reanalyze Prompt with AI',
-          summary: 'Merged AI analysis while preserving confirmed user decisions.',
-        });
-        setProject(applied.activeProject);
-        setUndoState(applied.activeUndoState);
-        setSavedProjects(applied.savedProjects);
-        if (applied.rebasedOntoNewerRevision) {
-          setStatusNotification(
-            'Rebased AI analysis onto your latest edits without overwriting confirmed changes.'
-          );
-        }
-      }
-    } finally {
-      setInFlightTickets((prev) => clearTicket(prev, ticket));
-    }
+        ),
+      onStart: () => {
+        setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: null }));
+        setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
+      },
+      onAnalysisError: (projectId, err) => {
+        setAnalysisErrors((prev) => ({
+          ...prev,
+          [projectId]: getReadableErrorMessage(
+            err,
+            'Could not reach AI analysis service; local plan preserved.'
+          ),
+        }));
+      },
+      onClarificationError: (projectId, err) => {
+        setClarificationErrors((prev) => ({
+          ...prev,
+          [projectId]: getReadableErrorMessage(
+            err,
+            'Could not fetch new AI questions; existing decisions preserved.'
+          ),
+        }));
+      },
+      onRebased: () => {
+        setStatusNotification(
+          'Rebased AI analysis onto your latest edits without overwriting confirmed changes.'
+        );
+      },
+      label: 'Reanalyze Prompt with AI',
+      summary: 'Merged AI analysis while preserving confirmed user decisions.',
+    });
   }, []);
 
   const handleRefreshClarifications = useCallback(
@@ -1797,15 +1776,6 @@ function App() {
         return;
       }
 
-      const slotKey = `${originProject.id}:clarify`;
-      abortControllersRef.current[slotKey]?.abort();
-      const controller = new AbortController();
-      abortControllersRef.current[slotKey] = controller;
-
-      const ticket = createRequestTicket(originProject, 'clarify');
-      setInFlightTickets((prev) => registerTicket(prev, ticket));
-      setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
-
       const confirmedFacts = promptDecision.contextSnapshot.entities
         .filter((e) => !e.excluded)
         .flatMap((e) =>
@@ -1814,41 +1784,46 @@ function App() {
             .map((a) => `${e.name} ${a.name}: ${a.confirmedValue}`)
         );
 
-      try {
-        const freshClarifications = await generateClarifications(
-          promptToUse,
-          [...originSnap.answeredQuestions, ...originSnap.skippedQuestions],
-          originSnap.mode,
-          controller.signal,
-          confirmedFacts
-        );
-        const applied = applyAsyncAnalysisCompletion({
-          ticket,
+      await runAsyncClarifySlot({
+        authority: aiTicketAuthorityRef.current!,
+        originProject,
+        getState: () => ({
           activeProject: activeProjectRef.current,
           activeUndoState: undoStateRef.current,
           savedProjects: savedProjectsRef.current,
-          newGraph: null,
-          newClarifications: freshClarifications,
-          preserveDraftAnswers: preserveDrafts,
-          label: 'Request Additional Clarifications',
-          summary: 'Added non-duplicate AI clarification questions.',
-        });
-        setProject(applied.activeProject);
-        setUndoState(applied.activeUndoState);
-        setSavedProjects(applied.savedProjects);
-      } catch (err) {
-        if (!isAbortError(err)) {
+        }),
+        commitState: (applied) => {
+          activeProjectRef.current = applied.activeProject;
+          undoStateRef.current = applied.activeUndoState;
+          savedProjectsRef.current = applied.savedProjects;
+          setProject(applied.activeProject);
+          setUndoState(applied.activeUndoState);
+          setSavedProjects(applied.savedProjects);
+        },
+        fetchClarifications: (signal) =>
+          generateClarifications(
+            promptToUse,
+            [...originSnap.answeredQuestions, ...originSnap.skippedQuestions],
+            originSnap.mode,
+            signal,
+            confirmedFacts
+          ),
+        preserveDraftAnswers: preserveDrafts,
+        onStart: () => {
+          setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
+        },
+        onError: (projectId, err) => {
           setClarificationErrors((prev) => ({
             ...prev,
-            [originProject.id]: getReadableErrorMessage(
+            [projectId]: getReadableErrorMessage(
               err,
               'Failed to request additional clarifications.'
             ),
           }));
-        }
-      } finally {
-        setInFlightTickets((prev) => clearTicket(prev, ticket));
-      }
+        },
+        label: 'Request Additional Clarifications',
+        summary: 'Added non-duplicate AI clarification questions.',
+      });
     },
     []
   );
@@ -1885,71 +1860,59 @@ function App() {
       return;
     }
 
-    const slotKey = `${originProject.id}:generate`;
-    abortControllersRef.current[slotKey]?.abort();
-    const controller = new AbortController();
-    abortControllersRef.current[slotKey] = controller;
-
-    const ticket = createRequestTicket(originProject, 'generate');
-    setInFlightTickets((prev) => registerTicket(prev, ticket));
-    setShowOutputDrawer(true);
-    setGalleryErrors((prev) => ({
-      ...prev,
-      [originProject.id]: {
-        ...(prev[originProject.id] ?? { story: null, image: null }),
-        [requestMode]: null,
+    await runAsyncGenerationSlot({
+      authority: aiTicketAuthorityRef.current!,
+      originProject,
+      mode: requestMode,
+      promptUsed: promptToUse,
+      getState: () => ({
+        activeProject: activeProjectRef.current,
+        savedProjects: savedProjectsRef.current,
+      }),
+      commitState: (applied) => {
+        activeProjectRef.current = applied.activeProject;
+        savedProjectsRef.current = applied.savedProjects;
+        setProject(applied.activeProject);
+        setSavedProjects(applied.savedProjects);
       },
-    }));
-
-    try {
-      if (requestMode === 'story') {
-        const generatedStory = await generateStoryFromPrompt(promptToUse, controller.signal);
-        const applied = applyAsyncGenerationCompletion({
-          ticket,
-          activeProject: activeProjectRef.current,
-          savedProjects: savedProjectsRef.current,
-          mode: 'story',
-          promptUsed: promptToUse,
-          storyText: generatedStory,
-        });
-        setProject(applied.activeProject);
-        setSavedProjects(applied.savedProjects);
-      } else {
-        const result = await generateImagesFromPrompt(promptToUse, controller.signal);
-        const applied = applyAsyncGenerationCompletion({
-          ticket,
-          activeProject: activeProjectRef.current,
-          savedProjects: savedProjectsRef.current,
-          mode: 'image',
-          promptUsed: promptToUse,
-          images: result.images,
-          warning: result.warning,
-        });
-        setProject(applied.activeProject);
-        setSavedProjects(applied.savedProjects);
-      }
-    } catch (err) {
-      if (!isAbortError(err)) {
-        const message = getReadableErrorMessage(
-          err,
-          `Failed to generate ${requestMode}. Check your server API key configuration.`
-        );
+      generate: async (signal) => {
+        if (requestMode === 'story') {
+          const generatedStory = await generateStoryFromPrompt(promptToUse, signal);
+          return { storyText: generatedStory };
+        }
+        const result = await generateImagesFromPrompt(promptToUse, signal);
+        return { images: result.images, warning: result.warning };
+      },
+      onStart: () => {
+        setShowOutputDrawer(true);
         setGalleryErrors((prev) => ({
           ...prev,
           [originProject.id]: {
             ...(prev[originProject.id] ?? { story: null, image: null }),
-            [requestMode]: message,
+            [requestMode]: null,
           },
         }));
-      }
-    } finally {
-      setInFlightTickets((prev) => clearTicket(prev, ticket));
-    }
+      },
+      onError: (projectId, mode, err) => {
+        const message = getReadableErrorMessage(
+          err,
+          `Failed to generate ${mode}. Check your server API key configuration.`
+        );
+        setGalleryErrors((prev) => ({
+          ...prev,
+          [projectId]: {
+            ...(prev[projectId] ?? { story: null, image: null }),
+            [mode]: message,
+          },
+        }));
+      },
+    });
   }, []);
 
   const handlePolishPromptWithAi = async () => {
     const originProject = activeProjectRef.current;
-    if (isProjectActionLoading(inFlightTickets, originProject.id, 'polish')) return;
+    const authority = aiTicketAuthorityRef.current!;
+    if (authority.isActionLoading(originProject.id, 'polish')) return;
 
     const promptDecision = resolveProviderPrompt(originProject, originProject.snapshot.mode);
     if (!promptDecision.ok) {
@@ -1964,14 +1927,15 @@ function App() {
       return;
     }
 
-    const ticket = createRequestTicket(originProject, 'polish');
-    setInFlightTickets((prev) => registerTicket(prev, ticket));
+    const { ticket, signal } = authority.beginSlot(originProject, 'polish');
     try {
       const polished = await refinePromptWithAllUpdates(
         promptToPolish,
         [],
-        []
+        [],
+        signal
       );
+      if (!authority.isCurrent(ticket)) return;
       const proposal = createPolishProposal(originProject, polished);
       if (proposal.isNoOp) {
         setPolishProposalsByProject((prev) => {
@@ -1992,11 +1956,13 @@ function App() {
         'Staged AI narrative polish proposal. Review and accept or discard it in the Output panel.'
       );
     } catch (err) {
-      setStatusNotification(
-        getReadableErrorMessage(err, 'Could not run AI prompt polish; structured prompt preserved.')
-      );
+      if (!isAbortError(err) && authority.isCurrent(ticket)) {
+        setStatusNotification(
+          getReadableErrorMessage(err, 'Could not run AI prompt polish; structured prompt preserved.')
+        );
+      }
     } finally {
-      setInFlightTickets((prev) => clearTicket(prev, ticket));
+      authority.clearIfCurrent(ticket);
     }
   };
 
@@ -2342,20 +2308,8 @@ function App() {
     }
     saveQueueRef.current.resetProject(projectId);
 
-    // Abort any in-flight operations for the deleted project (F-06 / IA-11)
-    for (const actionKey of ['analyze', 'clarify', 'batch', 'generate', 'polish']) {
-      abortControllersRef.current[`${projectId}:${actionKey}`]?.abort();
-      delete abortControllersRef.current[`${projectId}:${actionKey}`];
-    }
-    setInFlightTickets((prev) => {
-      const next: InFlightTicketsMap = {};
-      for (const [k, v] of Object.entries(prev)) {
-        if (v.projectId !== projectId) {
-          next[k] = v;
-        }
-      }
-      return next;
-    });
+    // Abort and invalidate all in-flight operations for the deleted project via single authority (F-06 / IA-11 / R0-B)
+    aiTicketAuthorityRef.current?.invalidateProject(projectId);
 
     void deleteProjectCompletely(projectId).then((delRes) => {
       savedProjectsRef.current = delRes.remaining;
@@ -2394,23 +2348,15 @@ function App() {
   };
 
   const handleExportJson = () => {
-    downloadTextFile(
-      safeFilename(activeProject.name, `r${activeProject.revision}-backup`, 'json'),
-      exportProjectToJson(activeProject),
-      'application/json;charset=utf-8'
-    );
+    triggerProjectBackupDownload(activeProject, `r${activeProject.revision}-backup`);
   };
 
   const handleExportStoryBibleMarkdown = () => {
-    downloadTextFile(
-      safeFilename(activeProject.name, 'story-bible', 'md'),
-      exportStoryBibleMarkdown(activeProject),
-      'text/markdown;charset=utf-8'
-    );
+    triggerStoryBibleMarkdownDownload(activeProject);
   };
 
   const handleExportPromptText = () => {
-    downloadTextFile(safeFilename(activeProject.name, 'refined-prompt', 'txt'), snapshot.refinedPrompt, 'text/plain;charset=utf-8');
+    triggerRefinedPromptDownload(activeProject);
   };
 
   const handleImportProjectJson = async (rawJson: string, replace = false): Promise<{ ok: boolean; error?: string }> => {
@@ -2422,7 +2368,7 @@ function App() {
     try {
       const legacyOrPortable = await parseProjectBackup(rawJson);
       const outgoing = activeProjectRef.current;
-      if (Object.values(inFlightTickets).some(ticket => ticket.projectId === outgoing.id)) {
+      if (aiTicketAuthorityRef.current?.hasProjectTickets(outgoing.id)) {
         throw new Error('Wait for the current project operation to finish before restoring.');
       }
       const migrated = replace ? prepareBackupReplacement(outgoing, legacyOrPortable) : prepareBackupCopy(legacyOrPortable);
@@ -2478,59 +2424,18 @@ function App() {
   }
 
   function exportManuscript() {
-    const file = projectContentExport(activeProject, { kind: 'manuscript', format: 'md' });
-    downloadTextFile(file.name, file.text, file.mediaType);
+    triggerManuscriptMarkdownDownload(activeProject);
   }
 
   function exportManuscriptText() {
-    const file = projectContentExport(activeProject, { kind: 'manuscript', format: 'txt' });
-    downloadTextFile(file.name, file.text, file.mediaType);
+    triggerManuscriptTextDownload(activeProject);
   }
 
   function exportManuscriptDocx() {
-    const sections = manuscriptSections(activeProject);
-    const bytes = buildManuscriptDocxBytes(activeProject.name, sections);
-    const filename = buildDeterministicExportFilename({
-      projectName: activeProject.name,
-      projectId: activeProject.id,
-      kind: 'manuscript',
-      revision: activeProject.revision,
-      ext: 'docx',
-    });
-    downloadBinaryFile(
-      filename,
-      bytes,
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    );
+    triggerManuscriptDocxDownload(activeProject);
   }
 
-  const contentExports: Array<{ id: string; label: string; selection: ContentExportSelection }> = [
-    ...(activeProject.snapshot.manuscriptVersionId
-      ? [
-          { id: 'manuscript:full', label: 'Working manuscript · Markdown', selection: { kind: 'manuscript', format: 'md' } as const },
-          { id: 'manuscript:txt', label: 'Working manuscript · Plain Text', selection: { kind: 'manuscript', format: 'txt' } as const },
-        ]
-      : []),
-    ...manuscriptSections(activeProject).map(section => ({
-      id: `manuscript-section:${section.id}`,
-      label: `${section.kind === 'chapter' ? 'Chapter' : 'Scene'} · ${section.title}`,
-      selection: { kind: 'manuscript' as const, sectionIds: [section.id] },
-    })),
-    ...activeProject.artifacts.flatMap(artifact => artifact.mode === 'story' && artifact.storyText
-      ? [{ id: `artifact:${artifact.id}`, label: `Generated story · ${new Date(artifact.createdAt).toLocaleString()}`,
-        selection: { kind: 'generated-story', artifactId: artifact.id } as const }]
-      : []),
-    ...(activeProject.narrative?.sources ?? []).map(source => ({
-      id: `source:${JSON.stringify([source.id, source.version])}`,
-      label: `Original source text · ${source.id} / ${source.version}`,
-      selection: { kind: 'source-text', sourceId: source.id, version: source.version } as const,
-    })),
-    { id: 'story-bible:md', label: 'Story Bible · Markdown', selection: { kind: 'story-bible' } },
-    { id: 'prompt:txt', label: 'Refined Prompt · Text', selection: { kind: 'prompt' } },
-    { id: 'issues-audit:md', label: 'Issues & Audit · Markdown', selection: { kind: 'issues-audit', format: 'md' } },
-    { id: 'evidence-report:md', label: 'Evidence report · Markdown', selection: { kind: 'evidence-report', format: 'md' } },
-    { id: 'evidence-report:json', label: 'Evidence report · JSON', selection: { kind: 'evidence-report', format: 'json' } },
-  ];
+  const contentExports = useMemo(() => buildContentExportEntries(activeProject), [activeProject]);
 
   function exportContent(id: string) {
     const entry = contentExports.find(item => item.id === id);
@@ -2595,47 +2500,6 @@ function App() {
     });
   }, []);
 
-  // Review Modal Escape & Focus Trap accessibility (U-03 / IA-18)
-  useEffect(() => {
-    if (!isReviewModalOpen) return;
-    requestAnimationFrame(() => {
-      reviewModalCloseButtonRef.current?.focus();
-    });
-
-    const handleModalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeReviewModal();
-        return;
-      }
-      if (e.key === 'Tab' && reviewModalDialogRef.current) {
-        const focusables = Array.from(
-          reviewModalDialogRef.current.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          )
-        );
-        if (focusables.length === 0) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        const active = document.activeElement as HTMLElement | null;
-        if (e.shiftKey) {
-          if (active === first || !reviewModalDialogRef.current.contains(active)) {
-            e.preventDefault();
-            last.focus();
-          }
-        } else {
-          if (active === last || !reviewModalDialogRef.current.contains(active)) {
-            e.preventDefault();
-            first.focus();
-          }
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleModalKeyDown);
-    return () => window.removeEventListener('keydown', handleModalKeyDown);
-  }, [isReviewModalOpen, closeReviewModal]);
-
   return (
     <div
       className={`${
@@ -2650,95 +2514,16 @@ function App() {
         onLoadSampleProject={handleResetSampleProject}
       />
 
-      {/* Storage Conflict / Quota Recovery Banner */}
-      {storageAlert && (
-        <div
-          role="alert"
-          aria-label="Storage conflict or quota alert"
-          className="bg-amber-50 dark:bg-amber-950/80 border-b border-amber-300 dark:border-amber-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-950 dark:text-amber-100 flex-shrink-0 z-40"
-        >
-          <span className="font-medium">{storageAlert.message}</span>
-          <div className="flex flex-wrap items-center gap-2">
-            {storageAlert.type === 'conflict' && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => handleReloadLatestFromStorage('prefer-idb')}
-                  className="px-2.5 py-1 rounded font-semibold bg-amber-700 hover:bg-amber-800 text-white"
-                >
-                  Reload Latest from Storage
-                </button>
-                <button
-                  type="button"
-                  onClick={handleForceOverwriteStorage}
-                  className="px-2.5 py-1 rounded font-semibold bg-white dark:bg-gray-800 border border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100"
-                >
-                  Keep My Version (Overwrite)
-                </button>
-              </>
-            )}
-            {storageAlert.type === 'error' && hydrationGate === 'blocked-read-error' && (
-              <button
-                type="button"
-                onClick={() => handleReloadLatestFromStorage()}
-                className="px-2.5 py-1 rounded font-semibold bg-amber-700 hover:bg-amber-800 text-white"
-              >
-                Retry Storage Read
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={handleExportJson}
-              className="px-2.5 py-1 rounded font-medium bg-white dark:bg-gray-800 border border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100"
-            >
-              Export Backup JSON
-            </button>
-            {storageAlert.conflictingProject && (
-              <button
-                type="button"
-                onClick={() => {
-                  const conflictProj = storageAlert.conflictingProject!;
-                  downloadTextFile(
-                    safeFilename(conflictProj.name, `r${conflictProj.revision}-stored-copy`, 'json'),
-                    exportProjectToJson(conflictProj),
-                    'application/json;charset=utf-8'
-                  );
-                }}
-                className="px-2.5 py-1 rounded font-medium bg-white dark:bg-gray-800 border border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100"
-              >
-                Export Stored Copy
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setStorageAlert(null)}
-              className="text-amber-700 dark:text-amber-300 hover:underline px-1"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-
-      {statusNotification && (
-        <div
-          className="px-3 pt-2 xl:p-0 xl:fixed xl:bottom-20 xl:right-4 xl:z-[1850] xl:w-full xl:max-w-md pointer-events-auto flex-shrink-0"
-          role="status"
-          aria-live="polite"
-        >
-          <div className="bg-gray-900 dark:bg-gray-800 border border-gray-700 text-white px-4 py-2.5 rounded-lg shadow-lg flex items-center justify-between gap-3 text-xs">
-            <span className="font-medium">{statusNotification}</span>
-            <button
-              type="button"
-              onClick={() => setStatusNotification(null)}
-              className="text-gray-300 hover:text-white px-1.5 py-0.5 rounded"
-              aria-label="Dismiss status notification"
-            >
-              &times;
-            </button>
-          </div>
-        </div>
-      )}
+      <StorageAlertBanner
+        storageAlert={storageAlert}
+        hydrationGate={hydrationGate}
+        statusNotification={statusNotification}
+        onReloadFromStorage={handleReloadLatestFromStorage}
+        onForceOverwriteStorage={handleForceOverwriteStorage}
+        onExportBackupJson={handleExportJson}
+        onDismissStorageAlert={() => setStorageAlert(null)}
+        onDismissStatusNotification={() => setStatusNotification(null)}
+      />
 
       <nav aria-label="Narrative workspace" className="flex flex-wrap gap-1 border-b border-gray-200 bg-white px-2 py-1.5 dark:border-gray-800 dark:bg-gray-900 sm:px-4">
         {([['write', 'Write'], ['plan', 'Plan'], ['review', 'Review'], ['import', 'Import Story'], ['projects', 'Projects']] as const).map(([mode, label]) => (
@@ -3085,215 +2870,19 @@ function App() {
       />
       </div>
 
-      {/* Dedicated Review Plan & Prompt Changes Modal (AC19, U-01, U-03, IA-17, IA-18) */}
-      {isReviewModalOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Review Plan and Prompt Changes"
-          className="fixed inset-0 z-[1900] bg-black/60 flex items-center justify-center p-4 backdrop-blur-xs"
-          onClick={closeReviewModal}
-        >
-          <div
-            ref={reviewModalDialogRef}
-            className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-5 py-3.5 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
-              <div>
-                <h2 className="font-display text-base font-bold text-gray-900 dark:text-gray-100">
-                  Review Story Plan, Pending Decisions &amp; Prompt Diff
-                </h2>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Project Revision #{activeProject.revision} · {pendingDecisionCount} pending inbox item(s) ·{' '}
-                  {reviewDiffModel.items.length} staged before/after change(s) ·{' '}
-                  {consistencyIssues.length} consistency warning(s)
-                </p>
-              </div>
-              <button
-                ref={reviewModalCloseButtonRef}
-                type="button"
-                onClick={closeReviewModal}
-                className="text-sm font-semibold text-gray-500 hover:text-gray-900 dark:hover:text-white px-2.5 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
-              {/* Structured Before -> After Diff Table (U-01 / IA-17) */}
-              <div className="p-3.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-gray-900 dark:text-gray-100">
-                    Before &rarr; After Impact of Pending Decisions &amp; Staged Batch Edits ({reviewDiffModel.items.length})
-                  </h3>
-                  {pendingDecisionCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => handleApplyDecisions(pendingDecisions.map((d) => d.id), 'accept', stagedDecisionDrafts)}
-                      className="px-2.5 py-1 rounded font-semibold bg-blue-600 hover:bg-blue-700 text-white"
-                    >
-                      Accept All Pending ({pendingDecisionCount})
-                    </button>
-                  )}
-                </div>
-
-                {reviewDiffModel.hasStaleBatch && (
-                  <div
-                    role="alert"
-                    className="p-2.5 rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 text-xs font-medium"
-                  >
-                    Stale staged batch preview detected: the project revision changed after this batch preview was created, so it is excluded from the projected prompt until you click Re-preview in the Decision Inbox.
-                  </div>
-                )}
-
-                {reviewDiffModel.items.length === 0 ? (
-                  <p className="text-gray-500">
-                    No pending decisions or staged batch edits. All current plan items are committed.
-                  </p>
-                ) : (
-                  <div data-testid="review-diff-list" className="space-y-1.5 max-h-48 overflow-y-auto">
-                    {reviewDiffModel.items.map((diff) => {
-                      const matchingDecision = pendingDecisions.find(
-                        (d) => d.id === diff.id || `diff_${d.id}` === diff.id
-                      );
-                      return (
-                        <div
-                          key={diff.id}
-                          data-diff-source={diff.source}
-                          className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800"
-                        >
-                          <div className="min-w-0 flex-1 space-y-0.5">
-                            <div className="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                              <span className="uppercase font-semibold tracking-wider">{diff.category}</span>
-                              <span aria-hidden="true">&middot;</span>
-                              <span className="font-medium text-gray-800 dark:text-gray-200 truncate">
-                                {diff.targetLabel}
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
-                              <span className="px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900 line-through">
-                                Before: {diff.beforeValue}
-                              </span>
-                              <span aria-hidden="true" className="text-gray-400">
-                                &rarr;
-                              </span>
-                              <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900 font-semibold">
-                                After: {diff.afterValue}
-                              </span>
-                            </div>
-                            {diff.conflictWarning && (
-                              <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300 pt-0.5">
-                                {diff.conflictWarning}
-                              </p>
-                            )}
-                          </div>
-
-                          {matchingDecision && (
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleApplyDecisions([matchingDecision.id], 'accept', stagedDecisionDrafts)
-                                }
-                                className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-semibold"
-                              >
-                                Accept
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleApplyDecisions([matchingDecision.id], 'reject')}
-                                className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-800 text-red-600 dark:text-red-400 font-medium"
-                              >
-                                Reject
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Recent Revisions Summary */}
-              <div className="p-3.5 rounded-lg border border-gray-200 dark:border-gray-800 space-y-2">
-                <h3 className="font-bold text-gray-900 dark:text-gray-100">
-                  Recent Plan Revisions ({activeProject.revisions.length})
-                </h3>
-                <div className="space-y-1.5 max-h-36 overflow-y-auto">
-                  {activeProject.revisions.slice(0, 5).map((rev, idx) => (
-                    <div
-                      key={rev.id}
-                      className="flex items-center justify-between gap-2 p-2 rounded bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800"
-                    >
-                      <div>
-                        <span className="font-semibold text-gray-900 dark:text-gray-100">
-                          Rev #{rev.revisionNumber ?? activeProject.revisions.length - idx}: {rev.label}
-                        </span>
-                        <p className="text-[11px] text-gray-500">{rev.summary}</p>
-                      </div>
-                      {idx > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => handleRestoreRevision(rev.id)}
-                          className="px-2.5 py-1 rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 font-medium shrink-0"
-                        >
-                          Restore
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Synthesized Prompt Before vs After Diff Preview */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <h3 className="font-bold text-gray-900 dark:text-gray-100">
-                    Current Committed Prompt ({mode === 'story' ? 'Story Mode' : 'Image Mode'})
-                  </h3>
-                  <pre className="p-3 rounded-lg bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
-                    {reviewDiffModel.beforePrompt}
-                  </pre>
-                </div>
-
-                <div className="space-y-1.5">
-                  <h3 className="font-bold text-gray-900 dark:text-gray-100">
-                    Projected Prompt After Accepting Staged Changes
-                  </h3>
-                  <pre
-                    data-testid="review-projected-prompt"
-                    className="p-3 rounded-lg bg-emerald-50/40 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 text-xs font-mono whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto"
-                  >
-                    {reviewDiffModel.afterPrompt}
-                  </pre>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  closeReviewModal();
-                  setRightPanelTab('story-bible');
-                }}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
-              >
-                Open Story Bible
-              </button>
-              <button
-                type="button"
-                onClick={closeReviewModal}
-                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ReviewDiffModal
+        isOpen={isReviewModalOpen}
+        activeProject={activeProject}
+        mode={mode}
+        pendingDecisions={pendingDecisions}
+        stagedDecisionDrafts={stagedDecisionDrafts}
+        reviewDiffModel={reviewDiffModel}
+        consistencyIssues={consistencyIssues}
+        onClose={closeReviewModal}
+        onApplyDecisions={handleApplyDecisions}
+        onRestoreRevision={handleRestoreRevision}
+        onOpenStoryBible={() => setRightPanelTab('story-bible')}
+      />
 
       <InfoModal isOpen={showInfoModal} onClose={() => setShowInfoModal(false)} />
     </div>

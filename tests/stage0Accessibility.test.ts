@@ -5,12 +5,19 @@ import path from 'node:path';
 
 describe('Stage 0 (S0.7) — Verified P1 Accessibility Regressions', () => {
   it('S0.7-FIX-1: BeliefGraph Table View entity and relationship rows are keyboard-operable (tabIndex=0 + Enter/Space)', () => {
-    const filePath = path.resolve(process.cwd(), 'components/BeliefGraph.tsx');
-    const src = fs.readFileSync(filePath, 'utf8');
-    const tableStart = src.indexOf('{displayMode === \'table\' ? (');
+    const graphFilePath = path.resolve(process.cwd(), 'components/BeliefGraph.tsx');
+    const graphSrc = fs.readFileSync(graphFilePath, 'utf8');
+    const tableStart = graphSrc.indexOf("{displayMode === 'table' ? (");
     assert.ok(tableStart !== -1, 'Expected Table View section in BeliefGraph.tsx');
-    const tableEnd = src.indexOf(') : (', tableStart);
-    const tableSrc = src.slice(tableStart, tableEnd);
+    const tableEnd = graphSrc.indexOf(') : (', tableStart);
+    const graphTableBranch = graphSrc.slice(tableStart, tableEnd);
+    assert.ok(
+      graphTableBranch.includes('<RelationshipTableView'),
+      'Expected BeliefGraph.tsx table branch to render RelationshipTableView'
+    );
+
+    const tableViewPath = path.resolve(process.cwd(), 'components/graph/RelationshipTableView.tsx');
+    const tableSrc = fs.readFileSync(tableViewPath, 'utf8');
 
     const tabIndexMatches = tableSrc.match(/tabIndex=\{0\}/g) ?? [];
     assert.ok(
