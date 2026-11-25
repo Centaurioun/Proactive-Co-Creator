@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ConsistencyIssue, ConsistencyIssueTarget, CreativeProject } from '../../shared/types';
 import type { NarrativeIssue, NarrativeRecords } from '../../shared/narrativeTypes';
 import type {
@@ -24,6 +24,13 @@ import {
   requestNarrativeSyncAnalysis,
 } from '../../services/apiClient';
 import { workspaceButton } from '../manuscript/ManuscriptEditor';
+import ProposalReviewPanel from './review/ProposalReviewPanel';
+import {
+  captureProposalReviewContext,
+  isProposalReviewContextCurrent,
+  type PendingProposalReview,
+  type ProposalReviewContext,
+} from './review/proposalReviewContext';
 
 interface Props {
   project: CreativeProject;
@@ -58,6 +65,9 @@ interface Props {
   ) => Promise<{ ok: boolean; message: string }>;
   onRecordSyncCheckpoint?: (direction: 'manuscript-to-model' | 'model-to-manuscript', coverageNote: string) => void;
   onUpdateAutomationPreferences?: (prefs: NonNullable<NarrativeRecords['automationPreferences']>) => void;
+  onReturnToWriting?: (target?: ConsistencyIssueTarget, review?: PendingProposalReview) => void;
+  resumeProposalReview?: PendingProposalReview;
+  onClearResumedProposalReview?: () => void;
   autoAnalysisCallsUsed?: number;
 }
 
@@ -79,8 +89,24 @@ export default function NarrativeReview({
   onApplyManuscriptSyncPatch,
   onRecordSyncCheckpoint,
   onUpdateAutomationPreferences,
+  onReturnToWriting,
+  resumeProposalReview,
+  onClearResumedProposalReview,
   autoAnalysisCallsUsed = 0,
 }: Props) {
+  const currentProjectRef = useRef(project);
+  const consumedResumeKeyRef = useRef('');
+  const resumableProposal = resumeProposalReview?.projectId === project.id &&
+    project.narrative?.issues.some((issue) => issue.id === resumeProposalReview.issueId)
+    ? resumeProposalReview
+    : undefined;
+  const resumePayloadKey = resumeProposalReview
+    ? [resumeProposalReview.projectId, resumeProposalReview.issueId, resumeProposalReview.alternative.id,
+        resumeProposalReview.context.baseRevision, resumeProposalReview.context.snapshotDigest].join(':')
+    : '';
+  useLayoutEffect(() => {
+    currentProjectRef.current = project;
+  }, [project]);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [dispositionFilter, setDispositionFilter] = useState<'all' | NarrativeIssue['disposition']>('all');
   const [diagScope, setDiagScope] = useState<'full' | 'scene' | 'entity' | 'changed'>('full');
@@ -94,10 +120,19 @@ export default function NarrativeReview({
   const [diagError, setDiagError] = useState('');
 
   // Fix suggestions per issue
-  const [fixPanelIssueId, setFixPanelIssueId] = useState<string | null>(null);
+  const [fixPanelIssueId, setFixPanelIssueId] = useState<string | null>(() => resumableProposal?.issueId ?? null);
   const [fixAlternativesByIssue, setFixAlternativesByIssue] = useState<
-    Record<string, { baseRevision: number; alternatives: DiagnosticFixAlternative[] }>
-  >({});
+    Record<string, { context: ProposalReviewContext; source: 'local' | 'ai'; alternatives: DiagnosticFixAlternative[] }>
+  >(() => resumableProposal ? {
+    [resumableProposal.issueId]: {
+      context: resumableProposal.context,
+      source: resumableProposal.source,
+      alternatives: [resumableProposal.alternative],
+    },
+  } : {});
+  const [selectedFixIds, setSelectedFixIds] = useState<Record<string, string>>(() => resumableProposal
+    ? { [resumableProposal.issueId]: resumableProposal.alternative.id }
+    : {});
   const [fixLoadingId, setFixLoadingId] = useState<string | null>(null);
   const [fixStatusMessage, setFixStatusMessage] = useState('');
   const [fixError, setFixError] = useState('');
@@ -108,13 +143,18 @@ export default function NarrativeReview({
   const [syncError, setSyncError] = useState('');
   const [syncMessage, setSyncMessage] = useState('');
   const [syncResult, setSyncResult] = useState<{
-    baseRevision: number;
-    manuscriptVersionId?: string;
+    context: ProposalReviewContext;
     direction: 'manuscript-to-model' | 'model-to-manuscript';
     coverageNote: string;
     modelProposals: SyncModelProposal[];
     manuscriptPatches: SyncManuscriptPatch[];
   } | null>(null);
+
+  useEffect(() => {
+    if (!resumeProposalReview || !onClearResumedProposalReview || !resumePayloadKey || resumePayloadKey === consumedResumeKeyRef.current) return;
+    consumedResumeKeyRef.current = resumePayloadKey;
+    onClearResumedProposalReview();
+  }, [resumeProposalReview, onClearResumedProposalReview, resumePayloadKey]);
 
   const { issues = [], claims = [], audit = [], sources = [], proposals = [] } = project.narrative ?? {};
   const sections = useMemo(() => manuscriptSections(project), [project]);
@@ -253,13 +293,16 @@ export default function NarrativeReview({
     setFixError('');
     setFixStatusMessage('');
     const localAlts = buildLocalFixAlternatives(project, issue);
+    const alternatives = localAlts;
     setFixAlternativesByIssue((prev) => ({
       ...prev,
       [issue.id]: {
-        baseRevision: project.revision,
-        alternatives: localAlts,
+        context: captureProposalReviewContext(project),
+        source: 'local',
+        alternatives,
       },
     }));
+    setSelectedFixIds((prev) => ({ ...prev, [issue.id]: alternatives[0]?.id ?? '' }));
   };
 
   const requestAiFixesForIssue = async (issue: NarrativeIssue) => {
@@ -270,10 +313,11 @@ export default function NarrativeReview({
     setFixLoadingId(issue.id);
     setFixError('');
     setFixStatusMessage('');
+    const context = captureProposalReviewContext(project);
     try {
       const response = await requestDiagnosticFixSuggestions({
         projectId: project.id,
-        baseRevision: project.revision,
+        baseRevision: context.baseRevision,
         issue: {
           id: issue.id,
           title: issue.title,
@@ -289,13 +333,16 @@ export default function NarrativeReview({
           text: s.text.slice(0, 4_000),
         })),
       });
+      if (currentProjectRef.current.id !== context.projectId) return;
       setFixAlternativesByIssue((prev) => ({
         ...prev,
         [issue.id]: {
-          baseRevision: project.revision,
+          context,
+          source: 'ai',
           alternatives: response.alternatives,
         },
       }));
+      setSelectedFixIds((prev) => ({ ...prev, [issue.id]: response.alternatives[0]?.id ?? '' }));
       setFixStatusMessage(`Loaded ${response.alternatives.length} reviewable AI fix alternative(s). Nothing has been applied.`);
     } catch (cause) {
       setFixError(cause instanceof Error ? cause.message : 'Could not fetch AI fix alternatives.');
@@ -313,21 +360,26 @@ export default function NarrativeReview({
       setSyncError('Server Gemini API key is not configured. Manuscript ↔ Model AI sync requires server credentials.');
       return;
     }
+    const context = captureProposalReviewContext(project);
     setSyncBusy(true);
     setSyncError('');
     setSyncMessage('');
     try {
       const response = await requestNarrativeSyncAnalysis(syncPayload);
+      if (currentProjectRef.current.id !== context.projectId) return;
       setSyncResult({
-        baseRevision: project.revision,
-        manuscriptVersionId: project.snapshot.manuscriptVersionId,
+        context,
         direction: response.direction,
         coverageNote: response.coverageNote,
         modelProposals: response.modelProposals,
         manuscriptPatches: response.manuscriptPatches,
       });
-      onRecordSyncCheckpoint?.(response.direction, response.coverageNote);
-      setSyncMessage(response.coverageNote);
+      if (isProposalReviewContextCurrent(currentProjectRef.current, context)) {
+        onRecordSyncCheckpoint?.(response.direction, response.coverageNote);
+        setSyncMessage(response.coverageNote);
+      } else {
+        setSyncMessage(`Sync finished for revision ${context.baseRevision}, but the project changed while it was running. The proposals are stale and no checkpoint was recorded.`);
+      }
     } catch (cause) {
       setSyncError(cause instanceof Error ? cause.message : 'Sync analysis failed.');
     } finally {
@@ -338,6 +390,7 @@ export default function NarrativeReview({
   const filteredIssues = issues.filter(
     (issue) => dispositionFilter === 'all' || issue.disposition === dispositionFilter
   );
+  const syncResultStale = Boolean(syncResult && !isProposalReviewContextCurrent(project, syncResult.context));
 
   const navigateIssueTarget = (targetId: string) => {
     if (!onNavigateTarget) return;
@@ -496,7 +549,9 @@ export default function NarrativeReview({
             ) : (
               filteredIssues.map((issue) => {
                 const fixEntry = fixAlternativesByIssue[issue.id];
-                const fixesStale = Boolean(fixEntry && fixEntry.baseRevision !== project.revision);
+                const fixesStale = Boolean(fixEntry && !isProposalReviewContextCurrent(project, fixEntry.context));
+                const selectedFixId = selectedFixIds[issue.id] ?? fixEntry?.alternatives[0]?.id;
+                const selectedFix = fixEntry?.alternatives.find((alternative) => alternative.id === selectedFixId) ?? fixEntry?.alternatives[0];
                 return (
                   <article key={issue.id} className="space-y-2 rounded border border-gray-300 p-3 text-xs dark:border-gray-700">
                     <div className="flex flex-wrap items-start justify-between gap-2">
@@ -511,7 +566,7 @@ export default function NarrativeReview({
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        <button type="button" className={workspaceButton} onClick={() => openFixesForIssue(issue)}>
+                        <button type="button" aria-expanded={fixPanelIssueId === issue.id} className={workspaceButton} onClick={() => openFixesForIssue(issue)}>
                           Suggest Fixes
                         </button>
                       </div>
@@ -543,7 +598,7 @@ export default function NarrativeReview({
                       </blockquote>
                     ))}
 
-                    {/* Fix Suggestions Panel */}
+                    {/* Proposal review remains a preview until an existing guarded mutation is accepted. */}
                     {fixPanelIssueId === issue.id && (
                       <div className="rounded border border-indigo-200 bg-indigo-50/30 p-3 space-y-2.5 dark:border-indigo-900/60 dark:bg-indigo-950/20">
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -566,7 +621,7 @@ export default function NarrativeReview({
                         </div>
                         {fixesStale && (
                           <p role="alert" className="text-amber-800 dark:text-amber-200">
-                            Project revision changed since these fixes were previewed. Re-open Suggest Fixes to refresh.
+                            Project or manuscript revision changed since this proposal was generated. It remains visible for provenance and comparison, but cannot be applied.
                           </p>
                         )}
                         {(!fixEntry || fixEntry.alternatives.length === 0) ? (
@@ -574,46 +629,51 @@ export default function NarrativeReview({
                             No automatic deterministic fix matches this issue. Use &ldquo;Suggest AI Fixes&rdquo; (when AI is configured) or resolve manually via the Jump-to-Target link above.
                           </p>
                         ) : (
-                          fixEntry.alternatives.map((alt) => (
-                            <div key={alt.id} className="rounded border border-gray-300 bg-white p-2.5 space-y-1.5 dark:border-gray-700 dark:bg-gray-900">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <span className="font-semibold">{alt.title}</span>
-                                <span className="text-[11px] text-gray-500">{alt.affectedScope}</span>
-                              </div>
-                              <p>{alt.reason}</p>
-                              {alt.evidenceSummary && <p className="text-[11px] text-gray-600 dark:text-gray-400">Evidence: {alt.evidenceSummary}</p>}
-                              {alt.assumptions.length > 0 && <p className="text-[11px] text-gray-500">Assumptions: {alt.assumptions.join('; ')}</p>}
-                              <div className="grid gap-2 sm:grid-cols-2">
-                                <div className="rounded border border-red-200 bg-red-50/40 p-2 dark:border-red-900/60 dark:bg-red-950/20">
-                                  <div className="font-semibold text-[11px] text-red-800 dark:text-red-300">Before</div>
-                                  <pre className="whitespace-pre-wrap break-words font-mono text-[11px]">{alt.beforeText}</pre>
-                                </div>
-                                <div className="rounded border border-emerald-200 bg-emerald-50/40 p-2 dark:border-emerald-900/60 dark:bg-emerald-950/20">
-                                  <div className="font-semibold text-[11px] text-emerald-800 dark:text-emerald-300">After</div>
-                                  <pre className="whitespace-pre-wrap break-words font-mono text-[11px]">{alt.afterText}</pre>
-                                </div>
-                              </div>
-                              {alt.kind !== 'manual_guidance' && onApplyDiagnosticFix && (
-                                <button
-                                  type="button"
-                                  disabled={fixesStale}
-                                  onClick={async () => {
-                                    const res = await onApplyDiagnosticFix(issue.id, alt, fixEntry.baseRevision);
-                                    if (res.ok) {
-                                      setFixStatusMessage(res.message);
-                                      setFixError('');
-                                      setFixPanelIssueId(null);
-                                    } else {
-                                      setFixError(res.message);
-                                    }
-                                  }}
-                                  className="rounded bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-45"
+                          <>
+                            {fixEntry.alternatives.length > 1 && (
+                              <label className="block max-w-md space-y-1 text-xs">
+                                <span className="font-medium">Choose a proposal to inspect</span>
+                                <select
+                                  value={selectedFix?.id ?? ''}
+                                  onChange={(event) => setSelectedFixIds((previous) => ({ ...previous, [issue.id]: event.target.value }))}
+                                  className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-950"
                                 >
-                                  Apply Selected Fix
-                                </button>
-                              )}
-                            </div>
-                          ))
+                                  {fixEntry.alternatives.map((alternative) => <option key={alternative.id} value={alternative.id}>{alternative.title}</option>)}
+                                </select>
+                              </label>
+                            )}
+                            {selectedFix && (
+                              <ProposalReviewPanel
+                                project={project}
+                                issue={issue}
+                                alternative={selectedFix}
+                                context={fixEntry.context}
+                                source={fixEntry.source}
+                                stale={fixesStale}
+                                onAccept={onApplyDiagnosticFix && !fixesStale && selectedFix.kind !== 'manual_guidance'
+                                  ? async () => {
+                                      if (!isProposalReviewContextCurrent(currentProjectRef.current, fixEntry.context)) {
+                                        setFixError('The project changed while this proposal was open. It remains unapplied; refresh before trying again.');
+                                        return;
+                                      }
+                                      const res = await onApplyDiagnosticFix(issue.id, selectedFix, fixEntry.context.baseRevision);
+                                      if (res.ok) {
+                                        setFixStatusMessage(res.message);
+                                        setFixError('');
+                                        setFixPanelIssueId(null);
+                                      } else {
+                                        setFixError(res.message);
+                                      }
+                                    }
+                                  : undefined}
+                                onKeepCurrent={() => setFixStatusMessage(`Current text is unchanged. The suggestion remains unapplied and the tracked issue remains ${issue.disposition}.`)}
+                                onRefreshLocal={() => openFixesForIssue(issue)}
+                                onReturnToWriting={onReturnToWriting}
+                                onOpenTarget={navigateIssueTarget}
+                                onOpenHistory={openHistory}
+                              />
+                            )}
+                          </>
                         )}
                       </div>
                     )}
@@ -726,9 +786,9 @@ export default function NarrativeReview({
 
           {syncResult && (
             <div className="space-y-3 pt-2 text-xs">
-              {syncResult.baseRevision !== project.revision && (
+              {syncResultStale && (
                 <p role="alert" className="rounded border border-amber-400 bg-amber-50 p-2 text-amber-900 dark:bg-amber-950/60 dark:text-amber-200">
-                  Project revision changed since sync ran (r{syncResult.baseRevision} → r{project.revision}). Re-run sync before applying proposals.
+                  Project or manuscript content changed since sync ran (base r{syncResult.context.baseRevision} → current r{project.revision}). These proposals remain visible for provenance but cannot be applied. Re-run sync to create proposals for the current revision.
                 </p>
               )}
               {syncResult.modelProposals.map((prop) => (
@@ -743,9 +803,9 @@ export default function NarrativeReview({
                   {prop.kind !== 'ambiguity' && onApplyModelSyncProposal && (
                     <button
                       type="button"
-                      disabled={syncResult.baseRevision !== project.revision}
+                      disabled={syncResultStale}
                       onClick={async () => {
-                        const res = await onApplyModelSyncProposal(prop, syncResult.baseRevision);
+                        const res = await onApplyModelSyncProposal(prop, syncResult.context.baseRevision);
                         setSyncMessage(res.ok ? res.message : '');
                         setSyncError(res.ok ? '' : res.message);
                       }}
@@ -781,9 +841,9 @@ export default function NarrativeReview({
                     {onApplyManuscriptSyncPatch && (
                       <button
                         type="button"
-                        disabled={!binding.ok || syncResult.baseRevision !== project.revision}
+                        disabled={!binding.ok || syncResultStale}
                         onClick={async () => {
-                          const res = await onApplyManuscriptSyncPatch(patch, syncResult.baseRevision, syncResult.manuscriptVersionId);
+                          const res = await onApplyManuscriptSyncPatch(patch, syncResult.context.baseRevision, syncResult.context.manuscriptVersionId);
                           setSyncMessage(res.ok ? res.message : '');
                           setSyncError(res.ok ? '' : res.message);
                         }}
