@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import ManuscriptEditor, { workspaceButton } from './components/manuscript/ManuscriptEditor';
+import ManuscriptEditor from './components/manuscript/ManuscriptEditor';
 import ProjectHub from './components/workspace/ProjectHub';
 import NarrativeReview from './components/workspace/NarrativeReview';
 import ImportWorkflow from './components/narrativeImport/ImportWorkflow';
@@ -29,6 +29,7 @@ import { useProjectPersistence } from './lib/controller/useProjectPersistence';
 import { sameProjectVersion } from './lib/controller/projectListSync';
 import StorageAlertBanner, { type StorageConflictAlert } from './components/workspace/StorageAlertBanner';
 import ReviewDiffModal from './components/workspace/ReviewDiffModal';
+import { readBrowserWorkspacePreference, writeBrowserWorkspacePreference } from './lib/workspacePreference';
 import {
   applyDiagnosticFixAlternative,
   collectLocalDiagnosticFindings,
@@ -200,7 +201,8 @@ function App() {
   const [adoptArtifactId, setAdoptArtifactId] = useState<string>();
   const [focusedSectionId, setFocusedSectionId] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<{ id: string; sequence: number } | null>(null);
-  const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects' | 'import'>('plan');
+  const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects' | 'import'>(readBrowserWorkspacePreference);
+  const lastStableWorkspaceModeRef = useRef<'write' | 'plan' | 'review'>(workspaceMode === 'projects' || workspaceMode === 'import' ? 'write' : workspaceMode);
   const [aiConfigured, setAiConfigured] = useState<boolean>(false);
   const autoAnalysisCallCount = useRef(0);
   const [autoAnalysisCallsUsed, setAutoAnalysisCallsUsed] = useState<number>(0);
@@ -224,6 +226,12 @@ function App() {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState<boolean>(false);
   const [statusNotification, setStatusNotification] = useState<string | null>(null);
   const [storageAlert, setStorageAlert] = useState<StorageConflictAlert | null>(null);
+
+  useEffect(() => {
+    if (workspaceMode === 'projects' || workspaceMode === 'import') return;
+    lastStableWorkspaceModeRef.current = workspaceMode;
+    writeBrowserWorkspacePreference(workspaceMode);
+  }, [workspaceMode]);
 
   function allowNavigation(): boolean {
     if (!draftDirtyRef.current && !restorePendingRef.current) return true;
@@ -606,10 +614,10 @@ function App() {
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
-      document.body.style.backgroundColor = '#0d1117';
+      document.body.style.backgroundColor = '#1b191c';
     } else {
       document.documentElement.classList.remove('dark');
-      document.body.style.backgroundColor = '#f3f4f6';
+      document.body.style.backgroundColor = '#f8f7f3';
     }
   }, [isDarkMode]);
 
@@ -2111,6 +2119,7 @@ function App() {
     }
 
     setCachedProjectSelection(newProj.id);
+    setWorkspaceMode('write');
     void flushProjectDurably(newProj, { expectedBaseProject: null });
   };
 
@@ -2215,6 +2224,7 @@ function App() {
       savedProjectsRef.current = nextSaved;
       setSavedProjects(nextSaved);
       selectProject(saved, migratedUndo);
+      if (!replace) setWorkspaceMode('write');
       setSelectedEntityId(null);
       setSelectedRelationshipId(null);
       setStoryBibleErrors({});
@@ -2316,14 +2326,20 @@ function App() {
     <div
       className={`${
         isDarkMode ? 'dark' : ''
-      } font-sans h-screen flex flex-col bg-gray-100 dark:bg-gray-950 text-gray-900 dark:text-gray-100 transition-colors duration-150 overflow-hidden`}
+      } pcc-shell font-sans h-screen flex flex-col text-gray-900 dark:text-gray-100 transition-colors duration-150 overflow-hidden`}
     >
       <Header
         isDarkMode={isDarkMode}
         toggleDarkMode={() => setIsDarkMode((prev) => !prev)}
         onShowInfo={() => setShowInfoModal(true)}
-        onSelectSection={handleSelectHeaderSection}
         onLoadSampleProject={handleResetSampleProject}
+        project={activeProject}
+        projects={savedProjects}
+        onSwitchProject={handleSwitchProject}
+        onNewProject={() => openPlan('history', 'project-management')}
+        onOpenImport={() => { if (allowNavigation()) setWorkspaceMode('import'); }}
+        importDisabled={!hydrationSettled}
+        onOpenProjects={() => { if (allowNavigation()) setWorkspaceMode('projects'); }}
       />
 
       <StorageAlertBanner
@@ -2337,12 +2353,19 @@ function App() {
         onDismissStatusNotification={() => setStatusNotification(null)}
       />
 
-      <nav aria-label="Narrative workspace" className="flex flex-wrap gap-1 border-b border-gray-200 bg-white px-2 py-1.5 dark:border-gray-800 dark:bg-gray-900 sm:px-4">
-        {([['write', 'Write'], ['plan', 'Plan'], ['review', 'Review'], ['import', 'Import Story'], ['projects', 'Projects']] as const).map(([mode, label]) => (
-          <button type="button" key={mode} aria-current={workspaceMode === mode ? 'page' : undefined} disabled={mode === 'import' && !hydrationSettled}
-            className={`${workspaceButton} aria-[current=page]:bg-amber-100 dark:aria-[current=page]:bg-amber-950`}
-            onClick={() => { if (allowNavigation()) { setAdoptArtifactId(undefined); setWorkspaceMode(mode); } }}>{label}</button>
-        ))}
+      <nav aria-label="Narrative workspace" className="flex flex-wrap items-center gap-1 border-b border-pcc-line bg-pcc-surface px-3 py-2 dark:border-pcc-dark-line dark:bg-pcc-dark-surface sm:px-5">
+        <div className="inline-flex rounded-lg border border-pcc-line bg-pcc-canvas p-0.5 dark:border-pcc-dark-line dark:bg-pcc-dark-canvas" role="group" aria-label="Workspace mode">
+          {([['write', 'Write'], ['plan', 'Plan'], ['review', 'Review']] as const).map(([mode, label]) => (
+            <button type="button" key={mode} aria-current={workspaceMode === mode ? 'page' : undefined}
+              className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted transition-colors hover:text-pcc-ink aria-[current=page]:bg-pcc-surface aria-[current=page]:text-pcc-action aria-[current=page]:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:text-pcc-dark-ink dark:aria-[current=page]:bg-pcc-dark-surface dark:aria-[current=page]:text-pcc-dark-ink"
+              onClick={() => { if (allowNavigation()) { setAdoptArtifactId(undefined); setWorkspaceMode(mode); } }}>{label}</button>
+          ))}
+        </div>
+        <div className="ml-auto flex flex-wrap justify-end gap-1 sm:hidden">
+          <button type="button" className="min-h-11 rounded-md bg-pcc-action px-2.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus" onClick={() => openPlan('history', 'project-management')}>New</button>
+          <button type="button" disabled={!hydrationSettled} className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45" onClick={() => { if (allowNavigation()) setWorkspaceMode('import'); }}>Import</button>
+          <button type="button" className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus" onClick={() => { if (allowNavigation()) setWorkspaceMode('projects'); }}>Projects</button>
+        </div>
       </nav>
 
       {workspaceMode === 'write' && (
@@ -2399,7 +2422,7 @@ function App() {
           aiConfigured={aiConfigured}
           onCreateProject={handleCreateImportedProject}
           onAppendToExistingProject={handleAppendToExistingProject}
-          onCancelImport={() => setWorkspaceMode('plan')}
+          onCancelImport={() => setWorkspaceMode(lastStableWorkspaceModeRef.current)}
         />
       )}
       {workspaceMode === 'projects' && (

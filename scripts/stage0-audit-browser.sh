@@ -100,11 +100,22 @@ async (page) => {
     const t0 = Date.now();
     const ctx = await browser.newContext({ viewport: opts.viewport || { width: 1440, height: 900 } });
     const proj = fixtureKey ? FIXTURES[fixtureKey] : null;
-    await ctx.addInitScript(({ p, failIdb }) => {
+    await ctx.addInitScript(({ p, failIdb, trackIdbWrites, workspaceMode }) => {
       if (p && !sessionStorage.getItem('__stage0_seeded')) {
         sessionStorage.setItem('__stage0_seeded', '1');
         localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [p.id]: p }));
         localStorage.setItem('proactive_co_creator_active_id_v2', p.id);
+      }
+      if (workspaceMode) {
+        localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: workspaceMode }));
+      }
+      if (trackIdbWrites) {
+        window.__j10IdbWriteCount = 0;
+        const originalPut = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (...args) {
+          window.__j10IdbWriteCount += 1;
+          return originalPut.apply(this, args);
+        };
       }
       if (failIdb) {
         window.__idbPuts = 0;
@@ -123,7 +134,7 @@ async (page) => {
           return origGetAll.apply(this, a);
         };
       }
-    }, { p: proj, failIdb: Boolean(opts.failIdb) });
+    }, { p: proj, failIdb: Boolean(opts.failIdb), trackIdbWrites: Boolean(opts.trackIdbWrites), workspaceMode: opts.workspaceMode ?? 'plan' });
 
     const p = await ctx.newPage();
     const pageErrors = [];
@@ -217,6 +228,9 @@ async (page) => {
       },
     },
   }, async (p) => {
+    const writeIsInitialWorkspace = await p.getByRole('button', { name: 'Write', exact: true }).getAttribute('aria-current');
+    if (writeIsInitialWorkspace !== 'page') throw new Error('First launch did not open the Write workspace.');
+    await p.getByRole('button', { name: 'Plan', exact: true }).click();
     const ideaBox = p.locator('textarea').first();
     const initialVal = await ideaBox.inputValue();
     await ideaBox.fill('An apprentice Clockmaker repairs brass chimes inside a foggy Bell Tower.');
@@ -227,14 +241,14 @@ async (page) => {
       status: 'PASS',
       clicks: 2,
       steps: ['Seed FX-EMPTY', 'Fill idea textarea', 'Click Reanalyze Idea', 'Verify Clockmaker node + clarification render'],
-      evidence: { initialEmptyTextareaValue: initialVal, clockmakerRendered: true, clarificationRendered: hasClarif },
+      evidence: { initialWorkspace: 'write', initialEmptyTextareaValue: initialVal, clockmakerRendered: true, clarificationRendered: hasClarif },
       friction: [
         initialVal ? `Blank workspace pre-populated textarea with "${initialVal}" instead of empty placeholder` : '',
         'Empty graph canvas has no empty-state prompt/CTA guiding first-time users to click Reanalyze Idea',
         'Action button reads "Reanalyze Idea" even on an unanalyzed empty project',
       ].filter(Boolean),
     };
-  });
+  }, { workspaceMode: false });
 
   // J02: Review inferred attribute/relationship -> Accept/Reject/Defer -> inspect target
   await runJourney('J02', 'Decision Inbox Accept/Reject/Defer & Inspect target', 'FX-SIMPLE', {}, async (p) => {
@@ -491,6 +505,8 @@ async (page) => {
     await p.getByLabel('New project title').fill('Project Alpha J09');
     await p.getByLabel('New project initial prompt').fill('Alpha lighthouse mystery');
     await p.getByRole('button', { name: 'Create Project' }).click();
+    const newProjectOpenedInWrite = await p.getByRole('button', { name: 'Write', exact: true }).getAttribute('aria-current') === 'page';
+    await p.getByRole('button', { name: 'Plan', exact: true }).click();
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     await p.locator('#bible-genre').fill('Maritime Noir');
     await p.getByRole('tab', { name: 'History' }).click();
@@ -510,16 +526,19 @@ async (page) => {
     });
     await p.locator('input[placeholder*="paste raw project JSON" i]').fill(importPayload);
     await p.getByRole('button', { name: 'Preview JSON' }).click();
+    const exportPromptLocator = p.getByRole('button', { name: /Export Refined Prompt/i });
+    const exportPromptBtnText = await exportPromptLocator.count() ? await exportPromptLocator.first().textContent() : 'Not present in this state';
     await p.getByRole('button', { name: 'Restore a copy' }).click();
-    await p.getByText('Restored project copy saved.', { exact: true }).waitFor();
+    await p.waitForFunction(() => document.querySelector('nav[aria-label="Narrative workspace"] button[aria-current="page"]')?.textContent === 'Write');
     await p.waitForTimeout(200);
-    const importedVisible = await p.getByText(/Imported J09 World \(restored copy\)/).first().isVisible();
-    const exportPromptBtnText = await p.getByRole('button', { name: /Export Refined Prompt/i }).textContent();
+    const restoredProjectOpenedInWrite = await p.getByRole('button', { name: 'Write', exact: true }).getAttribute('aria-current') === 'page';
+    const restoredProjectName = (await p.getByRole('combobox', { name: 'Current project' }).locator('option:checked').textContent())?.trim() ?? '';
+    const importedVisible = restoredProjectName === 'Imported J09 World (restored copy)';
     return {
-      status: survivedGenre === 'Maritime Noir' && importedVisible ? 'PASS' : 'FAIL',
+      status: newProjectOpenedInWrite && survivedGenre === 'Maritime Noir' && restoredProjectOpenedInWrite && importedVisible ? 'PASS' : 'FAIL',
       clicks: 8,
       steps: ['Open History', 'Create Project Alpha J09', 'Edit genre', 'Switch away & back', 'Reload & verify', 'Preview and restore JSON as a copy via paste'],
-      evidence: { survivedGenre, importedVisible, exportPromptBtnText: (exportPromptBtnText || '').trim() },
+      evidence: { newProjectOpenedInWrite, survivedGenre, restoredProjectOpenedInWrite, restoredProjectName, importedVisible, exportPromptBtnText: (exportPromptBtnText || '').trim() },
       friction: [
         'Project creation/switching/export/import are buried inside the right-side "History" tab instead of a top-level project selector',
         'Export button reads "Export Refined Prompt (.txt)" while App.tsx downloads refined-prompt.md (Markdown)',
@@ -529,25 +548,46 @@ async (page) => {
 
   // J10: Open Checks -> navigate to affected entity & Story Bible field -> verify 0 revision bump
   await runJourney('J10', 'Consistency Checks navigation to entity & Story Bible field without revision bump', 'FX-BUSY', {}, async (p) => {
-    const revBefore = (await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1];
+    await p.waitForFunction(() => /\d+\s+revs?/.test(document.querySelector('footer')?.textContent || ''));
+    const revBefore = Number((await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1]);
+    if (!Number.isInteger(revBefore) || revBefore < 1) throw new Error(`Invalid starting revision: ${revBefore}`);
+    await p.waitForFunction(() => {
+      const current = window.__j10IdbWriteCount;
+      if (window.__j10LastWriteCount === current) {
+        window.__j10StableWriteFrames = (window.__j10StableWriteFrames || 0) + 1;
+      } else {
+        window.__j10LastWriteCount = current;
+        window.__j10StableWriteFrames = 0;
+      }
+      return window.__j10StableWriteFrames >= 2;
+    });
+    const idbWritesBefore = await p.evaluate(() => window.__j10IdbWriteCount);
     await p.getByRole('tab', { name: /Checks/ }).click();
     await p.getByRole('button', { name: 'Inspect Fox' }).click();
-    const inspSelected = await p.getByRole('tab', { name: 'Inspector' }).getAttribute('aria-selected');
+    await p.getByRole('heading', { name: 'Fox', exact: true }).waitFor();
+    const foxSelected = await p.getByRole('heading', { name: 'Fox', exact: true }).isVisible();
     await p.getByRole('tab', { name: /Checks/ }).click();
-    await p.getByRole('button', { name: 'Edit Tone' }).click();
-    await p.waitForTimeout(120);
+    const openTone = p.getByRole('button', { name: 'Open Tone field' });
+    const openToneCount = await openTone.count();
+    if (openToneCount !== 1) throw new Error(`Expected one accessible Tone navigation action; found ${openToneCount}`);
+    await openTone.click();
+    await p.waitForFunction(() => document.activeElement?.id === 'bible-tone');
     const focusedId = await p.evaluate(() => document.activeElement?.id || '');
-    const revAfter = (await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1];
+    const toneFieldVisible = await p.locator('#bible-tone').isVisible();
+    const storyBibleSelected = await p.getByRole('tab', { name: 'Story Bible' }).getAttribute('aria-selected');
+    const revAfter = Number((await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1]);
+    const idbWritesAfter = await p.evaluate(() => window.__j10IdbWriteCount);
     return {
-      status: inspSelected === 'true' && focusedId === 'bible-tone' && revBefore === revAfter ? 'PASS' : 'FAIL',
+      status: foxSelected && focusedId === 'bible-tone' && toneFieldVisible && storyBibleSelected === 'true' &&
+        Number.isInteger(revAfter) && revBefore === revAfter && idbWritesBefore === idbWritesAfter ? 'PASS' : 'FAIL',
       clicks: 4,
-      steps: ['Open Checks tab', 'Click Inspect Fox', 'Return to Checks', 'Click Edit Tone'],
-      evidence: { revBefore, revAfter, inspSelected, focusedId },
+      steps: ['Open Checks tab', 'Click Inspect Fox', 'Verify Fox is selected in Inspector', 'Return to Checks', 'Open Tone readiness field'],
+      evidence: { revBefore, revAfter, foxSelected, toneFieldVisible, storyBibleSelected, focusedId, idbWritesBefore, idbWritesAfter, openToneCount },
       friction: [
         'After navigating from Checks to Inspector/Story Bible, there is no explicit "Back to Checks" breadcrumb; user must re-click the Checks tab',
       ],
     };
-  });
+  }, { trackIdbWrites: true });
 
   // J11: IndexedDB read_error -> 0 unsolicited IDB puts -> Retry recovery + failed API error banner
   await runJourney('J11', 'IndexedDB read_error write gate, recovery & failed generation error feedback', 'FX-SIMPLE', {
@@ -634,6 +674,7 @@ async (page) => {
       await ctx.addInitScript((proj) => {
         localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [proj.id]: proj }));
         localStorage.setItem('proactive_co_creator_active_id_v2', proj.id);
+        localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
       }, FIXTURES['FX-BUSY']);
       const p = await ctx.newPage();
       await p.route('**/api/**', (r) => r.fulfill({ status: 500, body: '{}' }));
@@ -702,6 +743,7 @@ async (page) => {
     await ctx.addInitScript((proj) => {
       localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [proj.id]: proj }));
       localStorage.setItem('proactive_co_creator_active_id_v2', proj.id);
+      localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
     }, FIXTURES['FX-BUSY']);
     const p = await ctx.newPage();
     await p.route('**/api/**', (r) => r.fulfill({ status: 500, body: '{}' }));
@@ -752,8 +794,8 @@ async (page) => {
         const genBtn = Array.from(document.querySelectorAll('footer button')).find((b) => /Generate/i.test(b.textContent || ''));
         const outdatedBox = Array.from(document.querySelectorAll('div')).find((d) => (d.textContent || '').includes('Story plan has been updated since'));
         const probes = [
-          { name: 'Header brand title', el: document.querySelector('header button') },
-          { name: 'Header inactive nav', el: document.querySelector('header nav button:nth-child(2)') },
+          { name: 'Header brand title', el: document.querySelector('header a') },
+          { name: 'Inactive workspace mode', el: document.querySelector('nav[aria-label="Narrative workspace"] button:not([aria-current="page"])') },
           { name: 'Primary Generate CTA', el: genBtn },
           { name: '12px metadata / helper text', el: document.querySelector('[aria-label="Creative Decisions and Batch Editor"] .text-xs') },
           { name: '11px link ("Try sample batch")', el: Array.from(document.querySelectorAll('button')).find((b) => (b.textContent || '').trim() === 'Try sample batch') },
@@ -804,19 +846,19 @@ async (page) => {
       return { headings, unnamedControlsCount: unnamedControls.length, unnamedControls, tablists };
     });
 
-    // Test Header activeSection live behavior
-    await p.locator('header nav').getByRole('button', { name: 'Story Bible' }).click();
+    // Test primary workspace mode and contextual Story Bible tab state
+    await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan', exact: true }).click();
+    const storyBibleTab = p.getByRole('tab', { name: 'Story Bible' });
+    await storyBibleTab.click();
     await p.waitForTimeout(150);
     const headerActiveAfterStoryBible = await p.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('header nav button'));
-      return btns.map((b) => ({
-        label: (b.textContent || '').trim(),
-        hasBlueActiveStyle: b.className.includes('text-blue-600') || b.className.includes('border-blue'),
-      }));
+      const plan = document.querySelector('nav[aria-label="Narrative workspace"] button[aria-current="page"]');
+      const bible = document.querySelector('[role="tablist"] [role="tab"][aria-selected="true"]');
+      return { activeMode: plan?.textContent?.trim() ?? '', selectedContextTab: bible?.textContent?.trim() ?? '' };
     });
 
     // Test InfoModal ("About") keyboard focus placement and Escape return
-    const aboutBtn = p.locator('header nav').getByRole('button', { name: 'About' });
+    const aboutBtn = p.getByRole('banner').getByRole('button', { name: 'About', exact: true });
     await aboutBtn.focus();
     await aboutBtn.click();
     await p.waitForTimeout(150);
@@ -916,6 +958,7 @@ async (page) => {
       await ctx.addInitScript((pData) => {
         localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [pData.id]: pData }));
         localStorage.setItem('proactive_co_creator_active_id_v2', pData.id);
+        localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
       }, proj);
       const p = await ctx.newPage();
       await p.route('**/api/**', (r) => r.fulfill({ status: 500, body: '{}' }));

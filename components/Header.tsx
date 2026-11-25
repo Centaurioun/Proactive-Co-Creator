@@ -4,6 +4,7 @@
  */
 
 import React from 'react';
+import type { CreativeProject } from '../shared/types';
 
 export type WorkspaceSection = 'workspace' | 'story-bible' | 'output' | 'history';
 
@@ -11,98 +12,73 @@ interface HeaderProps {
   isDarkMode: boolean;
   toggleDarkMode: () => void;
   onShowInfo: () => void;
-  activeSection?: WorkspaceSection;
-  onSelectSection?: (section: WorkspaceSection) => void;
   onLoadSampleProject?: () => void;
+  project?: CreativeProject;
+  projects?: CreativeProject[];
+  onSwitchProject?: (projectId: string) => void;
+  onNewProject?: () => void;
+  onOpenImport?: () => void;
+  importDisabled?: boolean;
+  onOpenProjects?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({
   isDarkMode,
   toggleDarkMode,
   onShowInfo,
-  activeSection = 'workspace',
-  onSelectSection,
   onLoadSampleProject,
+  project,
+  projects = [],
+  onSwitchProject,
+  onNewProject,
+  onOpenImport,
+  importDisabled = false,
+  onOpenProjects,
 }) => {
+  const projectOptions = projects.some((item) => item.id === project?.id)
+    ? projects
+    : project
+      ? [...projects, project]
+      : projects;
+
   return (
-    <header className="bg-white dark:bg-gray-900 px-5 py-3 flex justify-between items-center gap-8 border-b border-gray-200 dark:border-gray-800 transition-colors duration-150 flex-shrink-0">
-      {/* Zone 1: Single text element Brand wordmark */}
-      <a
-        href="#workspace"
-        onClick={(e) => {
-          e.preventDefault();
-          onSelectSection?.('workspace');
-        }}
-        className="font-display text-lg font-bold tracking-tight text-gray-900 dark:text-gray-100 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded"
-      >
-        Proactive Co-Creator
-      </a>
+    <header className="border-b border-pcc-line bg-pcc-surface px-3 py-2.5 text-pcc-ink dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink transition-colors duration-150 flex-shrink-0 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <a
+            href="#workspace"
+            className="font-display text-sm font-bold tracking-tight whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus rounded"
+          >
+            PCC
+          </a>
+          {project && (
+            <label className="flex min-w-0 items-center gap-2 border-l border-pcc-line pl-3 text-xs dark:border-pcc-dark-line">
+              <span className="sr-only">Current project</span>
+              <select
+                aria-label="Current project"
+                value={project.id}
+                onChange={(event) => onSwitchProject?.(event.target.value)}
+                className="min-h-11 max-w-[min(42vw,16rem)] truncate rounded-md border border-pcc-line bg-transparent px-2 py-1.5 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line sm:max-w-64"
+              >
+                {projectOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              <span className="hidden text-pcc-muted dark:text-pcc-dark-muted sm:inline" aria-live="polite">
+                {project.persistedRevision === project.revision ? 'Saved' : 'Unsaved'} · r{project.revision}
+              </span>
+            </label>
+          )}
+        </div>
 
-      {/* Zone 2: 4–5 clean single-line text navigation links */}
-      <nav
-        aria-label="Workspace navigation"
-        className="hidden md:flex items-center gap-6 text-sm font-medium text-gray-600 dark:text-gray-300"
-      >
-        <button
-          type="button"
-          onClick={() => onSelectSection?.('workspace')}
-          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
-            activeSection === 'workspace'
-              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
-              : 'hover:underline'
-          }`}
-        >
-          Workspace
-        </button>
-        <button
-          type="button"
-          onClick={() => onSelectSection?.('story-bible')}
-          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
-            activeSection === 'story-bible'
-              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
-              : 'hover:underline'
-          }`}
-        >
-          Story Bible
-        </button>
-        <button
-          type="button"
-          onClick={() => onSelectSection?.('output')}
-          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
-            activeSection === 'output'
-              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
-              : 'hover:underline'
-          }`}
-        >
-          Prompt &amp; Output
-        </button>
-        <button
-          type="button"
-          onClick={() => onSelectSection?.('history')}
-          className={`hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 underline-offset-4 ${
-            activeSection === 'history'
-              ? 'text-blue-600 dark:text-blue-400 underline font-semibold'
-              : 'hover:underline'
-          }`}
-        >
-          Revision History
-        </button>
-        <button
-          type="button"
-          onClick={onShowInfo}
-          className="hover:text-gray-900 dark:hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
-        >
-          About
-        </button>
-      </nav>
-
-      {/* Zone 3: Primary action & theme switch */}
-      <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
+        {onNewProject && <button type="button" onClick={onNewProject} className="hidden min-h-11 rounded-md bg-pcc-action px-3 text-xs font-semibold text-white hover:bg-pcc-action-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex">+ New</button>}
+        {onOpenImport && <button type="button" disabled={importDisabled} onClick={onOpenImport} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45 sm:inline-flex dark:hover:bg-pcc-dark-canvas">Import</button>}
+        {onOpenProjects && <button type="button" onClick={onOpenProjects} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">Projects</button>}
+        <button type="button" onClick={onShowInfo} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">About</button>
         {onLoadSampleProject && (
           <button
             type="button"
             onClick={onLoadSampleProject}
-            className="hidden sm:inline-flex items-center px-3.5 py-2 min-h-[38px] text-xs font-semibold text-gray-800 dark:text-gray-100 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="hidden"
           >
             Reset Sample Plan
           </button>
@@ -111,13 +87,14 @@ const Header: React.FC<HeaderProps> = ({
         <button
           type="button"
           onClick={toggleDarkMode}
-          className="min-w-[38px] min-h-[38px] px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 flex items-center justify-center text-xs font-medium whitespace-nowrap shrink-0"
+          className="min-h-11 rounded-md border border-pcc-line px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line dark:hover:bg-pcc-dark-canvas"
           title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
           aria-pressed={isDarkMode}
         >
           {isDarkMode ? 'Light Theme' : 'Dark Theme'}
         </button>
+        </div>
       </div>
     </header>
   );

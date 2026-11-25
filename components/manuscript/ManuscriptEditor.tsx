@@ -10,8 +10,8 @@ import ManuscriptOutlineSidebar from './ManuscriptOutlineSidebar';
 import StyleProfilePanel from './StyleProfilePanel';
 import type { WritingAssistAction } from '../../shared/narrativeAiSchemas';
 
-export const workspaceButton = 'rounded-md border border-gray-300 px-3 py-1.5 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800 disabled:opacity-45';
-const field = 'w-full rounded-md border border-gray-300 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-950';
+export const workspaceButton = 'min-h-10 rounded-md border border-pcc-line bg-pcc-surface px-3 py-2 text-sm font-medium text-pcc-ink transition-colors hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45 dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink dark:hover:bg-pcc-dark-canvas';
+const field = 'w-full rounded-md border border-pcc-line bg-pcc-surface px-3 py-2 text-pcc-ink focus-visible:outline-none dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink';
 
 interface Props {
   project: CreativeProject;
@@ -156,8 +156,8 @@ export default function ManuscriptEditor({
   }
 
   return (
-    <main className="min-h-0 flex-1 overflow-auto bg-stone-100 dark:bg-gray-950">
-      <div className={`mx-auto grid max-w-7xl gap-4 p-3 sm:p-6 ${focus ? '' : 'lg:grid-cols-[14rem_minmax(0,1fr)]'}`}>
+    <main className="min-h-0 flex-1 overflow-auto bg-pcc-canvas dark:bg-pcc-dark-canvas">
+      <div className={`mx-auto grid max-w-[1600px] gap-4 p-3 sm:p-6 ${focus ? 'max-w-[82ch]' : 'lg:grid-cols-[15rem_minmax(0,1fr)]'}`}>
         {!focus && (
           <button type="button" className={`${workspaceButton} justify-self-start lg:hidden`}
             onClick={() => setOutlineOpen(!outlineOpen)} aria-controls="manuscript-outline" aria-expanded={outlineOpen}>
@@ -190,10 +190,10 @@ export default function ManuscriptEditor({
             }}
           />
         )}
-        <article className="min-w-0 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900 sm:p-6">
+        <article className="min-w-0 rounded-xl border border-pcc-line bg-pcc-surface p-4 dark:border-pcc-dark-line dark:bg-pcc-dark-surface sm:p-6">
           <header className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
-              <h1 className="font-display text-2xl font-bold">Working Manuscript</h1>
+              <h1 className="font-display text-xl font-semibold tracking-tight">Working Manuscript</h1>
               <p className="break-words text-sm text-gray-600 dark:text-gray-300">{project.name} · {words} words</p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -230,48 +230,6 @@ export default function ManuscriptEditor({
               busy={saving} onCancel={() => { setAdopting(false); setDraft(null); setError(''); onDirty(false); }}
               onApply={(next, anchor, base) => void save(base, next, anchor)} />
           )}
-          <StyleProfilePanel
-            projectId={project.id}
-            styleVersionKey={styleVersionKey}
-            selectedSection={selected}
-            styleSources={styleSources}
-            styleProfile={styleProfile}
-            styleProfileDirty={styleProfileDirty}
-            enabled={enabled}
-            saving={saving}
-            isComposing={isComposing}
-            buttonClassName={workspaceButton}
-            fieldClassName={field}
-            onChangeStyleProfile={setStyleProfile}
-            onMarkDirty={() => onDirty(true)}
-            onSaveStyleProfile={() =>
-              void save(
-                draft?.base ?? narrativeBase(project),
-                draft?.sections ?? sections,
-                draft?.artifact,
-                styleProfile
-              )
-            }
-          />
-          <WritingAssistantPanel
-            project={project}
-            section={selected}
-            selectionStart={selectionRange.start}
-            selectionEnd={selectionRange.end}
-            aiConfigured={aiConfigured}
-            disabled={!enabled || saving || adopting}
-            onReplaceOrInsert={(nextText) => {
-              if (selected) {
-                update({ text: nextText });
-              }
-            }}
-            onCreateSceneFromProposal={(title, text) => {
-              const newSec: ManuscriptSection = { id: crypto.randomUUID(), kind: 'scene', title, text };
-              operate({ kind: 'add', section: newSec });
-              setSelectedId(newSec.id);
-            }}
-            onSaveAlternative={(alt) => onSaveWritingAlternative?.(alt)}
-          />
           <fieldset className="min-w-0 space-y-3" disabled={!enabled || adopting}>
             {selected ? (
               <label className="block text-sm">
@@ -288,9 +246,9 @@ export default function ManuscriptEditor({
                 </button>
               </div>
               {previewSection ? (
-                <pre aria-label="Section preview" className="mt-2 min-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-gray-300 bg-stone-50 p-4 font-serif text-lg leading-relaxed dark:border-gray-700 dark:bg-gray-950">{selected?.text || 'Nothing to preview yet.'}</pre>
+                <pre aria-label="Section preview" className="pcc-editorial mt-2 min-h-[56vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-pcc-line bg-pcc-canvas p-5 text-[17px] leading-[1.7] dark:border-pcc-dark-line dark:bg-pcc-dark-canvas">{selected?.text || 'Nothing to preview yet.'}</pre>
               ) : (
-                <textarea ref={textarea} aria-describedby="manuscript-markdown-hint" className={`${field} mt-2 min-h-[40vh] resize-y font-serif text-lg leading-relaxed`}
+                <textarea ref={textarea} aria-describedby="manuscript-markdown-hint" className={`${field} pcc-editorial mt-2 min-h-[56vh] resize-y border-pcc-line bg-pcc-canvas p-5 text-[17px] leading-[1.7] focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line dark:bg-pcc-dark-canvas`}
                   value={selected?.text ?? ''} readOnly={saving} placeholder="Start writing here…"
                   onSelect={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
                   onKeyUp={event => setSelectionRange({ start: event.currentTarget.selectionStart ?? 0, end: event.currentTarget.selectionEnd ?? 0 })}
@@ -362,6 +320,50 @@ export default function ManuscriptEditor({
               </fieldset>
             )}
           </fieldset>
+          <div className="mt-5 grid gap-3 lg:grid-cols-2">
+            <StyleProfilePanel
+              projectId={project.id}
+              styleVersionKey={styleVersionKey}
+              selectedSection={selected}
+              styleSources={styleSources}
+              styleProfile={styleProfile}
+              styleProfileDirty={styleProfileDirty}
+              enabled={enabled}
+              saving={saving}
+              isComposing={isComposing}
+              buttonClassName={workspaceButton}
+              fieldClassName={field}
+              onChangeStyleProfile={setStyleProfile}
+              onMarkDirty={() => onDirty(true)}
+              onSaveStyleProfile={() =>
+                void save(
+                  draft?.base ?? narrativeBase(project),
+                  draft?.sections ?? sections,
+                  draft?.artifact,
+                  styleProfile
+                )
+              }
+            />
+            <WritingAssistantPanel
+              project={project}
+              section={selected}
+              selectionStart={selectionRange.start}
+              selectionEnd={selectionRange.end}
+              aiConfigured={aiConfigured}
+              disabled={!enabled || saving || adopting}
+              onReplaceOrInsert={(nextText) => {
+                if (selected) {
+                  update({ text: nextText });
+                }
+              }}
+              onCreateSceneFromProposal={(title, text) => {
+                const newSec: ManuscriptSection = { id: crypto.randomUUID(), kind: 'scene', title, text };
+                operate({ kind: 'add', section: newSec });
+                setSelectedId(newSec.id);
+              }}
+              onSaveAlternative={(alt) => onSaveWritingAlternative?.(alt)}
+            />
+          </div>
         </article>
       </div>
     </main>

@@ -71,7 +71,7 @@ const PromptInput: React.FC<PromptInputProps> = ({
             ·
           </span>
           <span
-            className={`text-[11px] font-mono tabular-nums whitespace-nowrap ${
+            className={`max-w-[48vw] break-words text-right text-[11px] font-mono tabular-nums leading-tight sm:max-w-none sm:whitespace-nowrap ${
               isOverLimit
                 ? 'text-red-600 dark:text-red-400 font-semibold'
                 : 'text-gray-500 dark:text-gray-400'
