@@ -86,6 +86,25 @@ export function detectDuplicateSourceInProject(
   );
 }
 
+export function appendTargetBase(project: CreativeProject) {
+  return {
+    targetProjectId: project.id,
+    expectedBaseRevision: project.revision,
+    expectedManuscriptVersionId: project.snapshot.manuscriptVersionId ?? '',
+    expectedBaseSnapshotDigest: computeSnapshotDigest(project.snapshot),
+  };
+}
+
+export type AppendTargetBase = ReturnType<typeof appendTargetBase>;
+
+export function matchesAppendTarget(project: CreativeProject, reviewed: AppendTargetBase): boolean {
+  const current = appendTargetBase(project);
+  return current.targetProjectId === reviewed.targetProjectId &&
+    current.expectedBaseRevision === reviewed.expectedBaseRevision &&
+    current.expectedManuscriptVersionId === reviewed.expectedManuscriptVersionId &&
+    current.expectedBaseSnapshotDigest === reviewed.expectedBaseSnapshotDigest;
+}
+
 export interface ApplyAppendParams {
   targetProject: CreativeProject;
   incomingProject: CreativeProject;

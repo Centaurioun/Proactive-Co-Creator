@@ -9,6 +9,7 @@ import {
   type UndoRedoState,
 } from '../historyEngine.ts';
 import type { CreativeProject } from '../../shared/types.ts';
+import { createSampleProject } from '../canonicalModel.ts';
 import { hasRevisionLineage, isAutoSeededUntouchedSample } from './cacheParity.ts';
 
 function ensureUndoStateFromProject(
@@ -265,7 +266,7 @@ export function reconcileHydratedProjectsCore(params: {
  * Pure authoritative source selector used by reloadLatestProjectsFromStorage
  * after conflict resolution or clean reconciliation.
  */
-export function selectReloadActiveProject(params: {
+function selectReloadActiveProject(params: {
   reconciledActive: CreativeProject;
   localMatch: CreativeProject | undefined;
   idbMatch: CreativeProject | undefined;
@@ -295,4 +296,38 @@ export function selectReloadActiveProject(params: {
     undoHistory: winner.undoHistory ?? idbMatch.undoHistory ?? localMatch.undoHistory,
     persistedRevision: idbRev,
   };
+}
+
+export function upsertReloadedProject(projects: CreativeProject[], project: CreativeProject): CreativeProject[] {
+  return projects.some((entry) => entry.id === project.id)
+    ? projects.map((entry) => entry.id === project.id ? project : entry)
+    : [project, ...projects];
+}
+
+export function planStorageReload(params: {
+  localProjects: CreativeProject[];
+  idbProjects: CreativeProject[];
+  targetId?: string | null;
+  inMemoryActive?: CreativeProject;
+  resolution?: 'prefer-idb' | 'prefer-local';
+  deletedSet: ReadonlySet<string>;
+}) {
+  const { localProjects, idbProjects, targetId, inMemoryActive, resolution, deletedSet } = params;
+  const initial = inMemoryActive ??
+    localProjects.find((project) => project.id === targetId) ??
+    idbProjects.find((project) => project.id === targetId) ??
+    localProjects[0] ?? idbProjects[0] ?? createSampleProject();
+  const reconciled = reconcileHydratedProjectsCore({
+    localProjects,
+    idbProjects,
+    activeProject: initial,
+    activeUndoState: createUndoRedoState(initial.snapshot, initial.revisions, initial.undoHistory),
+    hasLocalEditsSinceMount: Boolean(inMemoryActive),
+    ignoreDivergenceConflict: Boolean(resolution),
+    deletedSet,
+  });
+  const localMatch = localProjects.find((project) => project.id === reconciled.activeProject.id);
+  const idbMatch = idbProjects.find((project) => project.id === reconciled.activeProject.id);
+  const chosen = selectReloadActiveProject({ reconciledActive: reconciled.activeProject, localMatch, idbMatch, resolution });
+  return { reconciled, localMatch, idbMatch, chosen };
 }

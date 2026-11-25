@@ -4,6 +4,8 @@
  */
 
 import { getDeletedProjectIds, type IndexedDbLoadStatus } from '../storageEngine.ts';
+import { stableIntentSerialization } from '../storage/casPolicy.ts';
+import { isSnapshotSemanticallyEqual } from '../historyEngine.ts';
 import type { CreativeProject } from '../../shared/types.ts';
 
 /**
@@ -28,25 +30,15 @@ export function upsertProjectInSavedList(
   const existing = filtered[idx];
   const candidateRev = candidate.revision ?? 1;
   const existingRev = existing.revision ?? 1;
-  const maxPersisted = Math.max(
-    candidate.persistedRevision ?? 0,
-    existing.persistedRevision ?? 0
-  );
-  const resolvedPersisted = maxPersisted > 0 ? maxPersisted : undefined;
-
-  let merged: CreativeProject;
-  if (candidateRev > existingRev) {
-    merged = { ...candidate, persistedRevision: resolvedPersisted };
-  } else if (candidateRev < existingRev) {
-    merged = { ...existing, persistedRevision: resolvedPersisted };
-  } else if (candidate.updatedAt >= existing.updatedAt) {
-    merged = { ...candidate, persistedRevision: resolvedPersisted };
-  } else {
-    merged = { ...existing, persistedRevision: resolvedPersisted };
-  }
+  const selected = candidateRev > existingRev ||
+    (candidateRev === existingRev && candidate.updatedAt >= existing.updatedAt) ? candidate : existing;
+  const other = selected === candidate ? existing : candidate;
+  const sameRevisionDiverged = candidateRev === existingRev && !sameProjectVersion(candidate, existing);
+  const inheritedRevision = sameRevisionDiverged ? 0 : other.persistedRevision ?? 0;
+  const persistedRevision = Math.max(selected.persistedRevision ?? 0, inheritedRevision) || undefined;
 
   const next = [...filtered];
-  next[idx] = merged;
+  next[idx] = { ...selected, persistedRevision };
   return next;
 }
 
@@ -89,10 +81,28 @@ export function prepareProjectSwitch(params: {
   };
 }
 
-/**
- * Reconciles an asynchronous durable-save acknowledgement without ever overwriting
- * newer in-memory revisions of either `currentActiveProject` or `savedProjects`.
- */
+export function sameProjectVersion(first: CreativeProject, second: CreativeProject): boolean {
+  if (first === second) return true;
+  return first.id === second.id && first.revision === second.revision &&
+    first.name === second.name &&
+    isSnapshotSemanticallyEqual(first.snapshot, second.snapshot) &&
+    stableIntentSerialization(first.narrative) === stableIntentSerialization(second.narrative) &&
+    stableIntentSerialization(first.artifacts) === stableIntentSerialization(second.artifacts) &&
+    stableIntentSerialization(first.revisions) === stableIntentSerialization(second.revisions) &&
+    stableIntentSerialization(first.undoHistory) === stableIntentSerialization(second.undoHistory);
+}
+
+function acknowledges(project: CreativeProject, committed: CreativeProject): boolean {
+  if (project.id !== committed.id) return false;
+  if (sameProjectVersion(project, committed)) return true;
+  const committedHead = committed.revisions[0];
+  return Boolean(project.revision > committed.revision && committedHead &&
+    project.revisions.some(revision => revision.id === committedHead.id &&
+      revision.revisionNumber === committed.revision &&
+      isSnapshotSemanticallyEqual(revision.snapshot, committed.snapshot)));
+}
+
+/** Reconcile a durable acknowledgement against the projects that still own those edits. */
 export function reconcileAsyncSaveAcknowledgement(params: {
   acknowledgedProject: CreativeProject;
   acknowledgedRevision: number;
@@ -102,41 +112,24 @@ export function reconcileAsyncSaveAcknowledgement(params: {
   activeProject: CreativeProject;
   savedProjects: CreativeProject[];
 } {
-  const {
-    acknowledgedProject,
-    acknowledgedRevision,
-    currentActiveProject,
-    savedProjects,
-  } = params;
-
-  const syncedProject: CreativeProject = {
-    ...acknowledgedProject,
-    persistedRevision: Math.max(
-      acknowledgedProject.persistedRevision ?? 0,
-      acknowledgedRevision
-    ),
-  };
-
-  const nextSaved = upsertProjectInSavedList(savedProjects, syncedProject);
-
-  let nextActive = currentActiveProject;
-  if (currentActiveProject.id === acknowledgedProject.id) {
-    const nextPersisted = Math.max(
-      currentActiveProject.persistedRevision ?? 0,
-      acknowledgedRevision
-    );
-    if (currentActiveProject.persistedRevision !== nextPersisted) {
-      nextActive = {
-        ...currentActiveProject,
-        persistedRevision: nextPersisted,
-      };
-    }
+  const { acknowledgedProject, acknowledgedRevision, currentActiveProject, savedProjects } = params;
+  if (acknowledgedRevision !== acknowledgedProject.revision || getDeletedProjectIds().has(acknowledgedProject.id)) {
+    return { activeProject: currentActiveProject, savedProjects };
   }
-
-  return {
-    activeProject: nextActive,
-    savedProjects: nextSaved,
-  };
+  const sync = (project: CreativeProject) =>
+    (project.persistedRevision ?? 0) < acknowledgedRevision && acknowledges(project, acknowledgedProject)
+      ? { ...project, persistedRevision: acknowledgedRevision }
+      : project;
+  const active = sync(currentActiveProject);
+  const existing = savedProjects.find(project => project.id === acknowledgedProject.id);
+  const baseline = active.id === acknowledgedProject.id && active.revision >= (existing?.revision ?? 0)
+    ? active : existing;
+  const durable = { ...acknowledgedProject, persistedRevision: acknowledgedRevision };
+  const selected = baseline && baseline.revision >= acknowledgedRevision ? sync(baseline) : durable;
+  const next = existing
+    ? savedProjects.map(project => project.id === selected.id ? selected : project)
+    : [selected, ...savedProjects];
+  return { activeProject: active, savedProjects: next };
 }
 
 export type HydrationWriteGate =

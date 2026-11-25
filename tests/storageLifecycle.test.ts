@@ -6,12 +6,14 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { prepareProjectSwitch, reconcileAsyncSaveAcknowledgement } from '../lib/controller/projectListSync.ts';
 import { describe, it, beforeEach } from 'node:test';
 import {
   createSampleProject,
   setEntityAttribute,
   updateStoryBibleField,
 } from '../lib/canonicalModel.ts';
+import { ensureNarrativeEnvelope } from '../lib/narrative/diagnostics/engine.ts';
 import { createUndoRedoState } from '../lib/historyEngine.ts';
 import {
   applyAsyncAnalysisCompletion,
@@ -28,6 +30,11 @@ import {
   loadProjectsFromLocalStorage,
   migrateProjectPayload,
   persistProjectDurably,
+  recordDeletedProjectId,
+  getDeletedProjectIds,
+  LOCAL_STORAGE_ACTIVE_ID_KEY,
+  LOCAL_STORAGE_PROJECTS_KEY,
+  LOCAL_STORAGE_DELETED_IDS_KEY,
   reconcileHydratedProjects,
   reloadLatestProjectsFromStorage,
   saveProjectToIndexedDb,
@@ -44,6 +51,7 @@ class MockLocalStorage {
   public quotaLimitBytes: number | null = null;
   public failNextSetItemError: string | null = null;
   public setItemCalls = 0;
+  public rejectedKey: string | null = null;
 
   getItem(key: string): string | null {
     return this.store.get(key) ?? null;
@@ -51,6 +59,7 @@ class MockLocalStorage {
 
   setItem(key: string, value: string): void {
     this.setItemCalls += 1;
+    if (key === this.rejectedKey) throw new Error("Mock storage key write failed");
     if (this.failNextSetItemError) {
       const msg = this.failNextSetItemError;
       this.failNextSetItemError = null;
@@ -79,6 +88,7 @@ class MockLocalStorage {
     this.quotaLimitBytes = null;
     this.failNextSetItemError = null;
     this.setItemCalls = 0;
+    this.rejectedKey = null;
   }
 }
 
@@ -96,6 +106,9 @@ class FakeIndexedDB {
   public failNextPut: string | null = null;
   public failNextGetAll: string | null = null;
   public abortNextPutWithQuota = false;
+  public afterReadAll?: () => void;
+  public afterPut?: () => void;
+  public putCalls = 0;
   public openDelayMs = 0;
   public getDelayMs = 0;
 
@@ -105,6 +118,9 @@ class FakeIndexedDB {
     this.failNextPut = null;
     this.failNextGetAll = null;
     this.abortNextPutWithQuota = false;
+    this.afterReadAll = undefined;
+    this.afterPut = undefined;
+    this.putCalls = 0;
     this.openDelayMs = 0;
     this.getDelayMs = 0;
   }
@@ -188,11 +204,13 @@ class FakeIndexedDB {
               }
               r.result = Array.from(this.records.values()).map((v) => structuredClone(v));
               r.onsuccess?.();
+              this.afterReadAll?.();
               scheduleCompleteIfIdle();
             }, 0);
             return r;
           },
           put: (val: { id: string }) => {
+            this.putCalls += 1;
             tx.pendingOps += 1;
             const r: FakeIDBRequest = {
               result: val.id,
@@ -223,6 +241,7 @@ class FakeIndexedDB {
                 return;
               }
               this.records.set(val.id, structuredClone(val));
+              this.afterPut?.();
               r.onsuccess?.();
               scheduleCompleteIfIdle();
             }, 0);
@@ -317,6 +336,203 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
   beforeEach(() => {
     mockStorage.clear();
     fakeIdb.reset();
+  });
+
+  it('A4: switching keeps same-revision divergent working content dirty', () => {
+    const base = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'switch-dirty-narrative', revision: 5, persistedRevision: 5 });
+    const current = { ...base, name: 'Unsaved narrative edit', updatedAt: base.updatedAt + 1, persistedRevision: 4 };
+    const transition = prepareProjectSwitch({
+      currentProject: current, savedProjects: [base], targetProjectId: 'another-project',
+    });
+    assert.equal(transition.savedProjects[0].name, current.name);
+    assert.equal(transition.savedProjects[0].persistedRevision, 4);
+    assert.equal(transition.projectToFlush, current);
+  });
+
+  it('A4: a delayed acknowledgement cannot mark a different same-revision narrative as saved', () => {
+    const base = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'same-revision-ack', revision: 5, persistedRevision: 4 });
+    const acknowledged = { ...base, name: 'Saved version' };
+    const current = { ...base, name: 'Newer edits at the same revision' };
+    const result = reconcileAsyncSaveAcknowledgement({
+      acknowledgedProject: acknowledged, acknowledgedRevision: 5,
+      currentActiveProject: current, savedProjects: [current],
+    });
+    assert.equal(result.activeProject.persistedRevision, 4);
+    assert.equal(result.savedProjects[0].name, current.name);
+    assert.equal(result.savedProjects[0].persistedRevision, 4);
+  });
+
+  it('S5: an exact-base manuscript change rejects a divergent narrative at the same base revision', async () => {
+    const before = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'same-base', revision: 5, persistedRevision: 5 });
+    const concurrentlySaved = {
+      ...before, narrative: {
+        ...before.narrative!,
+        automationPreferences: { semanticAutoAnalysisEnabled: true, scope: 'changed' as const, maxCallsPerSession: 2, maxTokensPerRun: 2000 },
+      },
+    };
+    await saveProjectToIndexedDb(concurrentlySaved);
+    const candidate = { ...before, revision: 6, name: 'Reviewed manuscript change' };
+    const attempt = await saveProjectToIndexedDb(candidate, {
+      requireExactBase: true,
+      expectedPersistedRevision: before.revision,
+      expectedBaseNarrative: before.narrative ?? null,
+    });
+    assert.equal(attempt.conflictDetected, true);
+    assert.equal((await loadProjectsFromIndexedDb())[0]?.narrative?.automationPreferences?.semanticAutoAnalysisEnabled, true);
+  });
+
+  it('S2: a failed selection pointer write does not negate a stored payload', () => {
+    const project = { ...createSampleProject(), id: 'saved-payload' };
+    mockStorage.rejectedKey = LOCAL_STORAGE_ACTIVE_ID_KEY;
+    const result = saveProjectToLocalStorage(project);
+    assert.equal(loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true }).projects[0]?.id, project.id);
+    assert.equal(result.saved, true);
+    assert.match(result.cacheWarning ?? '', /selection/i);
+  });
+
+  it('S2: saving a background project does not select it', async () => {
+    const project = { ...createSampleProject(), id: 'background-save' };
+    mockStorage.setItem(LOCAL_STORAGE_ACTIVE_ID_KEY, 'selected-by-user');
+    assert.equal((await persistProjectDurably(project)).saved, true);
+    assert.equal(mockStorage.getItem(LOCAL_STORAGE_ACTIVE_ID_KEY), 'selected-by-user');
+  });
+
+  it('S2: a cache security exception leaves the IndexedDB commit authoritative', async () => {
+    const project = { ...createSampleProject(), id: 'blocked-cache' };
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')!;
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true, get() { throw new DOMException('Blocked storage', 'SecurityError'); },
+    });
+    try {
+      const result = await persistProjectDurably(project);
+      assert.equal(result.idbSaved, true);
+      assert.equal(result.cacheSynced, false);
+      assert.equal((await loadProjectsFromIndexedDb())[0]?.id, project.id);
+    } finally {
+      Object.defineProperty(window, 'localStorage', descriptor);
+    }
+  });
+
+  it('S3: an empty cache read does not forget a remembered deletion', () => {
+    const id = 'memory-tombstone';
+    recordDeletedProjectId(id);
+    mockStorage.clear();
+    loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true });
+    assert.equal(getDeletedProjectIds().has(id), true);
+    clearDeletedProjectId(id);
+  });
+
+  it('S3: quota compaction preserves survivor edits made after the parity read started', async () => {
+    const base = createSampleProject();
+    const survivor = { ...base, id: 'parity-survivor' };
+    const doomed = { ...base, id: 'parity-doomed' };
+    await persistProjectDurably(survivor);
+    await persistProjectDurably(doomed);
+    mockStorage.rejectedKey = LOCAL_STORAGE_DELETED_IDS_KEY;
+    fakeIdb.afterReadAll = () => {
+      fakeIdb.afterReadAll = undefined;
+      const entry = { ...survivor, name: 'Unverified cache edit' };
+      mockStorage.setItem(LOCAL_STORAGE_PROJECTS_KEY, JSON.stringify({ [survivor.id]: entry }));
+    };
+    try {
+      const deletion = await deleteProjectCompletely(doomed.id);
+      assert.equal(deletion.incompleteDeletion, true);
+      assert.equal(loadProjectsFromLocalStorage({ skipAutoSeedIfEmpty: true }).projects[0]?.name, 'Unverified cache edit');
+    } finally {
+      mockStorage.rejectedKey = null;
+      clearDeletedProjectId(doomed.id);
+    }
+  });
+
+  it('S3: compensating delete failure does not report a successful rollback', async () => {
+    const project = { ...createSampleProject(), id: 'compensating-delete' };
+    fakeIdb.afterPut = () => {
+      fakeIdb.afterPut = undefined;
+      fakeIdb.failNextDelete = 'Delete was blocked';
+      recordDeletedProjectId(project.id);
+    };
+    try {
+      const result = await saveProjectToIndexedDb(project);
+      assert.equal(result.saved, false);
+      assert.match(result.error ?? '', /cleanup.*Delete was blocked/i);
+      assert.ok(fakeIdb.records.has(project.id), 'The failed cleanup left the tombstoned record.');
+    } finally {
+      clearDeletedProjectId(project.id);
+    }
+  });
+
+  it('S1: retrying a successful read can migrate a legacy local-only project without replacing other records', async () => {
+    const base = createSampleProject();
+    const local = { ...base, id: 'legacy-local-only' };
+    const existing = { ...base, id: 'already-durable' };
+    saveProjectToLocalStorage(local);
+    await saveProjectToIndexedDb(existing);
+    const retry = await reloadLatestProjectsFromStorage(local.id, { commit: persistProjectDurably });
+    assert.equal(retry.persisted, true);
+    assert.deepEqual((await loadProjectsFromIndexedDb()).map(project => project.id).sort(), [existing.id, local.id]);
+  });
+
+  it('S1: a reload restores history without writing over a newer cross-tab commit', async () => {
+    const base = { ...createSampleProject(), id: 'reload-observed-base' };
+    const revision2 = { ...base, revision: 2, persistedRevision: 2, undoHistory: {
+      past: [{ label: 'Edit note', snapshot: base.snapshot }], future: [],
+    } };
+    const revision3 = {
+      ...revision2, revision: 3, persistedRevision: 3,
+      snapshot: { ...base.snapshot, freeformNotes: 'Newer tab commit' },
+    };
+    await saveProjectToIndexedDb(revision2);
+    fakeIdb.afterReadAll = () => {
+      fakeIdb.afterReadAll = undefined;
+      fakeIdb.records.set(base.id, revision3);
+    };
+    const reloaded = await reloadLatestProjectsFromStorage(base.id);
+    assert.equal(reloaded.activeProject.revision, 2);
+    assert.equal(reloaded.activeUndoState.past[0]?.label, 'Edit note');
+    assert.equal((await loadProjectsFromIndexedDb())[0]?.revision, 3);
+    assert.equal(fakeIdb.putCalls, 1);
+  });
+
+  it('S1: an explicit reload choice cannot overwrite a changed durable record or the local alternative', async () => {
+    const base = { ...createSampleProject(), id: 'reload-resolution-race', revision: 2, persistedRevision: 2 };
+    const local = { ...base, snapshot: { ...base.snapshot, freeformNotes: 'Local alternative' } };
+    const latest = { ...base, revision: 3, persistedRevision: 3, name: 'New durable title' };
+    await saveProjectToIndexedDb(base);
+    saveProjectToLocalStorage(local);
+    fakeIdb.afterReadAll = () => {
+      fakeIdb.afterReadAll = undefined;
+      fakeIdb.records.set(base.id, latest);
+    };
+    const resolved = await reloadLatestProjectsFromStorage(base.id, { resolution: 'prefer-local' });
+    assert.equal(resolved.conflictDetected, true);
+    assert.equal((await loadProjectsFromIndexedDb())[0]?.name, 'New durable title');
+    assert.equal(loadProjectsFromLocalStorage().projects[0]?.snapshot.freeformNotes, 'Local alternative');
+  });
+
+  it('S4: a database containing only an unsupported record is a read failure and reload never seeds', async () => {
+    assert.equal((await loadProjectsFromIndexedDbDetailed()).status, 'empty');
+    fakeIdb.records.set('future', { id: 'future', schemaVersion: 999 });
+    const loaded = await reloadLatestProjectsFromStorage();
+    assert.equal(loaded.idbStatus, 'read_error');
+    assert.equal(loaded.corruptRecordCount, 1);
+    assert.deepEqual([...fakeIdb.records.keys()], ['future']);
+    assert.equal(mockStorage.setItemCalls, 0);
+  });
+
+  it('S5: a same-revision checked write cannot overwrite different durable narrative content', async () => {
+    const base = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'narrative-cas-divergence' });
+    await saveProjectToIndexedDb(base);
+    const result = await saveProjectToIndexedDb({
+      ...base, narrative: {
+        ...base.narrative!,
+        automationPreferences: {
+          semanticAutoAnalysisEnabled: true, paused: false, scope: 'changed',
+          maxCallsPerSession: 3, maxTokensPerRun: 3000,
+        },
+      },
+    }, { requireExactBase: true, expectedPersistedRevision: base.revision });
+    assert.equal(result.conflictDetected, true);
+    assert.notEqual((await loadProjectsFromIndexedDb())[0].narrative?.automationPreferences?.semanticAutoAnalysisEnabled, true);
   });
 
   it('Defect 1A: reloadLatestProjectsFromStorage reloads the truly latest valid project from IndexedDB and localStorage with complete snapshots, revisions, history, and artifacts', async () => {

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { NarrativeRecords } from '../../shared/narrativeTypes.ts';
 import type { CreativeProject } from '../../shared/types.ts';
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -18,9 +19,13 @@ export interface DurableWriteOptions {
   expectedPersistedRevision?: number;
   expectedManuscriptVersionId?: string;
   expectedBaseSnapshotDigest?: string;
+  /** Exact observed record, or null for create-if-absent. Checked inside the write transaction. */
+  expectedBaseProject?: CreativeProject | null;
+  expectedBaseNarrative?: NarrativeRecords | null;
   intentId?: string;
   forceOverwrite?: boolean;
   allowDeleted?: boolean;
+  selectProject?: boolean;
   requireExactBase?: boolean;
 }
 

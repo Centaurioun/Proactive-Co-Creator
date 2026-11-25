@@ -211,6 +211,12 @@ export function syncDiagnosticFindingsIntoProject(
       const fp = diagnosticFingerprint(finding.detectorId, finding.type, finding.targetIds, finding.scopeKey);
       const existing = byFp.get(fp);
       if (existing) {
+        const targets = [...finding.targetIds];
+        if (existing.title === finding.title && existing.reason === finding.reason &&
+            existing.severity === finding.severity && existing.certainty === finding.certainty &&
+            existing.freshness === 'current' && existing.scopeLabel === options.scopeLabel &&
+            existing.disposition !== 'resolved' &&
+            JSON.stringify(existing.affectedTargetIds) === JSON.stringify(targets)) continue;
         const reopened = existing.disposition === 'resolved';
         updated.set(existing.id, {
           ...existing,
@@ -249,6 +255,9 @@ export function syncDiagnosticFindingsIntoProject(
     }
     nextIssues = Array.from(updated.values());
   }
+
+  if (nextIssues.length === records.issues.length &&
+      nextIssues.every((issue, index) => issue === records.issues[index])) return project;
 
   return {
     ...baseProject,

@@ -4,7 +4,10 @@ import type { CreativeProject } from '../../shared/types';
 import { buildClientBudgetDisclosure } from '../../lib/narrative/aiBudgetClient';
 import { assembleImportedProject } from '../../lib/narrative/import/assembleProject';
 import {
+  appendTargetBase,
   detectDuplicateSourceInProject,
+  matchesAppendTarget,
+  type AppendTargetBase,
   findCrossProjectIdentityMatches,
   type AppendInsertPosition,
   type CrossProjectIdentityDecision,
@@ -44,7 +47,7 @@ interface Props {
   aiConfigured?: boolean;
   onCreateProject: (project: CreativeProject) => Promise<void>;
   onAppendToExistingProject?: (params: {
-    targetProjectId: string;
+    reviewedTarget: AppendTargetBase;
     incomingProject: CreativeProject;
     insertPosition: AppendInsertPosition;
     identityDecisions: Record<string, CrossProjectIdentityDecision>;
@@ -93,6 +96,7 @@ export default function ImportWorkflow({
   // Destination: Create New vs Append to Existing Project (Package H)
   const [destination, setDestination] = useState<'new' | 'append'>('new');
   const [targetProjectId, setTargetProjectId] = useState<string>(activeProjectId ?? existingProjects[0]?.id ?? '');
+  const [reviewedTarget, setReviewedTarget] = useState<AppendTargetBase | null>(null);
   const [insertPositionKey, setInsertPositionKey] = useState<string>('end');
   const [identityDecisions, setIdentityDecisions] = useState<Record<string, CrossProjectIdentityDecision>>({});
   const [allowDuplicateSource, setAllowDuplicateSource] = useState(false);
@@ -107,11 +111,6 @@ export default function ImportWorkflow({
     acceptedIds: new Set<string>(),
   });
   const stage2ControllerRef = useRef<Stage2EnhancementController | null>(null);
-  if (stage2ControllerRef.current == null) {
-    stage2ControllerRef.current = createStage2EnhancementController((next) => {
-      setStage2State(next);
-    });
-  }
   const enhanceBusy = stage2State.busy;
   const enhanceError = stage2State.error;
   const enhancements = stage2State.proposals;
@@ -124,13 +123,18 @@ export default function ImportWorkflow({
   const inProgressRef = useRef(false);
   const creatingRef = useRef(false);
 
-  useEffect(() => () => {
-    sourceReadEpochRef.current += 1;
-    sourceReadAbortRef.current?.abort();
-    sourceReadAbortRef.current = null;
-    epochRef.current += 1;
-    abortRef.current?.abort();
-    stage2ControllerRef.current?.dispose();
+  useEffect(() => {
+    const stage2Controller = createStage2EnhancementController(setStage2State);
+    stage2ControllerRef.current = stage2Controller;
+    return () => {
+      sourceReadEpochRef.current += 1;
+      sourceReadAbortRef.current?.abort();
+      sourceReadAbortRef.current = null;
+      epochRef.current += 1;
+      abortRef.current?.abort();
+      stage2Controller.dispose();
+      stage2ControllerRef.current = null;
+    };
   }, []);
 
   const parsedHasFileRetentionGap = Boolean(file && source?.retention === 'extracted-only');
@@ -154,10 +158,20 @@ export default function ImportWorkflow({
   );
 
   const targetProject = useMemo(
-    () => existingProjects.find((p) => p.id === targetProjectId) ?? existingProjects[0] ?? null,
+    () => existingProjects.find((p) => p.id === targetProjectId) ?? null,
     [existingProjects, targetProjectId]
   );
   const targetSections = useMemo(() => (targetProject ? manuscriptSections(targetProject) : []), [targetProject]);
+
+  const appendTargetChanged = Boolean(targetProject && reviewedTarget && !matchesAppendTarget(targetProject, reviewedTarget));
+  const reviewAppendTarget = (project: CreativeProject) => {
+    setTargetProjectId(project.id);
+    setReviewedTarget(appendTargetBase(project));
+    setInsertPositionKey('end');
+    setIdentityDecisions({});
+    setAllowDuplicateSource(false);
+    setCreateError('');
+  };
 
   // Preview assembled candidate when results exist so we can compute exact cross-project identity matches & duplicate digest
   const previewAssembledCandidate = useMemo(() => {
@@ -202,7 +216,8 @@ export default function ImportWorkflow({
   const canApplyAppend =
     canCommitBase &&
     destination === 'append' &&
-    Boolean(targetProject && onAppendToExistingProject) &&
+    Boolean(targetProject && reviewedTarget && onAppendToExistingProject) &&
+    !appendTargetChanged &&
     unresolvedIdentityCount === 0 &&
     (!isDuplicateSource || allowDuplicateSource);
 
@@ -418,7 +433,7 @@ export default function ImportWorkflow({
     setCreateError('');
     try {
       const assembled = buildFinalImportedProject();
-      if (destination === 'append' && targetProject && onAppendToExistingProject) {
+      if (destination === 'append' && targetProject && reviewedTarget && onAppendToExistingProject) {
         const insertPosition: AppendInsertPosition =
           insertPositionKey === 'beginning'
             ? 'beginning'
@@ -426,7 +441,7 @@ export default function ImportWorkflow({
               ? 'end'
               : { afterSectionId: insertPositionKey };
         await onAppendToExistingProject({
-          targetProjectId: targetProject.id,
+          reviewedTarget,
           incomingProject: assembled,
           insertPosition,
           identityDecisions,
@@ -554,24 +569,28 @@ export default function ImportWorkflow({
                   name="import-destination"
                   disabled={existingProjects.length === 0 || !onAppendToExistingProject}
                   checked={destination === 'append'}
-                  onChange={() => setDestination('append')}
+                  onChange={() => {
+                    setDestination('append');
+                    const selected = targetProject ?? existingProjects[0];
+                    if (selected) reviewAppendTarget(selected);
+                  }}
                 />
                 Append to Existing Project
               </label>
             </div>
-            {destination === 'append' && targetProject && (
+            {destination === 'append' && (
               <div className="grid gap-3 rounded border border-blue-200 bg-blue-50/30 p-3 text-xs sm:grid-cols-2 dark:border-blue-900/60 dark:bg-blue-950/20">
                 <label className="space-y-1">
                   <span className="font-semibold">Target project</span>
                   <select
-                    value={targetProject.id}
+                    value={targetProject?.id ?? ''}
                     onChange={(e) => {
-                      setTargetProjectId(e.target.value);
-                      setInsertPositionKey('end');
-                      setIdentityDecisions({});
+                      const selected = existingProjects.find((project) => project.id === e.target.value);
+                      if (selected) reviewAppendTarget(selected);
                     }}
                     className="w-full rounded border border-gray-300 bg-white px-2 py-1 dark:border-gray-700 dark:bg-gray-950"
                   >
+                    {!targetProject && <option value="">Select a surviving project</option>}
                     {existingProjects.map((proj) => (
                       <option key={proj.id} value={proj.id}>
                         {proj.name} (Rev #{proj.revision})
@@ -595,6 +614,14 @@ export default function ImportWorkflow({
                     ))}
                   </select>
                 </label>
+                {appendTargetChanged && targetProject && (
+                  <div role="alert" className="sm:col-span-2">
+                    The target project changed. Review its insertion point and identity matches again.
+                    <button type="button" className={workspaceButton} onClick={() => reviewAppendTarget(targetProject)}>
+                      Review updated target
+                    </button>
+                  </div>
+                )}
                 <p className="sm:col-span-2 text-gray-600 dark:text-gray-300">
                   A verified safety checkpoint backup is created automatically before appending. Colliding entities are never auto-merged.
                 </p>

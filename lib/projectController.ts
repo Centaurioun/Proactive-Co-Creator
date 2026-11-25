@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { DurableWriteOptions } from './storage/constants.ts';
 import { recordNarrativeChange } from './narrative/changeAudit.ts';
 import { makeStableId } from './canonicalModel.ts';
 import {
@@ -382,15 +383,7 @@ export function commitRedoTransaction(
   };
 }
 
-export interface SerializedSaveOptions {
-  requireExactBase?: boolean;
-  expectedPersistedRevision?: number;
-  expectedManuscriptVersionId?: string;
-  expectedBaseSnapshotDigest?: string;
-  intentId?: string;
-  forceOverwrite?: boolean;
-  allowDeleted?: boolean;
-}
+export type SerializedSaveOptions = DurableWriteOptions;
 
 /**
  * Serializes durable save operations per project ID so rapid switch flushes and
@@ -446,11 +439,12 @@ export function createSerializedProjectSaveQueue(
       });
 
     chains.set(project.id, run);
-    void run.finally(() => {
+    const releaseChain = () => {
       if (chains.get(project.id) === run) {
         chains.delete(project.id);
       }
-    });
+    };
+    void run.then(releaseChain, releaseChain);
     return run;
   };
 

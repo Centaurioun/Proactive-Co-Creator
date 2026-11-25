@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WritingAssistProposalSchema, WritingAssistRequestSchema } from './narrativeAiSchemas.ts';
 
 const id = z.string().min(1);
 const offset = z.number().int().nonnegative();
@@ -143,6 +144,9 @@ const writingAlternativeSchema = z.strictObject({
   text: z.string().min(1),
   rationale: z.string(),
   createdAt: offset,
+  action: WritingAssistRequestSchema.shape.action.optional(),
+  assumptions: WritingAssistProposalSchema.shape.assumptions.optional(),
+  baseRevision: offset.optional(),
 });
 
 const automationPreferencesSchema = z.strictObject({

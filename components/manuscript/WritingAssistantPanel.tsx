@@ -366,7 +366,7 @@ export default function WritingAssistantPanel({
                         rationale: proposal.rationale,
                         assumptions: proposal.assumptions,
                       });
-                      setStatusMessage(`Saved "${proposal.label}" to Kept Alternatives without changing your manuscript.`);
+                      setStatusMessage(`Queued "${proposal.label}" for saving in Kept Alternatives.`);
                     }}
                     className={workspaceButton}
                   >

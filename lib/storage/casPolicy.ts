@@ -5,7 +5,7 @@
 
 import { computeSnapshotDigest, isSnapshotSemanticallyEqual } from '../historyEngine.ts';
 import type { CreativeProject } from '../../shared/types.ts';
-import { NARRATIVE_SCHEMA_VERSION, type StorageSaveResult } from './constants.ts';
+import { NARRATIVE_SCHEMA_VERSION, type StorageSaveResult, type DurableWriteOptions } from './constants.ts';
 import { migrateProjectPayload } from './migration.ts';
 
 const MAX_RECENT_INTENT_IDS = 50;
@@ -137,8 +137,9 @@ function evaluateRevisionAndSnapshotCas(params: {
   candidate: CreativeProject;
   rawExpected?: number;
   storeLabel: 'localStorage' | 'IndexedDB';
+  requireExactBase?: boolean;
 }): StorageSaveResult | null {
-  const { existing, normalizedExisting, candidate, rawExpected, storeLabel } = params;
+  const { existing, normalizedExisting, candidate, rawExpected, storeLabel, requireExactBase } = params;
   const existingRev = typeof existing.revision === 'number' ? existing.revision : 1;
   const candidateRev = typeof candidate.revision === 'number' ? candidate.revision : 1;
   const isTimestampExpectation =
@@ -189,13 +190,16 @@ function evaluateRevisionAndSnapshotCas(params: {
         normalizedExisting.snapshot,
         safeMigrateExisting(candidate).snapshot
       );
-    if (!snapshotsEqual) {
+    const narrativesDiffer = requireExactBase &&
+      stableIntentSerialization(normalizedExisting.narrative) !==
+      stableIntentSerialization(safeMigrateExisting(candidate).narrative);
+    if (!snapshotsEqual || narrativesDiffer) {
       return {
         ok: false,
         saved: false,
         conflictDetected: true,
         storedProject: normalizedExisting,
-        error: `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with a divergent snapshot.`,
+        error: `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with a divergent ${snapshotsEqual ? 'narrative record' : 'snapshot'}.`,
       };
     }
     if (existing.updatedAt > candidate.updatedAt) {
@@ -212,12 +216,20 @@ function evaluateRevisionAndSnapshotCas(params: {
   return null;
 }
 
+export function matchesObservedProject(actual: CreativeProject | undefined, expected: CreativeProject | null) {
+  if (expected === null) return actual === undefined;
+  return actual !== undefined &&
+    stableIntentSerialization(safeMigrateExisting(actual)) === stableIntentSerialization(safeMigrateExisting(expected));
+}
+
 export function evaluateCasConflict(params: {
   existing: CreativeProject | undefined;
   candidate: CreativeProject;
   rawExpected?: number;
   expectedManuscriptVersionId?: string;
   expectedBaseSnapshotDigest?: string;
+  expectedBaseProject?: CreativeProject | null;
+  expectedBaseNarrative?: DurableWriteOptions['expectedBaseNarrative'];
   intentId?: string;
   requireExactBase?: boolean;
   forceOverwrite: boolean;
@@ -229,6 +241,8 @@ export function evaluateCasConflict(params: {
     rawExpected,
     expectedManuscriptVersionId,
     expectedBaseSnapshotDigest,
+    expectedBaseProject,
+    expectedBaseNarrative,
     intentId,
     requireExactBase,
     forceOverwrite,
@@ -243,9 +257,26 @@ export function evaluateCasConflict(params: {
     requireExactBase
   );
   if (preGuard) return preGuard;
+  if (expectedBaseProject !== undefined && !matchesObservedProject(existing, expectedBaseProject)) {
+    return {
+      ok: false,
+      saved: false,
+      conflictDetected: true,
+      storedProject: existing && safeMigrateExisting(existing),
+      error: 'The observed project changed in storage. Reload and review the latest version before retrying.',
+    };
+  }
   if (forceOverwrite || !existing) return null;
 
   const normalizedExisting = safeMigrateExisting(existing);
+
+  if (expectedBaseNarrative !== undefined &&
+      stableIntentSerialization(normalizedExisting.narrative ?? null) !== stableIntentSerialization(expectedBaseNarrative)) {
+    return {
+      ok: false, saved: false, conflictDetected: true, storedProject: normalizedExisting,
+      error: 'The durable narrative changed since this operation was prepared. Reload and review before retrying.',
+    };
+  }
 
   if (
     expectedManuscriptVersionId !== undefined &&
@@ -280,5 +311,6 @@ export function evaluateCasConflict(params: {
     candidate,
     rawExpected,
     storeLabel,
+    requireExactBase,
   });
 }
