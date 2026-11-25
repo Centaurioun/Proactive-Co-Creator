@@ -7,6 +7,7 @@ import ManuscriptEditor from './components/manuscript/ManuscriptEditor';
 import ProjectHub from './components/workspace/ProjectHub';
 import NarrativeReview from './components/workspace/NarrativeReview';
 import ImportWorkflow from './components/narrativeImport/ImportWorkflow';
+import CreateProjectDialog from './components/projects/CreateProjectDialog';
 import { manuscriptSections, manuscriptText, prepareManuscriptChange, type NarrativeBase } from './lib/narrative/manuscriptModel';
 import type { StyleProfile } from './lib/narrative/context/styleProfile';
 import { listBackups, parseProjectBackup, prepareBackupCopy, prepareBackupReplacement, registryReport, safeFilename, saveBackup } from './lib/narrative/recovery';
@@ -62,6 +63,7 @@ import BeliefGraph from './components/BeliefGraph';
 import ContextualInspector, { type RightPanelTab } from './components/ContextualInspector';
 import DecisionInboxPanel from './components/DecisionInboxPanel';
 import Header, { type WorkspaceSection } from './components/Header';
+import { getSavePresentation } from './lib/workspace/savePresentation';
 import InfoModal from './components/InfoModal';
 import OutputDisplay from './components/OutputGallery';
 import PromptInput from './components/PromptInput';
@@ -223,6 +225,11 @@ function App() {
   const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(true);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [createProjectPending, setCreateProjectPending] = useState(false);
+  const [manuscriptDraftDirty, setManuscriptDraftDirty] = useState(false);
+  const [restorePending, setRestorePending] = useState(false);
+  const [pendingDurableSaveProjectIds, setPendingDurableSaveProjectIds] = useState<Set<string>>(() => new Set());
   const [isReviewModalOpen, setIsReviewModalOpen] = useState<boolean>(false);
   const [statusNotification, setStatusNotification] = useState<string | null>(null);
   const [storageAlert, setStorageAlert] = useState<StorageConflictAlert | null>(null);
@@ -293,6 +300,7 @@ function App() {
   const activeProjectRef = useRef<CreativeProject>(activeProject);
   const undoStateRef = useRef<UndoRedoState>(undoState);
   const savedProjectsRef = useRef<CreativeProject[]>(savedProjects);
+  const pendingSaveCountsRef = useRef(new Map<string, number>());
   useEffect(() => {
     activeProjectRef.current = activeProject;
     undoStateRef.current = undoState;
@@ -305,6 +313,18 @@ function App() {
     setProject(current);
     setUndoState(undo);
   }, []);
+
+  const adjustPendingSave = (projectId: string, delta: 1 | -1) => {
+    const nextCount = Math.max(0, (pendingSaveCountsRef.current.get(projectId) ?? 0) + delta);
+    if (nextCount) pendingSaveCountsRef.current.set(projectId, nextCount);
+    else pendingSaveCountsRef.current.delete(projectId);
+    setPendingDurableSaveProjectIds(previous => {
+      const next = new Set(previous);
+      if (nextCount) next.add(projectId);
+      else next.delete(projectId);
+      return next;
+    });
+  };
 
   const selectProject = (current: CreativeProject, undo: UndoRedoState) => {
     hasLocalEditsSinceMountRef.current = (current.persistedRevision ?? 0) < current.revision;
@@ -330,6 +350,7 @@ function App() {
         });
       }
 
+      adjustPendingSave(targetProject.id, 1);
       return saveQueueRef.current.enqueue(targetProject, options).then((res) => {
         if (!options?.allowDeleted && getDeletedProjectIds().has(targetProject.id)) {
           setSavedProjects((prev) => {
@@ -409,7 +430,7 @@ function App() {
           }
         }
         return res;
-      });
+      }).finally(() => adjustPendingSave(targetProject.id, -1));
     },
     []
   );
@@ -2044,40 +2065,53 @@ function App() {
     }
   };
 
-  const handleCreateNewProject = (name: string, initialPrompt: string) => {
-    if (!allowNavigation()) return;
+  const handleCreateNewProject = async (name: string, initialPrompt: string): Promise<boolean> => {
+    if (!allowNavigation()) return false;
     if (!canWriteWorkspace()) {
       setStatusNotification('Wait for workspace storage to finish loading before creating a project.');
-      return;
+      return false;
     }
-    cancelAutosave();
+    setCreateProjectPending(true);
+    try {
+      cancelAutosave();
+      const outgoing = activeProjectRef.current;
+      if (outgoing.persistedRevision !== outgoing.revision || outgoing.persistedRevision === undefined) {
+        const outgoingSave = await flushProjectDurably(outgoing, { expectedPersistedRevision: outgoing.persistedRevision });
+        if (!outgoingSave.saved || outgoingSave.authoritativeStore !== 'indexeddb') {
+          setStatusNotification(outgoingSave.error ?? 'The current project could not be saved. The new project was not created.');
+          return false;
+        }
+      }
+      if (!sameProjectVersion(activeProjectRef.current, outgoing)) {
+        setStatusNotification('The current project changed while preparing the new one. No project was created.');
+        return false;
+      }
 
-    const now = Date.now();
-    const newSnap: ProjectSnapshot = {
-      originalIdea: initialPrompt,
-      refinedPrompt: initialPrompt,
-      freeformNotes: '',
-      mode: 'story',
-      entities: [],
-      relationships: [],
-      storyBible: createEmptyStoryBible(now),
-      clarifications: [],
-      decisions: [],
-      answeredQuestions: [],
-      skippedQuestions: [],
-    };
-    const newProj: CreativeProject = {
-      schemaVersion: 3,
-      revision: 1,
-      persistedRevision: undefined,
-      id: makeStableId('proj'),
-      name,
-      createdAt: now,
-      updatedAt: now,
-      snapshot: newSnap,
-      artifacts: [],
-      revisions: [
-        {
+      const now = Date.now();
+      const newSnap: ProjectSnapshot = {
+        originalIdea: initialPrompt,
+        refinedPrompt: initialPrompt,
+        freeformNotes: '',
+        mode: 'story',
+        entities: [],
+        relationships: [],
+        storyBible: createEmptyStoryBible(now),
+        clarifications: [],
+        decisions: [],
+        answeredQuestions: [],
+        skippedQuestions: [],
+      };
+      const newProj: CreativeProject = {
+        schemaVersion: 3,
+        revision: 1,
+        persistedRevision: undefined,
+        id: makeStableId('proj'),
+        name,
+        createdAt: now,
+        updatedAt: now,
+        snapshot: newSnap,
+        artifacts: [],
+        revisions: [{
           id: makeStableId('rev'),
           revisionNumber: 1,
           timestamp: now,
@@ -2085,42 +2119,43 @@ function App() {
           summary: `Created project "${name}"`,
           changeCount: 0,
           snapshot: structuredClone(newSnap),
-        },
-      ],
-    };
+        }],
+      };
+      const result = await flushProjectDurably(newProj, { expectedBaseProject: null });
+      if (!result.saved || result.authoritativeStore !== 'indexeddb') {
+        setStatusNotification(result.error ?? 'The new project could not be saved. Your current workspace is still open.');
+        return false;
+      }
+      const committed = result.storedProject ?? { ...newProj, persistedRevision: result.persistedRevision ?? newProj.revision };
+      if (!sameProjectVersion(activeProjectRef.current, outgoing) || getDeletedProjectIds().has(committed.id)) {
+        setStatusNotification(`Created and saved "${committed.name}". The current workspace remains open.`);
+        return true;
+      }
 
-    const switchRes = prepareProjectSwitch({
-      currentProject: activeProjectRef.current,
-      savedProjects: savedProjectsRef.current,
-      targetProjectId: newProj.id,
-    });
-    if (switchRes.projectToFlush) {
-      void flushProjectDurably(switchRes.projectToFlush, {
-        expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
-      });
-    }
-
-    const newUndo = createUndoRedoState(newSnap, newProj.revisions, newProj.undoHistory);
-    const nextSaved = upsertProjectInSavedList(switchRes.savedProjects, newProj);
-    savedProjectsRef.current = nextSaved;
-    activeProjectRef.current = newProj;
-    undoStateRef.current = newUndo;
-    saveQueueRef.current.resetProject(newProj.id);
-
-    hasLocalEditsSinceMountRef.current = true;
-    setSavedProjects(nextSaved);
-    setProject(newProj);
-    setUndoState(newUndo);
-    setSelectedEntityId(null);
-    setSelectedRelationshipId(null);
-    setStoryBibleErrors({});
-    if (getHydrationGate() !== 'blocked-read-error') {
+      const newUndo = createUndoRedoState(committed.snapshot, committed.revisions, committed.undoHistory);
+      const nextSaved = upsertProjectInSavedList(savedProjectsRef.current, committed);
+      savedProjectsRef.current = nextSaved;
+      activeProjectRef.current = committed;
+      undoStateRef.current = newUndo;
+      hasLocalEditsSinceMountRef.current = false;
+      setSavedProjects(nextSaved);
+      setProject(committed);
+      setUndoState(newUndo);
+      setSelectedEntityId(null);
+      setSelectedRelationshipId(null);
+      setStoryBibleErrors({});
       setStorageAlert(null);
+      setCachedProjectSelection(committed.id);
+      setWorkspaceMode('write');
+      setCreateProjectOpen(false);
+      setStatusNotification(`Created and saved "${committed.name}".`);
+      return true;
+    } catch (error) {
+      setStatusNotification(error instanceof Error ? error.message : 'The project could not be created. Your current workspace is still open.');
+      return false;
+    } finally {
+      setCreateProjectPending(false);
     }
-
-    setCachedProjectSelection(newProj.id);
-    setWorkspaceMode('write');
-    void flushProjectDurably(newProj, { expectedBaseProject: null });
   };
 
   const handleDeleteProject = (projectId: string) => {
@@ -2183,6 +2218,7 @@ function App() {
     }
     const outgoing = activeProjectRef.current;
     restorePendingRef.current = true;
+    setRestorePending(true);
     try {
       const legacyOrPortable = await parseProjectBackup(rawJson);
       if (aiTicketAuthorityRef.current?.hasProjectTickets(outgoing.id, 'diagnostics')) {
@@ -2234,6 +2270,7 @@ function App() {
       return { ok: false, error: err instanceof Error ? err.message : 'Invalid project JSON file.' };
     } finally {
       restorePendingRef.current = false;
+      setRestorePending(false);
     }
   };
 
@@ -2322,6 +2359,16 @@ function App() {
     });
   }, []);
 
+  const savePresentation = getSavePresentation({
+    restoring: restorePending,
+    draftDirty: manuscriptDraftDirty,
+    savePending: pendingDurableSaveProjectIds.has(activeProject.id) || createProjectPending,
+    projectPersisted: activeProject.persistedRevision === activeProject.revision,
+    storageState: storageAlert?.projectId === activeProject.id
+      ? storageAlert.type === 'conflict' ? 'conflict' : 'failed'
+      : null,
+  });
+
   return (
     <div
       className={`${
@@ -2333,13 +2380,21 @@ function App() {
         toggleDarkMode={() => setIsDarkMode((prev) => !prev)}
         onShowInfo={() => setShowInfoModal(true)}
         onLoadSampleProject={handleResetSampleProject}
+        savePresentation={savePresentation}
         project={activeProject}
         projects={savedProjects}
         onSwitchProject={handleSwitchProject}
-        onNewProject={() => openPlan('history', 'project-management')}
+        onNewProject={() => { if (allowNavigation()) setCreateProjectOpen(true); }}
         onOpenImport={() => { if (allowNavigation()) setWorkspaceMode('import'); }}
         importDisabled={!hydrationSettled}
         onOpenProjects={() => { if (allowNavigation()) setWorkspaceMode('projects'); }}
+      />
+
+      <CreateProjectDialog
+        open={createProjectOpen}
+        pending={createProjectPending}
+        onCancel={() => setCreateProjectOpen(false)}
+        onCreate={handleCreateNewProject}
       />
 
       <StorageAlertBanner
@@ -2362,7 +2417,7 @@ function App() {
           ))}
         </div>
         <div className="ml-auto flex flex-wrap justify-end gap-1 sm:hidden">
-          <button type="button" className="min-h-11 rounded-md bg-pcc-action px-2.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus" onClick={() => openPlan('history', 'project-management')}>New</button>
+          <button type="button" className="min-h-11 rounded-md bg-pcc-action px-2.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus" onClick={() => { if (allowNavigation()) setCreateProjectOpen(true); }}>New</button>
           <button type="button" disabled={!hydrationSettled} className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45" onClick={() => { if (allowNavigation()) setWorkspaceMode('import'); }}>Import</button>
           <button type="button" className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus" onClick={() => { if (allowNavigation()) setWorkspaceMode('projects'); }}>Projects</button>
         </div>
@@ -2378,7 +2433,7 @@ function App() {
           aiConfigured={aiConfigured}
           onSaveWritingAlternative={handleSaveWritingAlternative}
           onExportDraft={sections => downloadTextFile(safeFilename(activeProject.name, 'unsaved-draft', 'md'), manuscriptText(sections), 'text/markdown;charset=utf-8')}
-          onDirty={dirty => { draftDirtyRef.current = dirty; }}
+          onDirty={dirty => { draftDirtyRef.current = dirty; setManuscriptDraftDirty(dirty); }}
           onUndo={handleUndo}
           onRedo={handleRedo}
           canUndo={undoState.past.length > 0}

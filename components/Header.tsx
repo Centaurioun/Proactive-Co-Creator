@@ -5,6 +5,7 @@
 
 import React from 'react';
 import type { CreativeProject } from '../shared/types';
+import type { SavePresentation } from '../lib/workspace/savePresentation';
 
 export type WorkspaceSection = 'workspace' | 'story-bible' | 'output' | 'history';
 
@@ -20,6 +21,7 @@ interface HeaderProps {
   onOpenImport?: () => void;
   importDisabled?: boolean;
   onOpenProjects?: () => void;
+  savePresentation?: SavePresentation;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -34,12 +36,22 @@ const Header: React.FC<HeaderProps> = ({
   onOpenImport,
   importDisabled = false,
   onOpenProjects,
+  savePresentation = 'saved',
 }) => {
   const projectOptions = projects.some((item) => item.id === project?.id)
     ? projects
     : project
       ? [...projects, project]
       : projects;
+  const saveLabel: Record<SavePresentation, string> = {
+    'draft-unsaved': 'Draft not saved',
+    'project-unsaved': 'Changes not saved',
+    saving: 'Saving…',
+    saved: 'Saved',
+    conflict: 'Storage conflict',
+    failed: 'Save failed',
+    restoring: 'Restoring…',
+  };
 
   return (
     <header className="border-b border-pcc-line bg-pcc-surface px-3 py-2.5 text-pcc-ink dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink transition-colors duration-150 flex-shrink-0 sm:px-5">
@@ -62,8 +74,8 @@ const Header: React.FC<HeaderProps> = ({
               >
                 {projectOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>
-              <span className="hidden text-pcc-muted dark:text-pcc-dark-muted sm:inline" aria-live="polite">
-                {project.persistedRevision === project.revision ? 'Saved' : 'Unsaved'} · r{project.revision}
+              <span className="max-w-[28vw] truncate text-[10px] text-pcc-muted dark:text-pcc-dark-muted sm:max-w-none sm:text-xs" role="status" aria-live="polite" data-save-presentation={savePresentation}>
+                {saveLabel[savePresentation]} · r{project.revision}
               </span>
             </label>
           )}
@@ -75,13 +87,12 @@ const Header: React.FC<HeaderProps> = ({
         {onOpenProjects && <button type="button" onClick={onOpenProjects} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">Projects</button>}
         <button type="button" onClick={onShowInfo} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">About</button>
         {onLoadSampleProject && (
-          <button
-            type="button"
-            onClick={onLoadSampleProject}
-            className="hidden"
-          >
-            Reset Sample Plan
-          </button>
+          <details className="relative">
+            <summary className="min-h-11 cursor-pointer rounded-md px-2.5 py-3 text-xs text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas">Sample data</summary>
+            <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-md border border-pcc-line bg-pcc-surface p-2 shadow-lg dark:border-pcc-dark-line dark:bg-pcc-dark-surface">
+              <button type="button" onClick={() => { if (window.confirm('Replace the current workspace with the sample story plan?')) onLoadSampleProject(); }} className="min-h-11 w-full rounded px-2 text-left text-xs font-medium text-pcc-ink hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-ink dark:hover:bg-pcc-dark-canvas">Reset Sample Plan…</button>
+            </div>
+          </details>
         )}
 
         <button
