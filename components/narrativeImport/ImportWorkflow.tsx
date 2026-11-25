@@ -41,6 +41,20 @@ const categoryOptions: Array<[Category, string]> = [
 const allCategories = categoryOptions.map(([id]) => id);
 const emptyExtraction = (): VerifiedExtraction => ({ findings: [], entities: [], relationships: [], ambiguities: [], rejectedEvidenceCount: 0 });
 
+export function buildSourceOnlyImportedProject(
+  source: ParsedNarrativeSource,
+  sourceId: string,
+  projectName: string,
+  now = Date.now(),
+): CreativeProject {
+  return assembleImportedProject(source, emptyExtraction(), [], {
+    sourceId,
+    acceptedIds: new Set(),
+    rejectedIds: new Set(),
+    projectName,
+  }, now);
+}
+
 interface Props {
   existingProjects?: CreativeProject[];
   activeProjectId?: string;
@@ -75,6 +89,7 @@ export default function ImportWorkflow({
   const [scope, setScope] = useState<'complete' | 'selective'>('complete');
   const [categories, setCategories] = useState<Category[]>(allCategories);
   const [analysisConfiguration, setAnalysisConfiguration] = useState<AnalysisConfiguration | null>(null);
+  const [sourceOnlyMode, setSourceOnlyMode] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [chunks, setChunks] = useState<SourceChunk[]>([]);
   const [segmentationComplete, setSegmentationComplete] = useState(false);
@@ -173,10 +188,11 @@ export default function ImportWorkflow({
     setCreateError('');
   };
 
-  // Preview assembled candidate when results exist so we can compute exact cross-project identity matches & duplicate digest
+  // Preview source-only candidates without analysis so append identity and duplicate checks still run.
   const previewAssembledCandidate = useMemo(() => {
-    if (!source || results.length === 0) return null;
+    if (!source || (results.length === 0 && !sourceOnlyMode)) return null;
     try {
+      if (sourceOnlyMode) return buildSourceOnlyImportedProject(source, sourceId, projectName.trim() || 'Imported narrative');
       const processedSpans = calculateProcessedCoverage(chunks.filter((chunk) => completedChunkIds.has(chunk.id)));
       return assembleImportedProject(source, extraction, identityMatches, {
         sourceId,
@@ -197,7 +213,7 @@ export default function ImportWorkflow({
     } catch {
       return null;
     }
-  }, [source, results.length, chunks, completedChunkIds, extraction, identityMatches, sourceId, acceptedIds, rejectedIds, projectName, analysisComplete, analysisConfiguration, scope, categories, instruction, failedChunks.length, callsUsed]);
+  }, [source, sourceOnlyMode, results.length, chunks, completedChunkIds, extraction, identityMatches, sourceId, acceptedIds, rejectedIds, projectName, analysisComplete, analysisConfiguration, scope, categories, instruction, failedChunks.length, callsUsed]);
 
   const crossProjectMatches = useMemo(() => {
     if (destination !== 'append' || !targetProject || !previewAssembledCandidate) return [];
@@ -211,7 +227,7 @@ export default function ImportWorkflow({
 
   const unresolvedIdentityCount = crossProjectMatches.filter((m) => !identityDecisions[m.incomingEntityId]).length;
 
-  const canCommitBase = Boolean(source && results.length > 0 && !busy && (analysisComplete || (hasIncompleteCoverage && allowIncomplete)));
+  const canCommitBase = Boolean(source && !busy && (!parsedHasFileRetentionGap || confirmExtractedOnly) && (sourceOnlyMode || (results.length > 0 && (analysisComplete || (hasIncompleteCoverage && allowIncomplete)))));
   const canCreateNew = canCommitBase && destination === 'new' && Boolean(projectName.trim());
   const canApplyAppend =
     canCommitBase &&
@@ -244,6 +260,7 @@ export default function ImportWorkflow({
   );
 
   const resetAnalysis = (clearSourceIdentity = false) => {
+    setSourceOnlyMode(false);
     setChunks([]); setSegmentationComplete(false); setResults([]); setCompletedChunkIds(new Set());
     setFailedChunks([]); setRejectedEvidenceCount(0); setCancelled(false); setCallsUsed(0);
     setRequestError(''); setAcceptedIds(new Set()); setRejectedIds(new Set()); setCreateError('');
@@ -301,6 +318,7 @@ export default function ImportWorkflow({
 
   const startAnalysis = async (retry = false, smallerChunks = false) => {
     if (!source || inProgressRef.current) return;
+    setSourceOnlyMode(false);
     const nextCalls = callsUsed;
     const callBudget = MAX_EXTRACTION_CALLS;
     if (nextCalls >= callBudget) { setRequestError(`This import reached its ${callBudget}-call safety budget. Create an explicitly incomplete project or start a new scoped import.`); return; }
@@ -397,6 +415,7 @@ export default function ImportWorkflow({
 
   const buildFinalImportedProject = (): CreativeProject => {
     if (!source) throw new Error('Source is missing.');
+    if (sourceOnlyMode) return buildSourceOnlyImportedProject(source, sourceId, projectName.trim() || 'Imported narrative');
     const processedSpans = calculateProcessedCoverage(chunks.filter((chunk) => completedChunkIds.has(chunk.id)));
     const assembled = assembleImportedProject(source, extraction, identityMatches, {
       sourceId,
@@ -491,10 +510,10 @@ export default function ImportWorkflow({
           <ol className="flex min-w-max items-center gap-2 text-xs sm:text-sm">
             {[
               { label: 'Choose source', complete: Boolean(source), current: !source },
-              { label: 'Inspect source', complete: Boolean(source), current: Boolean(source && chunks.length === 0) },
-              { label: 'Analyze source', complete: results.length > 0, current: Boolean(source && results.length === 0) },
-              { label: 'Review candidates', complete: acceptedIds.size + rejectedIds.size > 0, current: results.length > 0 && acceptedIds.size + rejectedIds.size === 0 },
-              { label: 'Choose destination & commit', complete: false, current: results.length > 0 && acceptedIds.size + rejectedIds.size > 0 },
+              { label: 'Inspect source', complete: Boolean(source), current: Boolean(source && chunks.length === 0 && !sourceOnlyMode) },
+              { label: 'Analyze source (optional)', complete: sourceOnlyMode || results.length > 0, current: Boolean(source && !sourceOnlyMode && results.length === 0) },
+              { label: 'Review candidates', complete: sourceOnlyMode || acceptedIds.size + rejectedIds.size > 0, current: results.length > 0 && acceptedIds.size + rejectedIds.size === 0 },
+              { label: 'Choose destination & commit', complete: false, current: sourceOnlyMode || results.length > 0 && acceptedIds.size + rejectedIds.size > 0 },
             ].map((step, index) => (
               <li key={step.label} className="flex items-center gap-2">
                 <span aria-current={step.current ? 'step' : undefined} className={`whitespace-nowrap rounded-full px-3 py-2 font-medium ${step.current ? 'bg-[#62445e] text-white' : step.complete ? 'bg-[#e9dfe8] text-[#62445e] dark:bg-purple-950 dark:text-purple-200' : 'bg-white text-gray-600 dark:bg-gray-900 dark:text-gray-400'}`}>
@@ -599,7 +618,8 @@ export default function ImportWorkflow({
         </section>
 
         {source && <section className="space-y-4 rounded-xl border border-[#dad8d2] bg-white p-4 dark:border-gray-700 dark:bg-gray-900 sm:p-5" aria-labelledby="import-config-title">
-          <h2 id="import-config-title" className="font-display text-xl font-semibold">2. Configure optional analysis</h2>
+          <h2 id="import-config-title" className="font-display text-xl font-semibold">2. Choose source-only import or optional analysis</h2>
+          <p className="text-sm">Source-only import keeps the inspected manuscript and provenance intact without analysis, AI provider calls, or extracted claims. Analysis is optional and adds separately reviewable candidate records.</p>
 
           <fieldset className="space-y-2 rounded-lg bg-[#fbfaf7] p-4 dark:bg-gray-950">
             <legend className="font-semibold">Import approach</legend>
@@ -645,6 +665,7 @@ export default function ImportWorkflow({
           <textarea id="import-instructions" className="min-h-20 w-full rounded border p-2 dark:bg-gray-950" maxLength={1000} value={instruction} onChange={(event) => { resetAnalysis(); setInstruction(event.target.value); }} />
           <p className="text-sm">Analysis sends selected source segments to the app’s configured Gemini model. No analysis request is made until Analyze source.</p>
           <div className="flex flex-wrap gap-2">
+            <button type="button" className={workspaceButton} disabled={!source || busy || creating || (parsedHasFileRetentionGap && !confirmExtractedOnly)} onClick={() => { resetAnalysis(); setSourceOnlyMode(true); }}>Continue with source only</button>
             <button type="button" className={workspaceButton} disabled={!canAnalyze || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false)}>Analyze source</button>
             {busy && <button type="button" className={workspaceButton} onClick={cancelAnalysis}>Cancel analysis</button>}
             {failedChunks.length > 0 && !busy && <button type="button" className={workspaceButton} disabled={callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(true)}>Retry failed segments ({failedChunks.length})</button>}
@@ -662,12 +683,11 @@ export default function ImportWorkflow({
           )}
         </section>}
 
-        {results.length > 0 && (
+        {(results.length > 0 || sourceOnlyMode) && (
           <section className="space-y-4 rounded-xl border border-[#dad8d2] bg-white p-4 dark:border-gray-700 dark:bg-gray-900 sm:p-5" aria-labelledby="import-review-title">
-            <h2 id="import-review-title" className="font-display text-xl font-semibold">3. Review extracted candidates</h2>
-            <p className="text-sm">
-              {analysisComplete ? 'All planned source segments were analyzed.' : `Partial analysis · ${progress}`}. Only confirmed findings enter the canonical graph; unchecked findings remain pending with evidence. Rejected quotes: {rejectedEvidenceCount}. Duplicate names remain separate pending author review.
-            </p>
+            <h2 id="import-review-title" className="font-display text-xl font-semibold">{sourceOnlyMode ? '3. Confirm source-only destination' : '3. Review extracted candidates'}</h2>
+            <p className="text-sm">{sourceOnlyMode ? 'No analysis was run. The complete inspected text remains the manuscript, and the source record carries its digest, parser metadata, and retention choice.' : `${analysisComplete ? 'All planned source segments were analyzed.' : `Partial analysis · ${progress}`}. Only confirmed findings enter the canonical graph; unchecked findings remain pending with evidence. Rejected quotes: ${rejectedEvidenceCount}. Duplicate names remain separate pending author review.`}</p>
+            {!sourceOnlyMode && <>
             <button
               type="button"
               className={workspaceButton}
@@ -861,6 +881,7 @@ export default function ImportWorkflow({
                 </p>
               ))}
             </div>
+            </>}
 
             <fieldset className="space-y-3 rounded-lg border border-[#dad8d2] bg-[#fbfaf7] p-4 dark:border-gray-700 dark:bg-gray-950" aria-labelledby="import-destination-title">
               <legend id="import-destination-title" className="font-semibold">4. Choose destination and commit</legend>
