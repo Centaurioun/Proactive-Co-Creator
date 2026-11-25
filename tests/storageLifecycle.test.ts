@@ -12,6 +12,7 @@ import {
   setEntityAttribute,
   updateStoryBibleField,
 } from '../lib/canonicalModel.ts';
+import { ensureNarrativeEnvelope } from '../lib/narrative/diagnostics/engine.ts';
 import { createUndoRedoState } from '../lib/historyEngine.ts';
 import {
   applyAsyncAnalysisCompletion,
@@ -96,6 +97,8 @@ class FakeIndexedDB {
   public failNextPut: string | null = null;
   public failNextGetAll: string | null = null;
   public abortNextPutWithQuota = false;
+  public afterReadAll?: () => void;
+  public putCalls = 0;
   public openDelayMs = 0;
   public getDelayMs = 0;
 
@@ -105,6 +108,8 @@ class FakeIndexedDB {
     this.failNextPut = null;
     this.failNextGetAll = null;
     this.abortNextPutWithQuota = false;
+    this.afterReadAll = undefined;
+    this.putCalls = 0;
     this.openDelayMs = 0;
     this.getDelayMs = 0;
   }
@@ -188,11 +193,13 @@ class FakeIndexedDB {
               }
               r.result = Array.from(this.records.values()).map((v) => structuredClone(v));
               r.onsuccess?.();
+              this.afterReadAll?.();
               scheduleCompleteIfIdle();
             }, 0);
             return r;
           },
           put: (val: { id: string }) => {
+            this.putCalls += 1;
             tx.pendingOps += 1;
             const r: FakeIDBRequest = {
               result: val.id,
@@ -317,6 +324,69 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
   beforeEach(() => {
     mockStorage.clear();
     fakeIdb.reset();
+  });
+
+  it('S1: a reload restores history without writing over a newer cross-tab commit', async () => {
+    const base = { ...createSampleProject(), id: 'reload-observed-base' };
+    const revision2 = { ...base, revision: 2, persistedRevision: 2, undoHistory: {
+      past: [{ label: 'Edit note', snapshot: base.snapshot }], future: [],
+    } };
+    const revision3 = {
+      ...revision2, revision: 3, persistedRevision: 3,
+      snapshot: { ...base.snapshot, freeformNotes: 'Newer tab commit' },
+    };
+    await saveProjectToIndexedDb(revision2);
+    fakeIdb.afterReadAll = () => {
+      fakeIdb.afterReadAll = undefined;
+      fakeIdb.records.set(base.id, revision3);
+    };
+    const reloaded = await reloadLatestProjectsFromStorage(base.id);
+    assert.equal(reloaded.activeProject.revision, 2);
+    assert.equal(reloaded.activeUndoState.past[0]?.label, 'Edit note');
+    assert.equal((await loadProjectsFromIndexedDb())[0]?.revision, 3);
+    assert.equal(fakeIdb.putCalls, 1);
+  });
+
+  it('S1: an explicit reload choice cannot overwrite a changed durable record or the local alternative', async () => {
+    const base = { ...createSampleProject(), id: 'reload-resolution-race', revision: 2, persistedRevision: 2 };
+    const local = { ...base, snapshot: { ...base.snapshot, freeformNotes: 'Local alternative' } };
+    const latest = { ...base, revision: 3, persistedRevision: 3, name: 'New durable title' };
+    await saveProjectToIndexedDb(base);
+    saveProjectToLocalStorage(local);
+    fakeIdb.afterReadAll = () => {
+      fakeIdb.afterReadAll = undefined;
+      fakeIdb.records.set(base.id, latest);
+    };
+    const resolved = await reloadLatestProjectsFromStorage(base.id, { resolution: 'prefer-local' });
+    assert.equal(resolved.conflictDetected, true);
+    assert.equal((await loadProjectsFromIndexedDb())[0]?.name, 'New durable title');
+    assert.equal(loadProjectsFromLocalStorage().projects[0]?.snapshot.freeformNotes, 'Local alternative');
+  });
+
+  it('S4: a database containing only an unsupported record is a read failure and reload never seeds', async () => {
+    assert.equal((await loadProjectsFromIndexedDbDetailed()).status, 'empty');
+    fakeIdb.records.set('future', { id: 'future', schemaVersion: 999 });
+    const loaded = await reloadLatestProjectsFromStorage();
+    assert.equal(loaded.idbStatus, 'read_error');
+    assert.equal(loaded.corruptRecordCount, 1);
+    assert.deepEqual([...fakeIdb.records.keys()], ['future']);
+    assert.equal(mockStorage.setItemCalls, 0);
+  });
+
+  it('S5: a same-revision checked write cannot overwrite different durable narrative content', async () => {
+    const base = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'narrative-cas-divergence' });
+    await saveProjectToIndexedDb(base);
+    const result = await saveProjectToIndexedDb({
+      ...base, narrative: {
+        ...base.narrative!,
+        automationPreferences: {
+          semanticAutoAnalysisEnabled: true, paused: false, scope: 'changed',
+          maxCallsPerSession: 3, maxTokensPerRun: 3000,
+        },
+      },
+    }, { requireExactBase: true, expectedPersistedRevision: base.revision });
+    assert.equal(result.conflictDetected, true);
+    assert.notEqual((await loadProjectsFromIndexedDb())[0].narrative?.automationPreferences?.semanticAutoAnalysisEnabled, true);
   });
 
   it('Defect 1A: reloadLatestProjectsFromStorage reloads the truly latest valid project from IndexedDB and localStorage with complete snapshots, revisions, history, and artifacts', async () => {

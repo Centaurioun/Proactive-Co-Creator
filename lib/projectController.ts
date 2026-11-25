@@ -387,6 +387,7 @@ export interface SerializedSaveOptions {
   expectedPersistedRevision?: number;
   expectedManuscriptVersionId?: string;
   expectedBaseSnapshotDigest?: string;
+  expectedBaseProject?: CreativeProject | null;
   intentId?: string;
   forceOverwrite?: boolean;
   allowDeleted?: boolean;

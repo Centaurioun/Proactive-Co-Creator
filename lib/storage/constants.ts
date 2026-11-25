@@ -18,6 +18,8 @@ export interface DurableWriteOptions {
   expectedPersistedRevision?: number;
   expectedManuscriptVersionId?: string;
   expectedBaseSnapshotDigest?: string;
+  /** Exact observed record, or null for create-if-absent. Checked inside the write transaction. */
+  expectedBaseProject?: CreativeProject | null;
   intentId?: string;
   forceOverwrite?: boolean;
   allowDeleted?: boolean;
