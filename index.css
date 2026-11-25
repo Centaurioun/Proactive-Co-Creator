@@ -1,12 +1,91 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+@font-face {
+  font-family: "DM Sans";
+  src: url('/fonts/dm-sans-variable.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url('/fonts/jetbrains-mono-variable.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: Literata;
+  src: url('/fonts/literata-variable.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+}
+
 @theme {
   --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Plus Jakarta Sans", "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-editorial: "Literata", Georgia, serif;
+  --font-serif: "Literata", Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-pcc-canvas: #f8f7f3;
+  --color-pcc-surface: #fffefa;
+  --color-pcc-ink: #282629;
+  --color-pcc-muted: #706c72;
+  --color-pcc-line: #dedbd7;
+  --color-pcc-action: #62445e;
+  --color-pcc-action-hover: #51374e;
+  --color-pcc-focus: #80627d;
+  --color-pcc-stale: #f5ebd8;
+  --color-pcc-stale-ink: #805318;
+  --color-pcc-evidence: #e5f0ea;
+  --color-pcc-evidence-ink: #2d6b55;
+  --color-pcc-dark-canvas: #1b191c;
+  --color-pcc-dark-surface: #242125;
+  --color-pcc-dark-ink: #f3eff2;
+  --color-pcc-dark-muted: #b9b0b9;
+  --color-pcc-dark-line: #48424a;
+  --color-blue-50: #f4eff3;
+  --color-blue-100: #e9dde7;
+  --color-blue-200: #d6c0d3;
+  --color-blue-300: #c0a0bb;
+  --color-blue-400: #9d7697;
+  --color-blue-500: #805e7b;
+  --color-blue-600: #62445e;
+  --color-blue-700: #51374e;
+  --color-blue-800: #422d40;
+  --color-blue-900: #332433;
+  --color-blue-950: #241a23;
+  --color-gray-50: #f8f7f3;
+  --color-gray-100: #f1efeb;
+  --color-gray-200: #dedbd7;
+  --color-gray-300: #cbc7c3;
+  --color-gray-400: #aaa5aa;
+  --color-gray-500: #827d83;
+  --color-gray-600: #706c72;
+  --color-gray-700: #514d53;
+  --color-gray-800: #373239;
+  --color-gray-900: #282629;
+  --color-gray-950: #1b191c;
   --color-gray-850: #1f2937;
-  --color-gray-950: #0d1117;
+}
+
+.pcc-shell {
+  background: var(--color-pcc-canvas);
+  color: var(--color-pcc-ink);
+}
+
+.dark .pcc-shell {
+  background: var(--color-pcc-dark-canvas);
+  color: var(--color-pcc-dark-ink);
+}
+
+.pcc-editorial {
+  font-family: var(--font-editorial);
+  font-optical-sizing: auto;
 }
 
 @keyframes fade-in-up {

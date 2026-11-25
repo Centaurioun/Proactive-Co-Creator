@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { CreativeProject } from '../../shared/types';
 import { deleteBackup, listBackups, saveBackup, setBackupPin, verifyBackup, type ProjectBackup } from '../../lib/narrative/recovery';
 import { planBackupRetention, type RetentionRecord } from '../../lib/narrative/retentionPlanner';
@@ -31,6 +31,10 @@ interface Props {
   onDownloadAllProjectsArchive?: (filename: string, bytes: Uint8Array) => void;
   autoBackupEnabled?: boolean;
   onToggleAutoBackup?: (enabled: boolean) => void;
+  onResumeWorkspace?: () => void;
+  onOpenProject?: (projectId: string) => void;
+  onCreateNewProject?: (name: string, initialPrompt: string) => Promise<boolean>;
+  historyContent?: ReactNode;
 }
 
 export default function ProjectHub({
@@ -50,12 +54,16 @@ export default function ProjectHub({
   onDownloadAllProjectsArchive,
   autoBackupEnabled = false,
   onToggleAutoBackup,
+  onResumeWorkspace,
+  onOpenProject,
+  onCreateNewProject,
+  historyContent,
 }: Props) {
   const [backups, setBackups] = useState<ProjectBackup[]>([]);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [label, setLabel] = useState('');
-  const [preview, setPreview] = useState<{ backup: ProjectBackup; name: string } | null>(null);
+  const [preview, setPreview] = useState<{ backup: ProjectBackup; project: CreativeProject } | null>(null);
 
   // Retention planner (opt-in, explicit confirmation before deletion)
   const [retentionEnabled, setRetentionEnabled] = useState(false);
@@ -69,6 +77,42 @@ export default function ProjectHub({
   const [archivePreview, setArchivePreview] = useState<VerifiedArchiveRestoreResult | null>(null);
   const [archiveError, setArchiveError] = useState('');
   const [archiveRestoredCount, setArchiveRestoredCount] = useState(0);
+  const [projectSearch, setProjectSearch] = useState('');
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectIdea, setNewProjectIdea] = useState('');
+  const [createProjectMessage, setCreateProjectMessage] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [activeHubView, setActiveHubView] = useState<'projects' | 'recovery' | 'history'>('projects');
+
+  const projectLibrary = useMemo(() => {
+    const currentFirst = [...savedProjects].sort((a, b) => {
+      if (a.id === project.id) return -1;
+      if (b.id === project.id) return 1;
+      return b.updatedAt - a.updatedAt;
+    });
+    const query = projectSearch.trim().toLocaleLowerCase();
+    return query ? currentFirst.filter((item) => item.name.toLocaleLowerCase().includes(query)) : currentFirst;
+  }, [savedProjects, project.id, projectSearch]);
+
+  const createProject = async () => {
+    if (!onCreateNewProject || !newProjectName.trim() || !newProjectIdea.trim() || creatingProject) return;
+    setCreatingProject(true);
+    setCreateProjectMessage('');
+    try {
+      const saved = await onCreateNewProject(newProjectName.trim(), newProjectIdea.trim());
+      if (!saved) {
+        setCreateProjectMessage('The project was not created. Resolve the workspace message and try again.');
+        return;
+      }
+      setNewProjectName('');
+      setNewProjectIdea('');
+      setCreateProjectMessage('Project created and saved.');
+    } catch (cause) {
+      setCreateProjectMessage(cause instanceof Error ? cause.message : 'The project could not be created.');
+    } finally {
+      setCreatingProject(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -188,14 +232,139 @@ export default function ProjectHub({
   };
 
   return (
-    <main className="min-h-0 flex-1 overflow-auto p-4 sm:p-6">
-      <div className="mx-auto max-w-4xl space-y-5">
-        <h1 className="text-2xl font-bold">Project Management &amp; Export Center</h1>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className={workspaceButton} onClick={openProjects}>Start from Idea / Manage projects</button>
-          <button type="button" className={workspaceButton} onClick={openImport}>Import &amp; Analyze Story</button>
-          <button type="button" className={workspaceButton} onClick={openExport}>Export Content / Restore JSON</button>
+    <main className="min-h-0 flex-1 overflow-auto bg-[#fbfaf7] p-4 text-[#25262a] dark:bg-gray-950 dark:text-gray-100 sm:p-6 lg:p-8">
+      <div className="mx-auto max-w-6xl space-y-6">
+        <nav aria-label="Project workspace sections" className="flex flex-wrap gap-2 border-b border-[#dad8d2] pb-3 dark:border-gray-700">
+          {([
+            ['projects', 'Projects'],
+            ['recovery', 'Backup & export'],
+            ['history', 'Revision history'],
+          ] as const).map(([id, label]) => (
+            <button key={id} type="button" aria-current={activeHubView === id ? 'page' : undefined} onClick={() => setActiveHubView(id)} className={`min-h-10 rounded-lg px-3 py-2 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62445e] ${activeHubView === id ? 'bg-[#e9dfe8] text-[#62445e] dark:bg-purple-950 dark:text-purple-100' : 'text-gray-600 hover:bg-white dark:text-gray-300 dark:hover:bg-gray-900'}`}>
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        {activeHubView === 'projects' && <>
+        <header className="space-y-2">
+          <h1 className="font-display text-3xl font-semibold">Projects</h1>
+          <p className="max-w-2xl text-sm text-gray-600 dark:text-gray-300">
+            Your story workspaces are saved in this browser. Open a project to continue, or start with a title and idea.
+          </p>
+        </header>
+
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(280px,0.9fr)]">
+          <div className="space-y-7">
+            <section aria-labelledby="resume-project-title" className="space-y-3 rounded-xl bg-[#f3edf2] p-6 dark:bg-purple-950/30 sm:p-7">
+              <p className="text-xs font-semibold text-[#62445e] dark:text-purple-200">CURRENT WORKSPACE</p>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-2">
+                  <h2 id="resume-project-title" className="font-display text-2xl font-semibold">{project.name}</h2>
+                  <p className="text-sm text-gray-700 dark:text-gray-300">
+                    Revision {project.revision} · {project.persistedRevision === project.revision ? 'Saved' : 'Saving'} · Updated {new Date(project.updatedAt).toLocaleString()}
+                  </p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300">
+                    {project.snapshot.entities.length} story elements · {project.snapshot.relationships.length} relationships · {project.snapshot.mode === 'image' ? 'Image' : 'Story'} mode
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="min-h-11 rounded-lg bg-[#62445e] px-4 py-2 text-sm font-semibold text-white hover:bg-[#50364d] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62445e]"
+                  onClick={() => (onResumeWorkspace ? onResumeWorkspace() : openProjects())}
+                >
+                  Continue where you left off
+                </button>
+              </div>
+            </section>
+
+            <section aria-labelledby="project-library-title" className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 id="project-library-title" className="font-display text-xl font-semibold">Your projects</h2>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">{savedProjects.length} saved in this browser</p>
+                </div>
+                <label className="sr-only" htmlFor="project-search">Search projects</label>
+                <input
+                  id="project-search"
+                  type="search"
+                  value={projectSearch}
+                  onChange={(event) => setProjectSearch(event.target.value)}
+                  placeholder="Search projects"
+                  className="min-h-10 w-full max-w-xs rounded-lg border border-[#dad8d2] bg-white px-3 text-sm text-gray-900 placeholder:text-gray-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#62445e] dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                />
+              </div>
+              {projectLibrary.length > 0 ? (
+                <ul className="divide-y divide-[#dad8d2] overflow-hidden rounded-xl border border-[#dad8d2] bg-white dark:divide-gray-800 dark:border-gray-700 dark:bg-gray-900">
+                  {projectLibrary.map((item) => {
+                    const isCurrent = item.id === project.id;
+                    return (
+                      <li key={item.id} className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 ${isCurrent ? 'bg-[#f7f2f6] dark:bg-purple-950/20' : ''}`}>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{item.name}{isCurrent && <span className="ml-2 rounded-full bg-[#e9dfe8] px-2 py-0.5 text-xs font-medium text-[#62445e] dark:bg-purple-900/60 dark:text-purple-100">Open now</span>}</p>
+                          <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                            Revision {item.revision} · {item.snapshot.mode === 'image' ? 'Image' : 'Story'} mode · Updated {new Date(item.updatedAt).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="min-h-10 rounded-lg px-3 text-sm font-semibold text-[#62445e] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62445e] dark:text-purple-200"
+                          onClick={() => {
+                            if (isCurrent && onResumeWorkspace) onResumeWorkspace();
+                            else if (onOpenProject) onOpenProject(item.id);
+                            else openProjects();
+                          }}
+                        >
+                          {isCurrent ? 'Continue' : 'Open project'}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p className="rounded-xl border border-dashed border-[#b9b4b8] p-5 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">{savedProjects.length ? 'No projects match that search.' : 'No saved projects yet. Start a new project or import a story.'}</p>
+              )}
+            </section>
+          </div>
+
+          <aside className="space-y-4 rounded-xl border border-[#dad8d2] bg-white p-5 dark:border-gray-700 dark:bg-gray-900 sm:p-6">
+            <div>
+              <h2 className="font-display text-xl font-semibold">Start a new project</h2>
+              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">Start with a blank story idea or bring in a manuscript for review.</p>
+            </div>
+            {onCreateNewProject ? (
+              <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void createProject(); }}>
+                <label className="block space-y-1 text-sm font-medium" htmlFor="new-project-title">
+                  <span>Project title</span>
+                  <input id="new-project-title" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} maxLength={100} required className="min-h-10 w-full rounded-lg border border-[#dad8d2] bg-white px-3 text-sm font-normal dark:border-gray-700 dark:bg-gray-950" />
+                </label>
+                <label className="block space-y-1 text-sm font-medium" htmlFor="new-project-idea">
+                  <span>Starting idea</span>
+                  <textarea id="new-project-idea" value={newProjectIdea} onChange={(event) => setNewProjectIdea(event.target.value)} maxLength={8000} required rows={3} className="w-full rounded-lg border border-[#dad8d2] bg-white px-3 py-2 text-sm font-normal dark:border-gray-700 dark:bg-gray-950" />
+                </label>
+                <button type="submit" disabled={creatingProject || !newProjectName.trim() || !newProjectIdea.trim()} className="min-h-11 w-full rounded-lg bg-[#62445e] px-4 py-2 text-sm font-semibold text-white hover:bg-[#50364d] disabled:cursor-not-allowed disabled:opacity-50">{creatingProject ? 'Creating project…' : 'Create project'}</button>
+                {createProjectMessage && <p role="status" className="text-sm text-gray-700 dark:text-gray-300">{createProjectMessage}</p>}
+              </form>
+            ) : (
+              <button type="button" className="min-h-11 w-full rounded-lg border border-[#dad8d2] px-4 py-2 text-left text-sm font-semibold hover:bg-[#f7f2f6] dark:border-gray-700 dark:hover:bg-gray-800" onClick={openProjects}>
+                New project <span className="mt-1 block text-xs font-normal text-gray-600 dark:text-gray-300">Continue in the plan workspace to create one from your idea.</span>
+              </button>
+            )}
+            <button type="button" className="min-h-11 w-full rounded-lg border border-[#dad8d2] px-4 py-2 text-left text-sm font-semibold hover:bg-[#f7f2f6] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62445e] dark:border-gray-700 dark:hover:bg-gray-800" onClick={openImport}>
+              Import story <span className="mt-1 block text-xs font-normal text-gray-600 dark:text-gray-300">Inspect the source and candidates before creating a project.</span>
+            </button>
+            <p className="text-xs text-gray-600 dark:text-gray-400">Imported material is reviewed separately; it does not silently replace your current story plan.</p>
+          </aside>
         </div>
+
+        </>}
+
+        {activeHubView === 'recovery' && <>
+        <section aria-labelledby="recovery-export-title" className="space-y-1 border-t border-[#dad8d2] pt-6 dark:border-gray-700">
+          <h2 id="recovery-export-title" className="font-display text-xl font-semibold">Backup, export &amp; recovery</h2>
+          <p className="text-sm text-gray-600 dark:text-gray-300">A verified project backup contains restorable project data. Content exports such as DOCX, Markdown and TXT are separate files.</p>
+          <button type="button" className="mt-2 min-h-10 rounded-lg px-3 text-sm font-semibold text-[#62445e] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#62445e] dark:text-purple-200" onClick={openExport}>Open export center</button>
+        </section>
 
         {/* Export Center (Package G) */}
         <section aria-labelledby="export-center-heading" className="space-y-3 rounded-lg border border-gray-300 p-4 dark:border-gray-700">
@@ -452,8 +621,8 @@ export default function ProjectHub({
                     disabled={busy}
                     onClick={() =>
                       void perform(async () => {
-                        setPreview({ backup, name: (await verifyBackup(backup)).name });
-                        return '';
+                        setPreview({ backup, project: await verifyBackup(backup) });
+                        return 'Backup verified. Review its contents before restoring.';
                       })
                     }
                   >
@@ -506,8 +675,25 @@ export default function ProjectHub({
             ))}
           </ul>
           {preview && (
-            <div className="space-y-2 rounded border border-amber-400 p-3">
-              <p>Restore “{preview.name}”, revision {preview.backup.revision}, as a separate project with its own ID.</p>
+            <div className="space-y-3 rounded-xl border border-[#d9bb83] bg-[#f8efdf] p-4 text-sm dark:border-amber-800 dark:bg-amber-950/30">
+              <div>
+                <h3 className="font-semibold text-[#6e4c21] dark:text-amber-200">Verified backup preview</h3>
+                <p className="mt-1 text-[#6e4c21] dark:text-amber-100">Choose whether to restore a separate copy or replace the active project. A replacement saves a verified safety checkpoint first.</p>
+              </div>
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border border-[#d9bb83] bg-white/70 p-3 dark:border-amber-900 dark:bg-gray-900/60">
+                  <dt className="font-semibold">Active project · Revision {project.revision}</dt>
+                  <dd className="mt-1">{project.name}</dd>
+                  <dd className="mt-1 text-xs text-gray-700 dark:text-gray-300">{project.snapshot.entities.length} elements · {project.snapshot.relationships.length} relationships</dd>
+                </div>
+                <div className="rounded-lg border border-[#d9bb83] bg-white/70 p-3 dark:border-amber-900 dark:bg-gray-900/60">
+                  <dt className="font-semibold">Backup · Revision {preview.backup.revision}</dt>
+                  <dd className="mt-1">{preview.project.name}</dd>
+                  <dd className="mt-1 text-xs text-gray-700 dark:text-gray-300">{preview.project.snapshot.entities.length} elements · {preview.project.snapshot.relationships.length} relationships · Verified {new Date(preview.backup.createdAt).toLocaleString()}</dd>
+                </div>
+              </dl>
+              <p className="text-xs text-[#6e4c21] dark:text-amber-100">This project backup contains restorable project data. Content exports are separate files and cannot restore a project.</p>
+              <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 className={workspaceButton}
@@ -520,7 +706,7 @@ export default function ProjectHub({
                   })
                 }
               >
-                Restore project copy
+                Restore as a separate project
               </button>{' '}
               <button
                 type="button"
@@ -536,12 +722,25 @@ export default function ProjectHub({
                   });
                 }}
               >
-                Replace current project
+                Review replacement confirmation
               </button>{' '}
               <button type="button" className={workspaceButton} disabled={busy} onClick={() => setPreview(null)}>Cancel</button>
+              </div>
             </div>
           )}
         </section>
+        </>}
+
+        {activeHubView === 'history' && (
+          <section aria-label="Revision history" className="min-w-0">
+            {historyContent ?? (
+              <div className="rounded-xl border border-dashed border-[#b9b4b8] bg-white p-5 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+                The full-width revision view is not connected here yet. Open revision history from the plan workspace.
+                <button type="button" className="ml-2 font-semibold text-[#62445e] underline dark:text-purple-200" onClick={openProjects}>Open plan workspace</button>
+              </div>
+            )}
+          </section>
+        )}
       </div>
     </main>
   );

@@ -84,27 +84,32 @@ const ChecksPanel: React.FC<ChecksPanelProps> = ({
             Readiness reminders are optional setup items and are kept separate from continuity conflicts.
           </p>
           <ul className="space-y-1">
-            {readinessItems.map((item) => (
-              <li key={item.id} className="flex items-center justify-between gap-2">
-                <span>{item.title}</span>
-                {item.storyField && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onNavigateConsistencyTarget?.({
-                        id: item.id,
-                        kind: 'story_bible',
-                        label: `Open ${item.storyField}`,
-                        storyField: item.storyField,
-                      })
-                    }
-                    className="text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:underline shrink-0"
-                  >
-                    Open field
-                  </button>
-                )}
-              </li>
-            ))}
+            {readinessItems.map((item) => {
+              const fieldLabel = item.storyField
+                ?.replace(/([A-Z])/g, ' $1')
+                .replace(/^./, (first) => first.toUpperCase());
+              return (
+                <li key={item.id} className="flex items-center justify-between gap-2">
+                  <span>{item.title}</span>
+                  {item.storyField && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onNavigateConsistencyTarget?.({
+                          id: item.id,
+                          kind: 'story_bible',
+                          label: `Open ${item.storyField}`,
+                          storyField: item.storyField,
+                        })
+                      }
+                      className="text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:underline shrink-0"
+                    >
+                      Open {fieldLabel} field
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}

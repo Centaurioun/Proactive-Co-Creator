@@ -96,15 +96,40 @@ async (page) => {
   const browser = page.context().browser();
   const journeys = [];
 
+  const createProjectFromHub = async (p, name, idea) => {
+    await p.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await p.getByRole('textbox', { name: 'Project title' }).fill(name);
+    await p.getByRole('textbox', { name: 'Starting idea' }).fill(idea);
+    await p.getByRole('button', { name: 'Create project', exact: true }).click();
+    await p.waitForFunction((expectedName) => {
+      const select = document.querySelector('select[aria-label="Current project"]');
+      return select?.selectedOptions[0]?.textContent?.trim() === expectedName;
+    }, name);
+  };
+
   const runJourney = async (id, title, fixtureKey, mockHandlers, fn, opts = {}) => {
     const t0 = Date.now();
     const ctx = await browser.newContext({ viewport: opts.viewport || { width: 1440, height: 900 } });
     const proj = fixtureKey ? FIXTURES[fixtureKey] : null;
-    await ctx.addInitScript(({ p, failIdb }) => {
-      if (p && !sessionStorage.getItem('__stage0_seeded')) {
+    await ctx.addInitScript(({ p, failIdb, trackIdbWrites, workspaceMode }) => {
+      const shouldSeedScenario = !sessionStorage.getItem('__stage0_seeded');
+      if (shouldSeedScenario) {
         sessionStorage.setItem('__stage0_seeded', '1');
-        localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [p.id]: p }));
-        localStorage.setItem('proactive_co_creator_active_id_v2', p.id);
+        if (p) {
+          localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [p.id]: p }));
+          localStorage.setItem('proactive_co_creator_active_id_v2', p.id);
+        }
+        if (workspaceMode) {
+          localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: workspaceMode }));
+        }
+      }
+      if (trackIdbWrites) {
+        window.__j10IdbWriteCount = 0;
+        const originalPut = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (...args) {
+          window.__j10IdbWriteCount += 1;
+          return originalPut.apply(this, args);
+        };
       }
       if (failIdb) {
         window.__idbPuts = 0;
@@ -123,7 +148,7 @@ async (page) => {
           return origGetAll.apply(this, a);
         };
       }
-    }, { p: proj, failIdb: Boolean(opts.failIdb) });
+    }, { p: proj, failIdb: Boolean(opts.failIdb), trackIdbWrites: Boolean(opts.trackIdbWrites), workspaceMode: opts.workspaceMode ?? 'plan' });
 
     const p = await ctx.newPage();
     const pageErrors = [];
@@ -170,7 +195,9 @@ async (page) => {
         evidence: outcome.evidence || {},
         friction: outcome.friction || [],
         mockedApiHits: mockedHits.length,
+        mockedApiUrls: mockedHits,
         unmockedApiHits: unmockedHits.length,
+        unmockedApiUrls: unmockedHits,
         pageErrors,
         consoleErrors,
       });
@@ -183,7 +210,9 @@ async (page) => {
         durationMs: Date.now() - t0,
         error: err instanceof Error ? err.message : String(err),
         mockedApiHits: mockedHits.length,
+        mockedApiUrls: mockedHits,
         unmockedApiHits: unmockedHits.length,
+        unmockedApiUrls: unmockedHits,
         pageErrors,
         consoleErrors,
       });
@@ -217,27 +246,32 @@ async (page) => {
       },
     },
   }, async (p) => {
-    const ideaBox = p.locator('textarea').first();
+    const writeIsInitialWorkspace = await p.getByRole('button', { name: 'Write', exact: true }).getAttribute('aria-current');
+    if (writeIsInitialWorkspace !== 'page') throw new Error('First launch did not open the Write workspace.');
+    await p.getByRole('button', { name: 'Plan', exact: true }).click();
+    const ideaBox = p.locator('textarea:visible').first();
     const initialVal = await ideaBox.inputValue();
     await ideaBox.fill('An apprentice Clockmaker repairs brass chimes inside a foggy Bell Tower.');
     await p.getByRole('button', { name: /Reanalyze Idea|Analyze/i }).click();
     await p.locator('[aria-label^="Entity Clockmaker."]').first().waitFor({ state: 'visible', timeout: 6000 });
+    await p.getByRole('button', { name: /Inbox/ }).click();
     const hasClarif = await p.getByText('What storm threatens the harbor?').isVisible();
     return {
       status: 'PASS',
       clicks: 2,
       steps: ['Seed FX-EMPTY', 'Fill idea textarea', 'Click Reanalyze Idea', 'Verify Clockmaker node + clarification render'],
-      evidence: { initialEmptyTextareaValue: initialVal, clockmakerRendered: true, clarificationRendered: hasClarif },
+      evidence: { initialWorkspace: 'write', initialEmptyTextareaValue: initialVal, clockmakerRendered: true, clarificationRendered: hasClarif },
       friction: [
         initialVal ? `Blank workspace pre-populated textarea with "${initialVal}" instead of empty placeholder` : '',
         'Empty graph canvas has no empty-state prompt/CTA guiding first-time users to click Reanalyze Idea',
         'Action button reads "Reanalyze Idea" even on an unanalyzed empty project',
       ].filter(Boolean),
     };
-  });
+  }, { workspaceMode: false });
 
   // J02: Review inferred attribute/relationship -> Accept/Reject/Defer -> inspect target
   await runJourney('J02', 'Decision Inbox Accept/Reject/Defer & Inspect target', 'FX-SIMPLE', {}, async (p) => {
+    await p.getByRole('button', { name: /Inbox/ }).click();
     const inbox = p.getByLabel('Creative Decisions and Batch Editor');
     const pendingBefore = await inbox.textContent();
     const firstAccept = inbox.getByRole('button', { name: 'Accept', exact: true }).first();
@@ -284,6 +318,7 @@ async (page) => {
       },
     },
   }, async (p) => {
+    await p.getByRole('button', { name: /Inbox/ }).click();
     const inbox = p.getByLabel('Creative Decisions and Batch Editor');
     await inbox.getByRole('button', { name: 'Custom...' }).first().click();
     const customInput = inbox.locator('input[aria-label^="Custom value for"]').first();
@@ -377,6 +412,7 @@ async (page) => {
 
   // J06: NL batch -> preview -> deselect -> stale warning -> Review modal -> Re-preview -> Apply
   await runJourney('J06', 'NL batch preview, partial selection, stale guard, Review modal & Apply', 'FX-BUSY', {}, async (p) => {
+    await p.getByRole('button', { name: /Inbox/ }).click();
     await p.locator('#nl-batch-input').fill('Make Rabbit elderly. Make Fox elderly. The party should be mysterious.');
     await p.getByRole('button', { name: 'Preview', exact: true }).click();
     await p.getByText(/Proposed Batch Operations \(3\/3\)/).waitFor({ state: 'visible' });
@@ -487,22 +523,33 @@ async (page) => {
 
   // J09: Create A/B projects -> edit A -> switch B -> switch A -> reload -> Export/Import JSON
   await runJourney('J09', 'Create A/B projects, switch, reload & JSON export/import roundtrip', 'FX-SIMPLE', {}, async (p) => {
-    await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByLabel('New project title').fill('Project Alpha J09');
-    await p.getByLabel('New project initial prompt').fill('Alpha lighthouse mystery');
-    await p.getByRole('button', { name: 'Create Project' }).click();
+    await createProjectFromHub(p, 'Project Alpha J09', 'Alpha lighthouse mystery');
+    const newProjectOpenedInWrite = await p.getByRole('button', { name: 'Write', exact: true }).getAttribute('aria-current') === 'page';
+    await p.getByRole('button', { name: 'Plan', exact: true }).click();
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     await p.locator('#bible-genre').fill('Maritime Noir');
-    await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByRole('button', { name: /^Woodland Lantern Mystery/ }).click();
-    await p.getByRole('button', { name: /^Project Alpha J09/ }).click();
+    const currentProject = p.getByLabel('Current project');
+    await currentProject.selectOption({ label: 'Woodland Lantern Mystery (FX-SIMPLE)' });
+    await currentProject.selectOption({ label: 'Project Alpha J09' });
     await p.waitForTimeout(650);
+    const inventoryBeforeReload = await p.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('proactive_co_creator_projects_v2') || '{}')).sort());
     await p.reload({ waitUntil: 'networkidle' });
+    const planPreferenceRestored = await p.getByRole('button', { name: 'Plan', exact: true }).getAttribute('aria-current') === 'page';
+    const planPreferenceRecord = await p.evaluate(() => JSON.parse(localStorage.getItem('proactive_co_creator_workspace_preference_v1') || 'null'));
+    const inventoryAfterPlanReload = await p.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('proactive_co_creator_projects_v2') || '{}')).sort());
+    const planReloadPreservedInventory = JSON.stringify(inventoryBeforeReload) === JSON.stringify(inventoryAfterPlanReload);
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     const survivedGenre = await p.locator('#bible-genre').inputValue();
+    await p.getByRole('button', { name: 'Review', exact: true }).click();
+    await p.reload({ waitUntil: 'networkidle' });
+    const reviewPreferenceRestored = await p.getByRole('button', { name: 'Review', exact: true }).getAttribute('aria-current') === 'page';
+    const reviewPreferenceRecord = await p.evaluate(() => JSON.parse(localStorage.getItem('proactive_co_creator_workspace_preference_v1') || 'null'));
+    const inventoryAfterReviewReload = await p.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('proactive_co_creator_projects_v2') || '{}')).sort());
+    const reviewReloadPreservedInventory = JSON.stringify(inventoryBeforeReload) === JSON.stringify(inventoryAfterReviewReload);
 
     // Test JSON paste import
-    await p.getByRole('tab', { name: 'History' }).click();
+    await p.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await p.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Revision history' }).click();
     const importPayload = JSON.stringify({
       ...FIXTURES['FX-SIMPLE'],
       id: 'fx_imported_j09',
@@ -510,18 +557,20 @@ async (page) => {
     });
     await p.locator('input[placeholder*="paste raw project JSON" i]').fill(importPayload);
     await p.getByRole('button', { name: 'Preview JSON' }).click();
+    const exportPromptLocator = p.getByRole('button', { name: /Export Refined Prompt/i });
+    const exportPromptBtnText = await exportPromptLocator.count() ? await exportPromptLocator.first().textContent() : 'Not present in this state';
     await p.getByRole('button', { name: 'Restore a copy' }).click();
-    await p.getByText('Restored project copy saved.', { exact: true }).waitFor();
+    await p.waitForFunction(() => document.querySelector('nav[aria-label="Narrative workspace"] button[aria-current="page"]')?.textContent === 'Write');
     await p.waitForTimeout(200);
-    const importedVisible = await p.getByText(/Imported J09 World \(restored copy\)/).first().isVisible();
-    const exportPromptBtnText = await p.getByRole('button', { name: /Export Refined Prompt/i }).textContent();
+    const restoredProjectOpenedInWrite = await p.getByRole('button', { name: 'Write', exact: true }).getAttribute('aria-current') === 'page';
+    const restoredProjectName = (await p.getByRole('combobox', { name: 'Current project' }).locator('option:checked').textContent())?.trim() ?? '';
+    const importedVisible = restoredProjectName === 'Imported J09 World (restored copy)';
     return {
-      status: survivedGenre === 'Maritime Noir' && importedVisible ? 'PASS' : 'FAIL',
+      status: newProjectOpenedInWrite && planPreferenceRestored && planPreferenceRecord?.version === 1 && planPreferenceRecord?.mode === 'plan' && planReloadPreservedInventory && reviewPreferenceRestored && reviewPreferenceRecord?.version === 1 && reviewPreferenceRecord?.mode === 'review' && reviewReloadPreservedInventory && survivedGenre === 'Maritime Noir' && restoredProjectOpenedInWrite && importedVisible ? 'PASS' : 'FAIL',
       clicks: 8,
-      steps: ['Open History', 'Create Project Alpha J09', 'Edit genre', 'Switch away & back', 'Reload & verify', 'Preview and restore JSON as a copy via paste'],
-      evidence: { survivedGenre, importedVisible, exportPromptBtnText: (exportPromptBtnText || '').trim() },
+      steps: ['Open Projects and create Project Alpha J09', 'Edit genre', 'Switch away & back', 'Reload Plan and verify stable preference/project inventory', 'Reload Review and verify stable preference/project inventory', 'Preview and restore JSON as a copy via paste'],
+      evidence: { newProjectOpenedInWrite, planPreferenceRestored, planPreferenceRecord, planReloadPreservedInventory, reviewPreferenceRestored, reviewPreferenceRecord, reviewReloadPreservedInventory, projectInventory: inventoryBeforeReload, survivedGenre, restoredProjectOpenedInWrite, restoredProjectName, importedVisible, exportPromptBtnText: (exportPromptBtnText || '').trim() },
       friction: [
-        'Project creation/switching/export/import are buried inside the right-side "History" tab instead of a top-level project selector',
         'Export button reads "Export Refined Prompt (.txt)" while App.tsx downloads refined-prompt.md (Markdown)',
       ],
     };
@@ -529,25 +578,81 @@ async (page) => {
 
   // J10: Open Checks -> navigate to affected entity & Story Bible field -> verify 0 revision bump
   await runJourney('J10', 'Consistency Checks navigation to entity & Story Bible field without revision bump', 'FX-BUSY', {}, async (p) => {
-    const revBefore = (await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1];
+    const semanticSnapshotDigest = async () => p.evaluate(async () => {
+      const projectId = localStorage.getItem('proactive_co_creator_active_id_v2');
+      if (!projectId) throw new Error('J10 active project identity is missing.');
+      const snapshot = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('proactive_co_creator_db_v2', 1);
+        request.onerror = () => reject(request.error || new Error('Could not open authoritative project storage.'));
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction('projects', 'readonly');
+          const get = tx.objectStore('projects').get(projectId);
+          get.onerror = () => reject(get.error || new Error('Could not read authoritative project storage.'));
+          get.onsuccess = () => resolve(get.result?.snapshot);
+          tx.oncomplete = () => db.close();
+          tx.onabort = () => reject(tx.error || new Error('Authoritative project read aborted.'));
+        };
+      });
+      if (!snapshot) throw new Error('J10 active semantic snapshot is missing from IndexedDB.');
+      const canonical = (value) => {
+        if (Array.isArray(value)) return `[${value.map(item => item === undefined || typeof item === 'function' || typeof item === 'symbol' ? 'null' : canonical(item)).join(',')}]`;
+        if (value && typeof value === 'object') return `{${Object.keys(value).filter(key => value[key] !== undefined && typeof value[key] !== 'function' && typeof value[key] !== 'symbol').sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+        const serialized = JSON.stringify(value);
+        if (serialized === undefined) throw new Error('J10 semantic projection contains a non-JSON value.');
+        return serialized;
+      };
+      const projection = canonical(snapshot);
+      JSON.parse(projection);
+      const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(projection));
+      const digest = [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      return { projection, digest };
+    });
+    const semanticBefore = await semanticSnapshotDigest();
+    await p.waitForFunction(() => /\d+\s+revs?/.test(document.querySelector('footer')?.textContent || ''));
+    const revBefore = Number((await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1]);
+    if (!Number.isInteger(revBefore) || revBefore < 1) throw new Error(`Invalid starting revision: ${revBefore}`);
+    await p.waitForFunction(() => {
+      const current = window.__j10IdbWriteCount;
+      if (window.__j10LastWriteCount === current) {
+        window.__j10StableWriteFrames = (window.__j10StableWriteFrames || 0) + 1;
+      } else {
+        window.__j10LastWriteCount = current;
+        window.__j10StableWriteFrames = 0;
+      }
+      return window.__j10StableWriteFrames >= 2;
+    });
+    const idbWritesBefore = await p.evaluate(() => window.__j10IdbWriteCount);
     await p.getByRole('tab', { name: /Checks/ }).click();
+    await p.screenshot({ path: 'docs/qa/evidence/browser/j10-checks-desktop-1440x900.png' });
     await p.getByRole('button', { name: 'Inspect Fox' }).click();
-    const inspSelected = await p.getByRole('tab', { name: 'Inspector' }).getAttribute('aria-selected');
+    await p.getByRole('heading', { name: 'Fox', exact: true }).waitFor();
+    const foxSelected = await p.getByRole('heading', { name: 'Fox', exact: true }).isVisible();
+    await p.screenshot({ path: 'docs/qa/evidence/browser/j10-fox-inspector-desktop-1440x900.png' });
     await p.getByRole('tab', { name: /Checks/ }).click();
-    await p.getByRole('button', { name: 'Edit Tone' }).click();
-    await p.waitForTimeout(120);
+    const openTone = p.getByRole('button', { name: 'Open Tone field' });
+    const openToneCount = await openTone.count();
+    if (openToneCount !== 1) throw new Error(`Expected one accessible Tone navigation action; found ${openToneCount}`);
+    await openTone.click();
+    await p.waitForFunction(() => document.activeElement?.id === 'bible-tone');
     const focusedId = await p.evaluate(() => document.activeElement?.id || '');
-    const revAfter = (await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1];
+    const toneFieldVisible = await p.locator('#bible-tone').isVisible();
+    const storyBibleSelected = await p.getByRole('tab', { name: 'Story Bible' }).getAttribute('aria-selected');
+    const revAfter = Number((await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1]);
+    const idbWritesAfter = await p.evaluate(() => window.__j10IdbWriteCount);
+    const semanticAfter = await semanticSnapshotDigest();
+    await p.screenshot({ path: 'docs/qa/evidence/browser/j10-tone-focus-desktop-1440x900.png' });
     return {
-      status: inspSelected === 'true' && focusedId === 'bible-tone' && revBefore === revAfter ? 'PASS' : 'FAIL',
+      status: foxSelected && focusedId === 'bible-tone' && toneFieldVisible && storyBibleSelected === 'true' &&
+        Number.isInteger(revAfter) && revBefore === revAfter && idbWritesBefore === idbWritesAfter && semanticBefore.digest === semanticAfter.digest && semanticBefore.projection === semanticAfter.projection ? 'PASS' : 'FAIL',
       clicks: 4,
-      steps: ['Open Checks tab', 'Click Inspect Fox', 'Return to Checks', 'Click Edit Tone'],
-      evidence: { revBefore, revAfter, inspSelected, focusedId },
+      steps: ['Read authoritative IndexedDB semantic snapshot', 'Open Checks tab and capture', 'Click Inspect Fox and capture Inspector', 'Return to Checks', 'Open Tone readiness field and capture focus', 'Read authoritative IndexedDB semantic snapshot again'],
+      evidence: { revBefore, revAfter, semanticProjectionBefore: semanticBefore.projection, semanticProjectionAfter: semanticAfter.projection, digestBefore: semanticBefore.digest, digestAfter: semanticAfter.digest, foxSelected, toneFieldVisible, storyBibleSelected, focusedId, idbWritesBefore, idbWritesAfter, openToneCount },
       friction: [
         'After navigating from Checks to Inspector/Story Bible, there is no explicit "Back to Checks" breadcrumb; user must re-click the Checks tab',
       ],
     };
-  });
+  }, { trackIdbWrites: true });
 
   // J11: IndexedDB read_error -> 0 unsolicited IDB puts -> Retry recovery + failed API error banner
   await runJourney('J11', 'IndexedDB read_error write gate, recovery & failed generation error feedback', 'FX-SIMPLE', {
@@ -568,14 +673,17 @@ async (page) => {
     await retryBtn.click();
     await p.waitForTimeout(300);
     // Trigger failed Story generation to verify error banner
+    await p.getByRole('button', { name: 'Plan', exact: true }).click();
     await p.locator('footer').getByRole('button', { name: 'Generate Story' }).click();
     await p.waitForTimeout(350);
-    const apiErrVisible = await p.getByText(/Gemini API key is not configured/i).first().isVisible();
+    const generationAlert = p.getByRole('alert').filter({ hasText: 'Generation Failed' }).last();
+    const apiErrVisible = await generationAlert.isVisible().catch(() => false);
+    const apiErrText = apiErrVisible ? (await generationAlert.textContent() || '').trim() : '';
     return {
       status: bannerVisible && idbPutsWhileBlocked === 0 && apiErrVisible ? 'PASS' : 'FAIL',
       clicks: 2,
       steps: ['Simulate IDB read_error & reload', 'Verify Retry Storage Read banner + 0 IDB puts', 'Recover storage read', 'Trigger mock 503 generation & verify error message'],
-      evidence: { bannerVisible, idbPutsWhileBlocked, apiErrVisible },
+      evidence: { bannerVisible, idbPutsWhileBlocked, apiErrVisible, apiErrText },
       friction: [
         'On 390px mobile, storage alert banner stacks above PromptInput and squeezes remaining workspace height significantly (see SC-15)',
       ],
@@ -584,15 +692,22 @@ async (page) => {
 
   // J12: Revision history -> Restore -> Undo/Redo -> Export Markdown
   await runJourney('J12', 'Revision history Restore, safety checkpoint Undo/Redo & export', 'FX-BUSY', {}, async (p) => {
-    await p.getByRole('tab', { name: 'History' }).click();
-    const restoreBtn = p.getByRole('button', { name: 'Restore', exact: true }).first();
+    await p.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await p.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Revision history' }).click();
+    const savedRevisions = p.getByLabel('Saved revisions');
+    const restoreBtn = savedRevisions.getByRole('button').filter({ hasText: 'Revision 1' }).last();
     await restoreBtn.scrollIntoViewIfNeeded();
     await restoreBtn.click();
+    await p.getByRole('button', { name: /^Review restore$/ }).click();
+    await p.getByRole('button', { name: /^Restore Revision/ }).click();
     await p.waitForTimeout(200);
     const statusVisible = await p.getByText(/Restored project revision safely/i).isVisible();
+    await p.getByRole('button', { name: 'Plan', exact: true }).click();
     const undoEnabled = !(await p.getByRole('button', { name: 'Undo' }).isDisabled());
     await p.getByRole('button', { name: 'Undo' }).click();
     const redoEnabled = !(await p.getByRole('button', { name: 'Redo' }).isDisabled());
+    await p.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await p.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Revision history' }).click();
     const mdBtnVisible = await p.getByRole('button', { name: /Export Story Bible as Markdown/i }).isVisible();
     return {
       status: statusVisible && undoEnabled && redoEnabled && mdBtnVisible ? 'PASS' : 'FAIL',
@@ -634,6 +749,7 @@ async (page) => {
       await ctx.addInitScript((proj) => {
         localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [proj.id]: proj }));
         localStorage.setItem('proactive_co_creator_active_id_v2', proj.id);
+        localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
       }, FIXTURES['FX-BUSY']);
       const p = await ctx.newPage();
       await p.route('**/api/**', (r) => r.fulfill({ status: 500, body: '{}' }));
@@ -702,6 +818,7 @@ async (page) => {
     await ctx.addInitScript((proj) => {
       localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [proj.id]: proj }));
       localStorage.setItem('proactive_co_creator_active_id_v2', proj.id);
+      localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
     }, FIXTURES['FX-BUSY']);
     const p = await ctx.newPage();
     await p.route('**/api/**', (r) => r.fulfill({ status: 500, body: '{}' }));
@@ -752,8 +869,8 @@ async (page) => {
         const genBtn = Array.from(document.querySelectorAll('footer button')).find((b) => /Generate/i.test(b.textContent || ''));
         const outdatedBox = Array.from(document.querySelectorAll('div')).find((d) => (d.textContent || '').includes('Story plan has been updated since'));
         const probes = [
-          { name: 'Header brand title', el: document.querySelector('header button') },
-          { name: 'Header inactive nav', el: document.querySelector('header nav button:nth-child(2)') },
+          { name: 'Header brand title', el: document.querySelector('header a') },
+          { name: 'Inactive workspace mode', el: document.querySelector('nav[aria-label="Narrative workspace"] button:not([aria-current="page"])') },
           { name: 'Primary Generate CTA', el: genBtn },
           { name: '12px metadata / helper text', el: document.querySelector('[aria-label="Creative Decisions and Batch Editor"] .text-xs') },
           { name: '11px link ("Try sample batch")', el: Array.from(document.querySelectorAll('button')).find((b) => (b.textContent || '').trim() === 'Try sample batch') },
@@ -804,19 +921,19 @@ async (page) => {
       return { headings, unnamedControlsCount: unnamedControls.length, unnamedControls, tablists };
     });
 
-    // Test Header activeSection live behavior
-    await p.locator('header nav').getByRole('button', { name: 'Story Bible' }).click();
+    // Test primary workspace mode and contextual Story Bible tab state
+    await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan', exact: true }).click();
+    const storyBibleTab = p.getByRole('tab', { name: 'Story Bible' });
+    await storyBibleTab.click();
     await p.waitForTimeout(150);
     const headerActiveAfterStoryBible = await p.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('header nav button'));
-      return btns.map((b) => ({
-        label: (b.textContent || '').trim(),
-        hasBlueActiveStyle: b.className.includes('text-blue-600') || b.className.includes('border-blue'),
-      }));
+      const plan = document.querySelector('nav[aria-label="Narrative workspace"] button[aria-current="page"]');
+      const bible = document.querySelector('[role="tablist"] [role="tab"][aria-selected="true"]');
+      return { activeMode: plan?.textContent?.trim() ?? '', selectedContextTab: bible?.textContent?.trim() ?? '' };
     });
 
     // Test InfoModal ("About") keyboard focus placement and Escape return
-    const aboutBtn = p.locator('header nav').getByRole('button', { name: 'About' });
+    const aboutBtn = p.getByRole('banner').getByRole('button', { name: 'About', exact: true });
     await aboutBtn.focus();
     await aboutBtn.click();
     await p.waitForTimeout(150);
@@ -916,6 +1033,7 @@ async (page) => {
       await ctx.addInitScript((pData) => {
         localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify({ [pData.id]: pData }));
         localStorage.setItem('proactive_co_creator_active_id_v2', pData.id);
+        localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
       }, proj);
       const p = await ctx.newPage();
       await p.route('**/api/**', (r) => r.fulfill({ status: 500, body: '{}' }));

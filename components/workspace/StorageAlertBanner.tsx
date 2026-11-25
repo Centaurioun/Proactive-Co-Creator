@@ -36,6 +36,18 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
   onDismissStorageAlert,
   onDismissStatusNotification,
 }) => {
+  const dismissStatusRef = React.useRef(onDismissStatusNotification);
+
+  React.useEffect(() => {
+    dismissStatusRef.current = onDismissStatusNotification;
+  }, [onDismissStatusNotification]);
+
+  React.useEffect(() => {
+    if (!statusNotification) return;
+    const timeout = window.setTimeout(() => dismissStatusRef.current(), 8_000);
+    return () => window.clearTimeout(timeout);
+  }, [statusNotification]);
+
   return (
     <>
       {storageAlert && (
@@ -108,7 +120,7 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
 
       {statusNotification && (
         <div
-          className="px-3 pt-2 xl:p-0 xl:fixed xl:bottom-20 xl:right-4 xl:z-[1850] xl:w-full xl:max-w-md pointer-events-auto flex-shrink-0"
+          className="fixed bottom-20 left-3 right-3 z-[1850] pointer-events-auto xl:right-4 xl:left-auto xl:w-full xl:max-w-md"
           role="status"
           aria-live="polite"
         >
@@ -117,7 +129,7 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
             <button
               type="button"
               onClick={onDismissStatusNotification}
-              className="text-gray-300 hover:text-white px-1.5 py-0.5 rounded"
+              className="min-h-11 min-w-11 inline-flex items-center justify-center text-gray-300 hover:text-white rounded"
               aria-label="Dismiss status notification"
             >
               &times;

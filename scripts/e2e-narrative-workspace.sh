@@ -12,15 +12,18 @@ async (page) => {
   const context = await page.context().browser().newContext({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   const apiCalls = [];
+  const paidApiCalls = [];
   await context.route('**/api/**', async route => {
-    apiCalls.push(route.request().url());
+    const url = route.request().url();
+    apiCalls.push(url);
+    if (!url.endsWith('/api/ai/capabilities')) paidApiCalls.push(url);
     await route.abort();
   });
   const first = await context.newPage();
   first.on('pageerror', error => errors.push(error.message));
   const base = '__BASE_URL__';
   const mode = (p, name) => p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name, exact: true });
-  const editor = (p) => p.getByRole('textbox', { name: 'Manuscript text' });
+  const editor = (p) => p.locator('textarea').first();
   const saved = async (p) => {
     await p.getByText('Saved', { exact: true }).waitFor();
     assert(await p.getByRole('button', { name: 'Save manuscript' }).isDisabled(), 'Save action still dirty');
@@ -39,11 +42,12 @@ async (page) => {
       revisionId: legacy.revisions[0].id, promptUsed: 'Synthetic fixture', storyText: 'Özgün çıktı 🦉',
       isOutdated: false,
     }];
+    await mode(first, 'Plan').click();
     await first.getByRole('tab', { name: 'History' }).click();
     await first.getByRole('textbox', { name: 'Paste project JSON' }).fill(JSON.stringify(legacy));
     await first.getByRole('button', { name: 'Preview JSON' }).click();
     await first.getByRole('button', { name: 'Restore a copy' }).click();
-    await first.getByText('Restored project copy saved.', { exact: true }).waitFor();
+    await first.waitForFunction(() => document.querySelector('nav[aria-label="Narrative workspace"] button[aria-current="page"]')?.textContent === 'Write');
     await mode(first, 'Write').click();
     await editor(first).dispatchEvent('compositionstart');
     await editor(first).fill('İpek 🦉 é');
@@ -75,6 +79,7 @@ async (page) => {
     await saved(first);
     await first.getByRole('button', { name: 'Redo', exact: true }).click();
     await saved(first);
+    await first.getByRole('button', { name: 'Dismiss status notification' }).waitFor({ state: 'hidden', timeout: 10_000 });
 
     for (const width of [320, 390, 768, 1280, 1440]) {
       await first.setViewportSize({ width, height: 900 });
@@ -83,6 +88,7 @@ async (page) => {
       if (width < 1024) {
         const outlineToggle = first.getByRole('button', { name: 'Show outline' });
         assert(await outlineToggle.isVisible(), 'Mobile outline toggle missing at ' + width);
+        if (width === 320) await first.screenshot({ path: '.playwright-cli/phase-01-write-320.png', fullPage: false });
         assert((await editor(first).boundingBox()).y < 800, 'Outline displaced the editor at ' + width);
       }
       if (width === 390 || width === 1440) {
@@ -90,27 +96,30 @@ async (page) => {
       }
     }
 
-    await mode(first, 'Projects').click();
+    await first.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await first.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export' }).click();
     await first.getByRole('button', { name: 'Create Backup' }).click();
     await first.getByText('Verified project backup created.', { exact: true }).waitFor();
     await first.getByRole('listitem').filter({ hasText: 'Manual backup' }).getByRole('button', { name: 'Preview restore' }).click();
-    await first.getByRole('button', { name: 'Restore project copy' }).click();
+    await first.getByRole('button', { name: 'Restore as a separate project' }).click();
     await first.getByText(/Restored and saved project copy/).waitFor();
     await mode(first, 'Write').click();
     await saved(first);
     assert(await editor(first).inputValue() === 'Second scene', 'Restored copy lost manuscript');
 
     // Replace only the selected project after checkpoint readback and an explicit confirmation.
-    await mode(first, 'Projects').click();
+    await first.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await first.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export' }).click();
     await first.getByRole('button', { name: 'Create Backup' }).click();
     await first.getByText('Verified project backup created.', { exact: true }).waitFor();
     await mode(first, 'Write').click();
     await editor(first).fill('Text before replacement');
     await saved(first);
-    await mode(first, 'Projects').click();
+    await first.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await first.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export' }).click();
     await first.getByRole('button', { name: 'Preview restore' }).click();
     first.once('dialog', dialog => dialog.accept());
-    await first.getByRole('button', { name: 'Replace current project' }).click();
+    await first.getByRole('button', { name: 'Review replacement confirmation' }).click();
     await first.getByText('Project replaced after saving a verified safety checkpoint.').waitFor();
     await first.getByText('Before replacing project from backup', { exact: false }).waitFor();
     await mode(first, 'Write').click();
@@ -172,7 +181,7 @@ async (page) => {
     assert(sections(await activeRecord(first))[0].text === 'Retryable draft', 'Retry did not commit the retained draft');
 
     assert(errors.length === 0, 'Unexpected browser errors: ' + errors.join(', '));
-    assert(apiCalls.length === 0, 'Unexpected AI/API requests: ' + apiCalls.join(', '));
+    assert(paidApiCalls.length === 0, 'Unexpected paid AI/API requests: ' + paidApiCalls.join(', '));
     return 'NARRATIVE_WORKSPACE_PASS';
   } finally {
     await context.close();

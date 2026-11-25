@@ -1,0 +1,143 @@
+{
+  "status": "PASS",
+  "candidateHead": "e6a70f5143121727b51276ed9e3ae29936f9c4a9",
+  "browserSession": "pcc-import-cancel-7515c387cd68",
+  "origin": "http://127.0.0.1:4337",
+  "providerConfigured": false,
+  "fixture": {
+    "manuscript": "PCC cancellation fixture — Türkçe — manuscript stays intact.",
+    "stagedSource": "Staged cancellation manuscript source — this passage must remain uncommitted.",
+    "inFlightSource": "Delayed extraction source — Ω must remain uncommitted after cancellation."
+  },
+  "checks": [
+    {
+      "preference": {
+        "proactive_co_creator_workspace_preference_v1": "{\"version\":1,\"mode\":\"write\"}"
+      },
+      "sameDigest": true,
+      "samePreference": true,
+      "stage": "staged-source-before-exit",
+      "state": {
+        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+        "projectCount": 1,
+        "projectionCharacters": 76205,
+        "projects": [
+          {
+            "id": "proj_default_cat_party",
+            "manuscriptText": "PCC cancellation fixture — Türkçe — manuscript stays intact.",
+            "persistedRevision": 2,
+            "revision": 2
+          }
+        ]
+      }
+    },
+    {
+      "preference": {
+        "proactive_co_creator_workspace_preference_v1": "{\"version\":1,\"mode\":\"write\"}"
+      },
+      "sameDigest": true,
+      "samePreference": true,
+      "stage": "staged-source-after-exit",
+      "state": {
+        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+        "projectCount": 1,
+        "projectionCharacters": 76205,
+        "projects": [
+          {
+            "id": "proj_default_cat_party",
+            "manuscriptText": "PCC cancellation fixture — Türkçe — manuscript stays intact.",
+            "persistedRevision": 2,
+            "revision": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "staged-source-cancellation",
+      "returnedToWrite": true
+    },
+    {
+      "preference": {
+        "proactive_co_creator_workspace_preference_v1": "{\"version\":1,\"mode\":\"write\"}"
+      },
+      "sameDigest": true,
+      "samePreference": true,
+      "stage": "late-response-rejected",
+      "state": {
+        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+        "projectCount": 1,
+        "projectionCharacters": 76205,
+        "projects": [
+          {
+            "id": "proj_default_cat_party",
+            "manuscriptText": "PCC cancellation fixture — Türkçe — manuscript stays intact.",
+            "persistedRevision": 2,
+            "revision": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "late-response-rejected",
+      "abortSignalObserved": true,
+      "reviewCandidatesVisible": false,
+      "requestText": "Delayed extraction source — Ω must remain uncommitted after cancellation."
+    }
+  ],
+  "baseline": {
+    "projectBaseline": {
+      "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+      "projectCount": 1,
+      "projectionCharacters": 76205,
+      "projects": [
+        {
+          "id": "proj_default_cat_party",
+          "manuscriptText": "PCC cancellation fixture — Türkçe — manuscript stays intact.",
+          "persistedRevision": 2,
+          "revision": 2
+        }
+      ]
+    },
+    "workspacePreferenceBaseline": {
+      "proactive_co_creator_workspace_preference_v1": "{\"version\":1,\"mode\":\"write\"}"
+    }
+  },
+  "finalState": {
+    "preference": {
+      "proactive_co_creator_workspace_preference_v1": "{\"version\":1,\"mode\":\"write\"}"
+    },
+    "sameDigest": true,
+    "samePreference": true,
+    "stage": "after-in-flight-import-exit",
+    "state": {
+      "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+      "projectCount": 1,
+      "projectionCharacters": 76205,
+      "projects": [
+        {
+          "id": "proj_default_cat_party",
+          "manuscriptText": "PCC cancellation fixture — Türkçe — manuscript stays intact.",
+          "persistedRevision": 2,
+          "revision": 2
+        }
+      ]
+    }
+  },
+  "apiCalls": [
+    {
+      "method": "GET",
+      "mocked": true,
+      "path": "/api/ai/capabilities"
+    },
+    {
+      "method": "GET",
+      "mocked": true,
+      "path": "/api/ai/capabilities"
+    },
+    {
+      "method": "POST",
+      "mocked": true,
+      "path": "/api/narrative/import/extract"
+    }
+  ]
+}

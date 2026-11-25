@@ -62,12 +62,28 @@ async (page) => {
     return { pageErrors, consoleErrors, apiHits, paidApiHits };
   };
 
+  const createProjectFromHub = async (p, name, idea) => {
+    await p.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await p.getByRole('textbox', { name: 'Project title' }).fill(name);
+    await p.getByRole('textbox', { name: 'Starting idea' }).fill(idea);
+    await p.getByRole('button', { name: 'Create project', exact: true }).click();
+    // Creation now waits for the durable save before it selects the new project.
+    // Do not start another project action while that transaction is still pending.
+    await p.waitForFunction((expectedName) => {
+      const select = document.querySelector('select[aria-label="Current project"]');
+      return select?.selectedOptions[0]?.textContent?.trim() === expectedName;
+    }, name);
+  };
+
   const runScenario = async (id, fn, initScript = null) => {
     const t0 = Date.now();
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    if (initScript) {
-      await ctx.addInitScript(initScript);
-    }
+    // These legacy journeys were authored against the former Plan-first shell.
+    // Stage0 separately verifies the product's correct first-run Write fallback.
+    await ctx.addInitScript(() => {
+      localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
+    });
+    if (initScript) await ctx.addInitScript(initScript);
     await ctx.tracing.start({ screenshots: true, snapshots: true });
     const p = await ctx.newPage();
     const traps = await setupApiTrap(p);
@@ -139,24 +155,19 @@ async (page) => {
   // E2E-A: Rapid A -> edit -> B (<250ms) -> edit -> A -> fresh browser reload
   await runScenario('E2E-A', async (p, traps) => {
     await p.goto(BASE, { waitUntil: 'networkidle' });
-    await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByLabel('New project title').fill('Alpha Rapid');
-    await p.getByLabel('New project initial prompt').fill('Alpha seed idea');
-    await p.getByRole('button', { name: 'Create Project' }).click();
+    await createProjectFromHub(p, 'Alpha Rapid', 'Alpha seed idea');
+    await createProjectFromHub(p, 'Beta Rapid', 'Beta seed idea');
 
-    await p.getByLabel('New project title').fill('Beta Rapid');
-    await p.getByLabel('New project initial prompt').fill('Beta seed idea');
-    await p.getByRole('button', { name: 'Create Project' }).click();
-
-    await p.getByRole('button', { name: /^Alpha Rapid/ }).click();
+    await p.getByLabel('Current project').selectOption({ label: 'Alpha Rapid' });
+    await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan', exact: true }).click();
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     await p.locator('#bible-genre').fill('Clockwork Noir');
     await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByRole('button', { name: /^Beta Rapid/ }).click();
+    await p.getByLabel('Current project').selectOption({ label: 'Beta Rapid' });
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     await p.locator('#bible-genre').fill('Lunar Pastoral');
     await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByRole('button', { name: /^Alpha Rapid/ }).click();
+    await p.getByLabel('Current project').selectOption({ label: 'Alpha Rapid' });
 
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     assert((await p.locator('#bible-genre').inputValue()) === 'Clockwork Noir', 'E2E-A immediate Alpha genre lost');
@@ -170,7 +181,7 @@ async (page) => {
     assert(undoTitle && undoTitle.includes('genre'), 'E2E-A Undo label missing after reload: ' + undoTitle);
 
     await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByRole('button', { name: /^Beta Rapid/ }).click();
+    await p.getByLabel('Current project').selectOption({ label: 'Beta Rapid' });
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     assert((await p.locator('#bible-genre').inputValue()) === 'Lunar Pastoral', 'E2E-A reload Beta genre lost');
     assert(traps.pageErrors.length === 0, 'E2E-A pageErrors: ' + traps.pageErrors.join('; '));
@@ -181,19 +192,17 @@ async (page) => {
   // E2E-B: Save ACK race regression check during A/r2 -> A/r3 -> switch B -> A -> reload
   await runScenario('E2E-B', async (p, traps) => {
     await p.goto(BASE, { waitUntil: 'networkidle' });
-    await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByLabel('New project title').fill('Race Omega');
-    await p.getByLabel('New project initial prompt').fill('Race idea');
-    await p.getByRole('button', { name: 'Create Project' }).click();
+    await createProjectFromHub(p, 'Race Omega', 'Race idea');
 
+    await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan', exact: true }).click();
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     await p.locator('#bible-genre').fill('Rev2 Genre');
     await p.waitForTimeout(180);
     await p.locator('#bible-setting').fill('Rev3 Spire');
     await p.getByRole('tab', { name: 'History' }).click();
-    await p.getByRole('button', { name: /^Cat’s Woodland Dinner Party/ }).click();
+    await p.getByLabel('Current project').selectOption({ label: 'Cat’s Woodland Dinner Party' });
     await p.waitForTimeout(700);
-    await p.getByRole('button', { name: /^Race Omega/ }).click();
+    await p.getByLabel('Current project').selectOption({ label: 'Race Omega' });
     await p.getByRole('tab', { name: 'Story Bible' }).click();
     assert((await p.locator('#bible-setting').inputValue()) === 'Rev3 Spire', 'E2E-B regressed A/r3 in memory');
 
@@ -233,8 +242,11 @@ async (page) => {
     assert((await p.locator('#bible-setting').inputValue()) === '', 'E2E-C cleared setting reappeared on reload');
     assert((await p.locator('#bible-tone').inputValue()) === '', 'E2E-C cleared tone reappeared on reload');
 
-    await p.getByRole('tab', { name: 'Refined Prompt & Notes' }).click();
-    const promptText = await p.locator('pre').first().textContent();
+    const promptText = await p.evaluate(() => {
+      const projects = JSON.parse(localStorage.getItem('proactive_co_creator_projects_v2') || '{}');
+      const activeId = localStorage.getItem('proactive_co_creator_active_id_v2');
+      return projects[activeId]?.snapshot?.refinedPrompt ?? '';
+    });
     assert(!promptText.includes('Candlelit Atrium') && !promptText.includes('Eerie Baroque'), 'E2E-C cleared fields leaked into refined prompt');
     assert(traps.pageErrors.length === 0, 'E2E-C pageErrors');
     assert(traps.paidApiHits.length === 0, 'E2E-C paid API hits');
@@ -271,6 +283,7 @@ async (page) => {
   // E2E-E: NL batch deselect -> Review Modal Before/After -> stale apply blocked -> re-preview -> apply -> Undo -> reload
   await runScenario('E2E-E', async (p, traps) => {
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('button', { name: /Inbox/ }).click();
     await p.locator('#nl-batch-input').fill('Make Rabbit elderly. Make Fox elderly. The party should be mysterious.');
     await p.getByRole('button', { name: 'Preview', exact: true }).click();
     await p.getByText('Proposed Batch Operations (3/3)').waitFor({ state: 'visible' });
@@ -494,6 +507,8 @@ async (page) => {
         localStorage.setItem('__e2e_tight_quota', '1');
       });
 
+      await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan', exact: true }).click();
+      await p.getByRole('tab', { name: 'History' }).click();
       await p.getByRole('button', { name: 'Delete project Doomed Project' }).click();
       await p.getByText(/Incomplete deletion warning/).first().waitFor({ state: 'visible' });
 
@@ -543,7 +558,7 @@ async (page) => {
     assert(!overflow, 'E2E-I horizontal overflow at 390x844');
     await p.getByRole('button', { name: 'Inspector' }).click();
     await p.getByRole('tab', { name: /Checks/ }).click();
-    await p.getByRole('button', { name: 'Open field' }).click();
+    await p.getByRole('button', { name: 'Open Tone field' }).click();
     await p.waitForTimeout(100);
     assert((await p.evaluate(() => document.activeElement?.id.startsWith('bible-'))) === true, 'E2E-I mobile readiness field focus failed');
     await p.getByRole('button', { name: 'Switch to dark mode' }).click();
