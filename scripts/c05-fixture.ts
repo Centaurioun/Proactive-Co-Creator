@@ -1,18 +1,19 @@
 import { createHash } from 'node:crypto';
-import { buildFxBusy } from './stage0-fixtures.ts';
+import { buildFxBusy, STAGE0_FIXED_TIMESTAMP } from './stage0-fixtures.ts';
 
 // Emits a stable, wholly synthetic FX-BUSY record for isolated browser seeding.
-// The fixture source is the existing deterministic Stage 0 builder; this wrapper
-// verifies repeatability and does not touch browser storage or production data.
-const first = buildFxBusy();
-const second = buildFxBusy();
+// Lock the fixture clock before its deterministic ID sequence is consumed; a
+// second same-process build would intentionally advance the module ID counter.
+// This wrapper does not touch browser storage or production data.
+const originalNow = Date.now;
+Date.now = () => STAGE0_FIXED_TIMESTAMP;
+let first: ReturnType<typeof buildFxBusy>;
+try {
+  first = buildFxBusy();
+} finally {
+  Date.now = originalNow;
+}
 const canonical = (value: unknown): string => JSON.stringify(value);
 const firstJson = canonical(first);
-const secondJson = canonical(second);
-
-if (firstJson !== secondJson) {
-  throw new Error('FX-BUSY fixture is not deterministic across consecutive builds');
-}
-
 const digest = createHash('sha256').update(firstJson).digest('hex');
 process.stdout.write(`${JSON.stringify({ fixture: first, sha256: digest }, null, 2)}\n`);

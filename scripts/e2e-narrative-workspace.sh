@@ -96,10 +96,11 @@ async (page) => {
     }
 
     await first.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await first.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export' }).click();
     await first.getByRole('button', { name: 'Create Backup' }).click();
     await first.getByText('Verified project backup created.', { exact: true }).waitFor();
     await first.getByRole('listitem').filter({ hasText: 'Manual backup' }).getByRole('button', { name: 'Preview restore' }).click();
-    await first.getByRole('button', { name: 'Restore project copy' }).click();
+    await first.getByRole('button', { name: 'Restore as a separate project' }).click();
     await first.getByText(/Restored and saved project copy/).waitFor();
     await mode(first, 'Write').click();
     await saved(first);
@@ -107,15 +108,17 @@ async (page) => {
 
     // Replace only the selected project after checkpoint readback and an explicit confirmation.
     await first.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await first.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export' }).click();
     await first.getByRole('button', { name: 'Create Backup' }).click();
     await first.getByText('Verified project backup created.', { exact: true }).waitFor();
     await mode(first, 'Write').click();
     await editor(first).fill('Text before replacement');
     await saved(first);
     await first.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await first.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export' }).click();
     await first.getByRole('button', { name: 'Preview restore' }).click();
     first.once('dialog', dialog => dialog.accept());
-    await first.getByRole('button', { name: 'Replace current project' }).click();
+    await first.getByRole('button', { name: 'Review replacement confirmation' }).click();
     await first.getByText('Project replaced after saving a verified safety checkpoint.').waitFor();
     await first.getByText('Before replacing project from backup', { exact: false }).waitFor();
     await mode(first, 'Write').click();

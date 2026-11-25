@@ -1,8 +1,10 @@
 # C05 independent acceptance protocol
 
-Status: **prepared; not run against the integrated candidate**  
-Prepared on base: `4281e497dca2bd81d297bb8a870a8892e025d936`  
+Status: **partial; independent reviewer recommends Principal Architect review, not final C05 acceptance**
+Prepared on base: `4281e497dca2bd81d297bb8a870a8892e025d936`
 Scope: visual and behavioral acceptance for the PCC Adaptive Draftroom UI work. This protocol is not a release verdict.
+
+Independent read-only C05 review identified the gaps listed below. The J09/J10 updates have now passed a fresh full Stage0 run at this source snapshot. A corrected 1440×900 Plan and Review capture exists, but Review is still an empty diagnostic state rather than Figma's stale proposal/evidence state. Do not describe that pair as equivalent-state visual acceptance.
 
 ## Authority and boundaries
 
@@ -39,6 +41,22 @@ The digest must cover narrative meaning and exclude presentation-only state. Ser
 At base `4281e497`, `tests/workspacePreference.test.ts` covers the versioned preference helper and safe fallback; `tests/storageLifecycle.test.ts` covers persistence and read/write failures; import parser/persistence/recovery have unit coverage; `scripts/stage0-audit-browser.sh` already has J10 and checks Fox heading, Tone focus/visibility, active Story Bible tab, revision stability, and IDB write-count stability. These are existing signals, not execution results for the future integrated candidate.
 
 The existing J10 browser assertion does not compare a semantic snapshot digest before and after navigation. Existing helper tests do not by themselves prove application preference restoration without project reseeding. The current acceptance suite should add no duplicate unit ownership: exercise these requirements end-to-end in this independent protocol and retain exact evidence. Import cancellation, stale Apply at the live UI mutation boundary, and the full mobile Figma states remain explicit rows above; current preparation did not execute them.
+
+## Current evidence and remaining acceptance gaps
+
+- C01–C04 implementations are integrated and local unit/browser/build suites were reported passing by the Lead. The initial C05 independent pass did not rerun those suites.
+- J09's earlier evidence was insufficient. Updated Stage0 J09 **PASS** verifies Plan and Review restoration, records `{version:1, mode:"plan"}` and `{version:1, mode:"review"}`, and project-ID inventory equality over both reloads. It does not read back the empty-origin project store or exercise Projects/Import cancellation as specified by C05-PREF.
+- J10's earlier result (`e47adc...` in one report and `03ec...` in an earlier observation) was invalid as the protocol's canonical digest. Updated Stage0 J10 **PASS** reads the active record from IndexedDB, omits undefined object properties and encodes undefined array items as null, then sorts object keys into valid JSON (the test parses the projection before hashing). It records the full 32,466-character projection and SHA-256 `086df717bb2b9cab2a6f6fa99b2e256bbe1558503aa2d97f69e32978b4959951` both before and after. Revision remained `3`, IDB put count `1 → 1`, Fox was selected, Story Bible was active, and `bible-tone` received focus. The full projection is preserved in `.playwright-cli/stage0-journeys.json`; three 1440×900 captures show Checks, Fox Inspector, and Tone focus. JSON scalar normalization follows `JSON.stringify` (including non-finite numbers becoming `null`); function/symbol values cannot normally arise from IndexedDB structured-clone records.
+- The full synthetic J01–J12 run is preserved in `docs/qa/evidence/browser/stage0-j01-j12-2026-11-25.json` (SHA-256 `3b8f5079117c5d7e6e9a73560ce161b9792a0445e300b3f58e025f4acd44955d`). It includes the complete before/after canonical projection; only synthetic fixture content is present.
+- C05-WRITE-SAVE has a narrative workspace quota-failure scenario preserving the draft and reading durable storage, plus save-state tests; its specified before-save/after-save/failed-save visual set and authoritative exact Unicode retry readback have not been bundled into one C05 run.
+- C05-STALE has unit/presentation coverage and a disabled stale Apply path, but an independent browser test at the live mutation boundary with byte-for-byte manuscript readback is not recorded here.
+- C05-MOBILE-NAV has 390px navigation/overflow coverage and 320px Write/reflow coverage. It does not yet exercise all Write/Plan/Review transitions at both widths with keyboard focus and dirty-draft guarding. The measured 320px Plan graph area and labels are cramped.
+- C05-IMPORT-CANCEL has source-only and analyzed-import coverage; in-flight analysis cancellation plus injected durable Create failure/retry is not verified by a single browser scenario.
+- C05-HISTORY/recovery has synthetic backup-copy, replacement checkpoint, restore, undo/redo and export journeys. A same-view before/after semantic digest check for merely opening History is not separately recorded.
+- Figma and browser screen captures are mapped in `docs/implementation/narrative-workspace/design-qa.md`; the stale Review proposal/evidence state and selected-prose contextual Write still lack equivalent-state side-by-side captures.
+- Stage0 J01/J09/J10 have no page errors but report 1/3/1 unmocked API hits and visible console HTTP 500 errors, respectively. The run's health check reported `configured:false`; preserve the console outcomes as observed rather than describing Stage0 as console-clean. E2E A–I is a separate run and reported no page/console errors.
+
+**Current C05 disposition:** enough for the Principal Architect to inspect the implementation direction and decide whether to keep the candidate in draft PR #15. C05 final acceptance remains incomplete until the remaining matrix rows are exercised or explicitly accepted as limitations, and equivalent-state visuals are reviewed.
 
 ## Finding classification
 
