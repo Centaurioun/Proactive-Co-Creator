@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { reconcileAsyncSaveAcknowledgement } from '../lib/controller/projectListSync.ts';
+import { prepareProjectSwitch, reconcileAsyncSaveAcknowledgement } from '../lib/controller/projectListSync.ts';
 import { describe, it, beforeEach } from 'node:test';
 import {
   createSampleProject,
@@ -338,6 +338,17 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
     fakeIdb.reset();
   });
 
+  it('A4: switching keeps same-revision divergent working content dirty', () => {
+    const base = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'switch-dirty-narrative', revision: 5, persistedRevision: 5 });
+    const current = { ...base, name: 'Unsaved narrative edit', updatedAt: base.updatedAt + 1, persistedRevision: 4 };
+    const transition = prepareProjectSwitch({
+      currentProject: current, savedProjects: [base], targetProjectId: 'another-project',
+    });
+    assert.equal(transition.savedProjects[0].name, current.name);
+    assert.equal(transition.savedProjects[0].persistedRevision, 4);
+    assert.equal(transition.projectToFlush, current);
+  });
+
   it('A4: a delayed acknowledgement cannot mark a different same-revision narrative as saved', () => {
     const base = ensureNarrativeEnvelope({ ...createSampleProject(), id: 'same-revision-ack', revision: 5, persistedRevision: 4 });
     const acknowledged = { ...base, name: 'Saved version' };
@@ -448,6 +459,17 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
     } finally {
       clearDeletedProjectId(project.id);
     }
+  });
+
+  it('S1: retrying a successful read can migrate a legacy local-only project without replacing other records', async () => {
+    const base = createSampleProject();
+    const local = { ...base, id: 'legacy-local-only' };
+    const existing = { ...base, id: 'already-durable' };
+    saveProjectToLocalStorage(local);
+    await saveProjectToIndexedDb(existing);
+    const retry = await reloadLatestProjectsFromStorage(local.id, { commit: persistProjectDurably });
+    assert.equal(retry.persisted, true);
+    assert.deepEqual((await loadProjectsFromIndexedDb()).map(project => project.id).sort(), [existing.id, local.id]);
   });
 
   it('S1: a reload restores history without writing over a newer cross-tab commit', async () => {

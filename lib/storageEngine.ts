@@ -808,8 +808,12 @@ export async function reloadLatestProjectsFromStorage(
     persisted = true;
   }
 
-  if (idbLoad.status === 'empty' && !options?.resolution && options?.commit) {
-    const initialized = await options.commit(chosenActive, { expectedBaseProject: null });
+  const requiresSynchronization = !idbMatch || idbMatch.revision < chosenActive.revision;
+  if (idbLoad.status !== 'unavailable' && requiresSynchronization && !options?.resolution && options?.commit) {
+    const initialized = await options.commit(chosenActive, {
+      expectedBaseProject: idbMatch ?? null,
+      expectedPersistedRevision: idbMatch?.revision,
+    });
     if (!initialized.saved) {
       return {
         ...conflict(initialized.storedProject, initialized.error ?? 'Could not initialize durable storage.'),
@@ -817,7 +821,7 @@ export async function reloadLatestProjectsFromStorage(
         idbError: initialized.error,
       };
     }
-    chosenActive = { ...chosenActive, persistedRevision: initialized.persistedRevision };
+    chosenActive = initialized.storedProject ?? { ...chosenActive, persistedRevision: initialized.persistedRevision };
     persisted = true;
   }
 

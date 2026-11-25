@@ -30,25 +30,15 @@ export function upsertProjectInSavedList(
   const existing = filtered[idx];
   const candidateRev = candidate.revision ?? 1;
   const existingRev = existing.revision ?? 1;
-  const maxPersisted = Math.max(
-    candidate.persistedRevision ?? 0,
-    existing.persistedRevision ?? 0
-  );
-  const resolvedPersisted = maxPersisted > 0 ? maxPersisted : undefined;
-
-  let merged: CreativeProject;
-  if (candidateRev > existingRev) {
-    merged = { ...candidate, persistedRevision: resolvedPersisted };
-  } else if (candidateRev < existingRev) {
-    merged = { ...existing, persistedRevision: resolvedPersisted };
-  } else if (candidate.updatedAt >= existing.updatedAt) {
-    merged = { ...candidate, persistedRevision: resolvedPersisted };
-  } else {
-    merged = { ...existing, persistedRevision: resolvedPersisted };
-  }
+  const selected = candidateRev > existingRev ||
+    (candidateRev === existingRev && candidate.updatedAt >= existing.updatedAt) ? candidate : existing;
+  const other = selected === candidate ? existing : candidate;
+  const sameRevisionDiverged = candidateRev === existingRev && !sameProjectVersion(candidate, existing);
+  const inheritedRevision = sameRevisionDiverged ? 0 : other.persistedRevision ?? 0;
+  const persistedRevision = Math.max(selected.persistedRevision ?? 0, inheritedRevision) || undefined;
 
   const next = [...filtered];
-  next[idx] = merged;
+  next[idx] = { ...selected, persistedRevision };
   return next;
 }
 
