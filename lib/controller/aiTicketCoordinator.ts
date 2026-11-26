@@ -8,6 +8,7 @@ import {
   mergeAnalysisIntoSnapshot,
 } from '../canonicalModel.ts';
 import {
+  createUndoRedoState,
   pushUndoableTransaction,
   recordProjectRevision,
   serializeUndoHistory,
@@ -110,12 +111,25 @@ export function refreshArtifactsCurrentness(
   });
 }
 
+function buildUpdatedAnalysisProject(params: {
+  targetProject: CreativeProject;
+  mergedSnapshot: ProjectSnapshot;
+  nextUndo: UndoRedoState;
+  commitLabel: string;
+  commitSummary: string;
+}): CreativeProject {
+  const { targetProject, mergedSnapshot, nextUndo, commitLabel, commitSummary } = params;
+  const baseUpdated: CreativeProject = {
+    ...targetProject,
+    snapshot: mergedSnapshot,
+    artifacts: refreshArtifactsCurrentness(targetProject.artifacts, mergedSnapshot),
+    undoHistory: serializeUndoHistory(nextUndo),
+  };
+  return recordProjectRevision(baseUpdated, commitLabel, commitSummary, 1);
+}
+
 /**
  * Reconciles an async AI analysis or clarification-refresh response against the current project list.
- * Enforces:
- * - INV-01: Cross-project isolation (targets ticket.projectId only, never bleeding into activeProjectId).
- * - INV-03: Latest-ticket-wins per (projectId, action) and rebasing onto latest project.snapshot
- *   when user edits occurred while the request was in flight.
  */
 export function reconcileAsyncAnalysisResponse(params: {
   projects: CreativeProject[];
@@ -158,6 +172,16 @@ export function reconcileAsyncAnalysisResponse(params: {
   }
 
   const nextTickets = clearAiRequestTicket(tickets, ticket);
+  if (getDeletedProjectIds().has(ticket.projectId)) {
+    return {
+      status: 'missing-project',
+      rebased: false,
+      projects: projects.filter((p) => p.id !== ticket.projectId),
+      undoMap,
+      tickets: nextTickets,
+    };
+  }
+
   const targetProject = projects.find((p) => p.id === ticket.projectId);
   if (!targetProject) {
     return {
@@ -170,7 +194,6 @@ export function reconcileAsyncAnalysisResponse(params: {
   }
 
   const rebased = (targetProject.revision ?? 1) !== ticket.baseRevision;
-  // Always merge onto the latest snapshot of targetProject (never a stale closure snapshot)
   const mergedSnapshot = mergeAnalysisIntoSnapshot(
     targetProject.snapshot,
     incomingGraph,
@@ -182,14 +205,19 @@ export function reconcileAsyncAnalysisResponse(params: {
   const nextUndo = prevUndo
     ? pushUndoableTransaction(prevUndo, mergedSnapshot, commitLabel)
     : undefined;
+  const fallbackUndo = nextUndo ?? pushUndoableTransaction(
+    createUndoRedoState(targetProject.snapshot, targetProject.revisions, targetProject.undoHistory),
+    mergedSnapshot,
+    commitLabel
+  );
 
-  let updatedProject: CreativeProject = {
-    ...targetProject,
-    snapshot: mergedSnapshot,
-    artifacts: refreshArtifactsCurrentness(targetProject.artifacts, mergedSnapshot),
-    undoHistory: nextUndo ? serializeUndoHistory(nextUndo) : targetProject.undoHistory,
-  };
-  updatedProject = recordProjectRevision(updatedProject, commitLabel, commitSummary, 1);
+  const updatedProject = buildUpdatedAnalysisProject({
+    targetProject,
+    mergedSnapshot,
+    nextUndo: fallbackUndo,
+    commitLabel,
+    commitSummary,
+  });
 
   const nextProjects = projects.map((p) =>
     p.id === updatedProject.id ? updatedProject : p
@@ -210,7 +238,6 @@ export function reconcileAsyncAnalysisResponse(params: {
 
 /**
  * Reconciles an async AI Polish response without auto-committing a fake revision.
- * Stages a reviewable AiPolishProposal only when the polished text differs from the base prompt.
  */
 export function reconcileAsyncPolishResponse(params: {
   projects: CreativeProject[];
@@ -229,6 +256,9 @@ export function reconcileAsyncPolishResponse(params: {
   }
 
   const nextTickets = clearAiRequestTicket(tickets, ticket);
+  if (getDeletedProjectIds().has(ticket.projectId)) {
+    return { status: 'missing-project', tickets: nextTickets, proposal: null };
+  }
   const targetProject = projects.find((p) => p.id === ticket.projectId);
   if (!targetProject) {
     return { status: 'missing-project', tickets: nextTickets, proposal: null };
@@ -316,7 +346,6 @@ export function validatePolishProposalAcceptance(
 
 /**
  * Commits an accepted AI Polish proposal into the target project's snapshot and revision history.
- * Rejects stale proposals (when project revision or prompt digest changed) or cross-project proposals.
  */
 export function acceptAiPolishProposal(params: {
   project: CreativeProject;
@@ -355,12 +384,43 @@ export function acceptAiPolishProposal(params: {
   return { project: nextProject, undoState: nextUndoState };
 }
 
+function createGenerationArtifact(params: {
+  targetProject: CreativeProject;
+  ticket: AiRequestTicket;
+  mode: GenerationMode;
+  promptUsed: string;
+  storyText?: string;
+  images?: string[];
+  warning?: string | null;
+  now: number;
+}): { artifact: GenerationArtifact; nextArtifacts: GenerationArtifact[] } {
+  const { targetProject, ticket, mode, promptUsed, storyText, images, warning, now } = params;
+  const promptDigest = computePromptDigest(promptUsed, mode);
+  const newArtifact: GenerationArtifact = {
+    id: makeStableId(mode === 'story' ? 'art_story' : 'art_img'),
+    projectId: targetProject.id,
+    mode,
+    createdAt: now,
+    revisionId: targetProject.revisions[0]?.id ?? 'rev_current',
+    sourceRevision: ticket.baseRevision,
+    promptUsed,
+    promptDigest,
+    storyText,
+    images,
+    ...(warning !== undefined ? { warning } : {}),
+    isOutdated: false,
+  };
+
+  const nextArtifacts = refreshArtifactsCurrentness(
+    [newArtifact, ...targetProject.artifacts],
+    targetProject.snapshot
+  );
+  const refreshedNewArtifact = nextArtifacts.find((art) => art.id === newArtifact.id) ?? newArtifact;
+  return { artifact: refreshedNewArtifact, nextArtifacts };
+}
+
 /**
  * Reconciles an async Story or Image generation response.
- * Enforces:
- * - Cross-project isolation (never writes Project A's artifact into Project B).
- * - Multi-artifact preservation (appends new artifact instead of deleting prior artifacts of the same mode).
- * - Deterministic promptDigest currentness tracking.
  */
 export function reconcileAsyncGenerationResponse(params: {
   projects: CreativeProject[];
@@ -394,36 +454,28 @@ export function reconcileAsyncGenerationResponse(params: {
   }
 
   const nextTickets = clearAiRequestTicket(tickets, ticket);
+  if (getDeletedProjectIds().has(ticket.projectId)) {
+    return {
+      status: 'missing-project',
+      projects: projects.filter((p) => p.id !== ticket.projectId),
+      tickets: nextTickets,
+    };
+  }
+
   const targetProject = projects.find((p) => p.id === ticket.projectId);
   if (!targetProject) {
     return { status: 'missing-project', projects, tickets: nextTickets };
   }
 
-  const promptDigest = computePromptDigest(promptUsed, mode);
-  const currentModePrompt =
-    mode === targetProject.snapshot.mode
-      ? targetProject.snapshot.refinedPrompt
-      : synthesizeRefinedPrompt(targetProject.snapshot, mode);
-  const currentDigest = computePromptDigest(currentModePrompt, mode);
-
-  const newArtifact: GenerationArtifact = {
-    id: makeStableId(mode === 'story' ? 'art_story' : 'art_img'),
-    projectId: targetProject.id,
+  const { artifact, nextArtifacts } = createGenerationArtifact({
+    targetProject,
+    ticket,
     mode,
-    createdAt: now,
-    revisionId: targetProject.revisions[0]?.id ?? 'rev_current',
-    sourceRevision: ticket.baseRevision,
     promptUsed,
-    promptDigest,
     storyText,
     images,
-    isOutdated: promptDigest !== currentDigest,
-  };
-
-  const nextArtifacts = refreshArtifactsCurrentness(
-    [newArtifact, ...targetProject.artifacts],
-    targetProject.snapshot
-  );
+    now,
+  });
 
   const updatedProject: CreativeProject = {
     ...targetProject,
@@ -436,7 +488,7 @@ export function reconcileAsyncGenerationResponse(params: {
     status: 'applied',
     projects: projects.map((p) => (p.id === updatedProject.id ? updatedProject : p)),
     tickets: nextTickets,
-    artifact: newArtifact,
+    artifact,
     updatedProject,
   };
 }
@@ -459,6 +511,9 @@ export function reconcileAsyncBatchEditResponse(params: {
     return { status: 'superseded', tickets, proposal: null };
   }
   const nextTickets = clearAiRequestTicket(tickets, ticket);
+  if (getDeletedProjectIds().has(ticket.projectId)) {
+    return { status: 'missing-project', tickets: nextTickets, proposal: null };
+  }
   const targetProject = projects.find((p) => p.id === ticket.projectId);
   if (!targetProject) {
     return { status: 'missing-project', tickets: nextTickets, proposal: null };
@@ -522,7 +577,6 @@ export interface AsyncAnalysisCompletionParams {
   preserveDraftAnswers?: Record<string, string>;
   label?: string;
   summary?: string;
-  /** Live synchronous ticket registry. Required in production via applyGuardedAsyncAnalysisCompletion. */
   tickets?: InFlightTicketsMap;
 }
 
@@ -552,45 +606,34 @@ export function applyAsyncAnalysisCompletion(
     tickets,
   } = params;
 
-  if (tickets !== undefined && !isTicketCurrent(tickets, ticket)) {
-    return {
-      activeProject,
-      activeUndoState,
-      savedProjects,
-      appliedToActive: false,
-      appliedToBackgroundProject: false,
-      rebasedOntoNewerRevision: false,
-      superseded: true,
-    };
-  }
+  const unchanged = (
+    overrides: Partial<AsyncAnalysisCompletionResult> = {}
+  ): AsyncAnalysisCompletionResult => ({
+    activeProject,
+    activeUndoState,
+    savedProjects,
+    appliedToActive: false,
+    appliedToBackgroundProject: false,
+    rebasedOntoNewerRevision: false,
+    superseded: false,
+    ...overrides,
+  });
 
+  if (tickets !== undefined && !isTicketCurrent(tickets, ticket)) {
+    return unchanged({ superseded: true });
+  }
   if (getDeletedProjectIds().has(ticket.projectId)) {
-    return {
-      activeProject,
-      activeUndoState,
+    return unchanged({
       savedProjects: savedProjects.filter((p) => p.id !== ticket.projectId),
-      appliedToActive: false,
-      appliedToBackgroundProject: false,
-      rebasedOntoNewerRevision: false,
-      superseded: false,
-    };
+    });
   }
 
   const isTargetActive = activeProject.id === ticket.projectId;
   const targetProject = isTargetActive
     ? activeProject
     : savedProjects.find((p) => p.id === ticket.projectId);
-
   if (!targetProject) {
-    return {
-      activeProject,
-      activeUndoState,
-      savedProjects,
-      appliedToActive: false,
-      appliedToBackgroundProject: false,
-      rebasedOntoNewerRevision: false,
-      superseded: false,
-    };
+    return unchanged();
   }
 
   const rebasedOntoNewerRevision = (targetProject.revision ?? 1) > ticket.baseRevision;
@@ -601,32 +644,27 @@ export function applyAsyncAnalysisCompletion(
     preserveDraftAnswers
   );
 
-  const nextUndoForActive = isTargetActive
-    ? pushUndoableTransaction(activeUndoState, mergedSnapshot, label)
-    : undefined;
+  const baseUndo = isTargetActive
+    ? activeUndoState
+    : createUndoRedoState(targetProject.snapshot, targetProject.revisions, targetProject.undoHistory);
+  const nextTargetUndo = pushUndoableTransaction(baseUndo, mergedSnapshot, label);
 
-  const updatedTarget = recordProjectRevision(
-    {
-      ...targetProject,
-      snapshot: mergedSnapshot,
-      artifacts: refreshArtifactsCurrentness(targetProject.artifacts, mergedSnapshot),
-      undoHistory: nextUndoForActive
-        ? serializeUndoHistory(nextUndoForActive)
-        : targetProject.undoHistory,
-    },
-    label,
-    summary,
-    1
-  );
+  const updatedTarget = buildUpdatedAnalysisProject({
+    targetProject,
+    mergedSnapshot,
+    nextUndo: nextTargetUndo,
+    commitLabel: label,
+    commitSummary: summary,
+  });
 
   const nextSaved = savedProjects.some((p) => p.id === updatedTarget.id)
     ? savedProjects.map((p) => (p.id === updatedTarget.id ? updatedTarget : p))
     : [updatedTarget, ...savedProjects];
 
-  if (isTargetActive && nextUndoForActive) {
+  if (isTargetActive) {
     return {
       activeProject: updatedTarget,
-      activeUndoState: nextUndoForActive,
+      activeUndoState: nextTargetUndo,
       savedProjects: nextSaved,
       appliedToActive: true,
       appliedToBackgroundProject: false,
@@ -646,9 +684,6 @@ export function applyAsyncAnalysisCompletion(
   };
 }
 
-/**
- * Non-bypassable production seam requiring the live synchronous ticket registry (R0-B).
- */
 export function applyGuardedAsyncAnalysisCompletion(
   params: AsyncAnalysisCompletionParams & { tickets: InFlightTicketsMap }
 ): AsyncAnalysisCompletionResult {
@@ -665,7 +700,6 @@ export interface AsyncGenerationCompletionParams {
   images?: string[];
   warning?: string | null;
   now?: number;
-  /** Live synchronous ticket registry. Required in production via applyGuardedAsyncGenerationCompletion. */
   tickets?: InFlightTicketsMap;
 }
 
@@ -694,65 +728,45 @@ export function applyAsyncGenerationCompletion(
     tickets,
   } = params;
 
-  if (tickets !== undefined && !isTicketCurrent(tickets, ticket)) {
-    return {
-      activeProject,
-      savedProjects,
-      artifact: null,
-      appliedToActive: false,
-      appliedToBackgroundProject: false,
-      superseded: true,
-    };
-  }
+  const unchanged = (
+    overrides: Partial<AsyncGenerationCompletionResult> = {}
+  ): AsyncGenerationCompletionResult => ({
+    activeProject,
+    savedProjects,
+    artifact: null,
+    appliedToActive: false,
+    appliedToBackgroundProject: false,
+    superseded: false,
+    ...overrides,
+  });
 
+  if (tickets !== undefined && !isTicketCurrent(tickets, ticket)) {
+    return unchanged({ superseded: true });
+  }
   if (getDeletedProjectIds().has(ticket.projectId)) {
-    return {
-      activeProject,
+    return unchanged({
       savedProjects: savedProjects.filter((p) => p.id !== ticket.projectId),
-      artifact: null,
-      appliedToActive: false,
-      appliedToBackgroundProject: false,
-      superseded: false,
-    };
+    });
   }
 
   const isTargetActive = activeProject.id === ticket.projectId;
   const targetProject = isTargetActive
     ? activeProject
     : savedProjects.find((p) => p.id === ticket.projectId);
-
   if (!targetProject) {
-    return {
-      activeProject,
-      savedProjects,
-      artifact: null,
-      appliedToActive: false,
-      appliedToBackgroundProject: false,
-      superseded: false,
-    };
+    return unchanged();
   }
 
-  const promptDigest = computePromptDigest(promptUsed, mode);
-  const newArtifact: GenerationArtifact = {
-    id: makeStableId(mode === 'story' ? 'art_story' : 'art_img'),
-    projectId: targetProject.id,
+  const { artifact, nextArtifacts } = createGenerationArtifact({
+    targetProject,
+    ticket,
     mode,
-    createdAt: now,
-    revisionId: targetProject.revisions[0]?.id ?? 'rev_current',
-    sourceRevision: ticket.baseRevision,
     promptUsed,
-    promptDigest,
     storyText,
     images,
     warning,
-    isOutdated: false,
-  };
-
-  const nextArtifacts = refreshArtifactsCurrentness(
-    [newArtifact, ...targetProject.artifacts],
-    targetProject.snapshot
-  );
-  const refreshedNewArtifact = nextArtifacts.find((art) => art.id === newArtifact.id) ?? newArtifact;
+    now,
+  });
 
   const updatedTarget: CreativeProject = {
     ...targetProject,
@@ -768,16 +782,13 @@ export function applyAsyncGenerationCompletion(
   return {
     activeProject: isTargetActive ? updatedTarget : activeProject,
     savedProjects: nextSaved,
-    artifact: refreshedNewArtifact,
+    artifact,
     appliedToActive: isTargetActive,
     appliedToBackgroundProject: !isTargetActive,
     superseded: false,
   };
 }
 
-/**
- * Non-bypassable production seam requiring the live synchronous ticket registry (R0-B).
- */
 export function applyGuardedAsyncGenerationCompletion(
   params: AsyncGenerationCompletionParams & { tickets: InFlightTicketsMap }
 ): AsyncGenerationCompletionResult {
@@ -848,11 +859,6 @@ export function acceptPolishProposal(
   };
 }
 
-/**
- * Single authoritative controller-owned synchronous registry for in-flight AI slots
- * and per-slot AbortControllers (R0-B).
- * UI state (e.g. React `inFlightTickets`) is strictly a projection via `onChange`.
- */
 export interface AiTicketAuthority {
   getTickets: () => InFlightTicketsMap;
   beginSlot: (
@@ -956,6 +962,22 @@ function isAbortLikeError(error: unknown): boolean {
   return false;
 }
 
+async function runSlotWithAuthority<Result>(
+  authority: AiTicketAuthority,
+  originProject: CreativeProject,
+  action: AiRequestAction,
+  onStart: (() => void) | undefined,
+  execute: (ticket: AiRequestTicket, signal: AbortSignal) => Promise<Result>
+): Promise<Result> {
+  const { ticket, signal } = authority.beginSlot(originProject, action);
+  try {
+    onStart?.();
+    return await execute(ticket, signal);
+  } finally {
+    authority.clearIfCurrent(ticket);
+  }
+}
+
 export interface AsyncAnalysisSlotRunParams {
   authority: AiTicketAuthority;
   originProject: CreativeProject;
@@ -975,11 +997,6 @@ export interface AsyncAnalysisSlotRunParams {
   summary?: string;
 }
 
-/**
- * Production execution seam for the `analyze` slot (parallel graph + clarification branches).
- * Enforces synchronous live-ticket validation before any error update, canonical mutation,
- * rebase notice, or slot clear (R0-B).
- */
 export async function runAsyncAnalysisSlot(
   params: AsyncAnalysisSlotRunParams
 ): Promise<AsyncAnalysisCompletionResult | null> {
@@ -998,10 +1015,7 @@ export async function runAsyncAnalysisSlot(
     summary = 'Merged AI analysis while preserving confirmed user decisions.',
   } = params;
 
-  const { ticket, signal } = authority.beginSlot(originProject, 'analyze');
-  onStart?.();
-
-  try {
+  return runSlotWithAuthority(authority, originProject, 'analyze', onStart, async (ticket, signal) => {
     const [newGraph, newClarifications] = await Promise.all([
       analyzeGraph(signal).catch((err) => {
         if (!isAbortLikeError(err) && authority.isCurrent(ticket)) {
@@ -1017,9 +1031,7 @@ export async function runAsyncAnalysisSlot(
       }),
     ]);
 
-    if (!newGraph && !newClarifications) {
-      return null;
-    }
+    if (!newGraph && !newClarifications) return null;
 
     const live = getState();
     const applied = applyGuardedAsyncAnalysisCompletion({
@@ -1043,9 +1055,7 @@ export async function runAsyncAnalysisSlot(
       onRebased?.();
     }
     return applied;
-  } finally {
-    authority.clearIfCurrent(ticket);
-  }
+  });
 }
 
 export interface AsyncClarifySlotRunParams {
@@ -1065,9 +1075,6 @@ export interface AsyncClarifySlotRunParams {
   summary?: string;
 }
 
-/**
- * Production execution seam for the `clarify` slot with live synchronous ticket validation (R0-B).
- */
 export async function runAsyncClarifySlot(
   params: AsyncClarifySlotRunParams
 ): Promise<AsyncAnalysisCompletionResult | null> {
@@ -1084,39 +1091,36 @@ export async function runAsyncClarifySlot(
     summary = 'Added non-duplicate AI clarification questions.',
   } = params;
 
-  const { ticket, signal } = authority.beginSlot(originProject, 'clarify');
-  onStart?.();
+  return runSlotWithAuthority(authority, originProject, 'clarify', onStart, async (ticket, signal) => {
+    try {
+      const freshClarifications = await fetchClarifications(signal);
+      const live = getState();
+      const applied = applyGuardedAsyncAnalysisCompletion({
+        ticket,
+        tickets: authority.getTickets(),
+        activeProject: live.activeProject,
+        activeUndoState: live.activeUndoState,
+        savedProjects: live.savedProjects,
+        newGraph: null,
+        newClarifications: freshClarifications,
+        preserveDraftAnswers,
+        label,
+        summary,
+      });
 
-  try {
-    const freshClarifications = await fetchClarifications(signal);
-    const live = getState();
-    const applied = applyGuardedAsyncAnalysisCompletion({
-      ticket,
-      tickets: authority.getTickets(),
-      activeProject: live.activeProject,
-      activeUndoState: live.activeUndoState,
-      savedProjects: live.savedProjects,
-      newGraph: null,
-      newClarifications: freshClarifications,
-      preserveDraftAnswers,
-      label,
-      summary,
-    });
+      if (applied.superseded || (!applied.appliedToActive && !applied.appliedToBackgroundProject)) {
+        return applied;
+      }
 
-    if (applied.superseded || (!applied.appliedToActive && !applied.appliedToBackgroundProject)) {
+      commitState(applied);
       return applied;
+    } catch (err) {
+      if (!isAbortLikeError(err) && authority.isCurrent(ticket)) {
+        onError(originProject.id, err);
+      }
+      return null;
     }
-
-    commitState(applied);
-    return applied;
-  } catch (err) {
-    if (!isAbortLikeError(err) && authority.isCurrent(ticket)) {
-      onError(originProject.id, err);
-    }
-    return null;
-  } finally {
-    authority.clearIfCurrent(ticket);
-  }
+  });
 }
 
 export interface AsyncGenerationSlotRunParams {
@@ -1137,10 +1141,6 @@ export interface AsyncGenerationSlotRunParams {
   now?: () => number;
 }
 
-/**
- * Production execution seam for the `generate` slot (story and image) with live synchronous
- * ticket validation (R0-B).
- */
 export async function runAsyncGenerationSlot(
   params: AsyncGenerationSlotRunParams
 ): Promise<AsyncGenerationCompletionResult | null> {
@@ -1157,37 +1157,34 @@ export async function runAsyncGenerationSlot(
     now,
   } = params;
 
-  const { ticket, signal } = authority.beginSlot(originProject, 'generate');
-  onStart?.();
+  return runSlotWithAuthority(authority, originProject, 'generate', onStart, async (ticket, signal) => {
+    try {
+      const output = await generate(signal);
+      const live = getState();
+      const applied = applyGuardedAsyncGenerationCompletion({
+        ticket,
+        tickets: authority.getTickets(),
+        activeProject: live.activeProject,
+        savedProjects: live.savedProjects,
+        mode,
+        promptUsed,
+        storyText: output.storyText,
+        images: output.images,
+        warning: output.warning ?? null,
+        now: now ? now() : Date.now(),
+      });
 
-  try {
-    const output = await generate(signal);
-    const live = getState();
-    const applied = applyGuardedAsyncGenerationCompletion({
-      ticket,
-      tickets: authority.getTickets(),
-      activeProject: live.activeProject,
-      savedProjects: live.savedProjects,
-      mode,
-      promptUsed,
-      storyText: output.storyText,
-      images: output.images,
-      warning: output.warning ?? null,
-      now: now ? now() : Date.now(),
-    });
+      if (applied.superseded || (!applied.appliedToActive && !applied.appliedToBackgroundProject)) {
+        return applied;
+      }
 
-    if (applied.superseded || (!applied.appliedToActive && !applied.appliedToBackgroundProject)) {
+      commitState(applied);
       return applied;
+    } catch (err) {
+      if (!isAbortLikeError(err) && authority.isCurrent(ticket)) {
+        onError(originProject.id, mode, err);
+      }
+      return null;
     }
-
-    commitState(applied);
-    return applied;
-  } catch (err) {
-    if (!isAbortLikeError(err) && authority.isCurrent(ticket)) {
-      onError(originProject.id, mode, err);
-    }
-    return null;
-  } finally {
-    authority.clearIfCurrent(ticket);
-  }
+  });
 }

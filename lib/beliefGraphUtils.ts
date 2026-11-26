@@ -73,9 +73,6 @@ export function getEffectiveAttributeValue(
     const val = getHighestProbabilityValue(attribute);
     return val === 'Unknown' ? 'true' : val;
   }
-  if (attribute.status === 'confirmed' || attribute.presence_in_prompt) {
-    return getHighestProbabilityValue(attribute);
-  }
   return getHighestProbabilityValue(attribute);
 }
 

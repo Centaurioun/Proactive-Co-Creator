@@ -5,6 +5,7 @@
 
 import { recordNarrativeChange } from './narrative/changeAudit.ts';
 import { makeStableId } from './canonicalModel.ts';
+import { areSnapshotsSemanticallyEqual } from './canonical/snapshotEquality.ts';
 import type {
   Clarification,
   CreativeProject,
@@ -37,11 +38,11 @@ export function serializeUndoHistory(state: UndoRedoState): PersistedUndoHistory
   return {
     past: state.past.slice(-MAX_UNDO_STACK).map((entry) => ({
       label: entry.label,
-      snapshot: structuredClone(entry.snapshot),
+      snapshot: entry.snapshot,
     })),
     future: state.future.slice(0, MAX_UNDO_STACK).map((entry) => ({
       label: entry.label,
-      snapshot: structuredClone(entry.snapshot),
+      snapshot: entry.snapshot,
     })),
   };
 }
@@ -68,6 +69,25 @@ function reconstructFromPersistedHistory(
   };
 }
 
+function applyRevisionStep(state: UndoRedoState, rev: ProjectRevision, idx: number): UndoRedoState {
+  const label = rev.label || `Revision #${rev.revisionNumber ?? idx}`;
+  if (
+    label.startsWith('Undo: ') &&
+    state.past.length > 0 &&
+    isSnapshotSemanticallyEqual(state.past[state.past.length - 1].snapshot, rev.snapshot)
+  ) {
+    return performUndo(state).state;
+  }
+  if (
+    label.startsWith('Redo: ') &&
+    state.future.length > 0 &&
+    isSnapshotSemanticallyEqual(state.future[0].snapshot, rev.snapshot)
+  ) {
+    return performRedo(state).state;
+  }
+  return pushUndoableTransaction(state, rev.snapshot, label, rev.coalesceKey);
+}
+
 function reconstructFromRevisions(
   initialSnapshot: ProjectSnapshot,
   revisions: ProjectRevision[]
@@ -82,22 +102,8 @@ function reconstructFromRevisions(
   };
   for (let i = revisions.length - 2; i >= 0; i--) {
     const rev = revisions[i];
-    if (!rev?.snapshot) continue;
-    const label = rev.label || `Revision #${rev.revisionNumber ?? i}`;
-    if (
-      label.startsWith('Undo: ') &&
-      state.past.length > 0 &&
-      isSnapshotSemanticallyEqual(state.past[state.past.length - 1].snapshot, rev.snapshot)
-    ) {
-      state = performUndo(state).state;
-    } else if (
-      label.startsWith('Redo: ') &&
-      state.future.length > 0 &&
-      isSnapshotSemanticallyEqual(state.future[0].snapshot, rev.snapshot)
-    ) {
-      state = performRedo(state).state;
-    } else {
-      state = pushUndoableTransaction(state, rev.snapshot, label, rev.coalesceKey);
+    if (rev?.snapshot) {
+      state = applyRevisionStep(state, rev, i);
     }
   }
   return {
@@ -112,11 +118,11 @@ export function createUndoRedoState(
   revisions?: ProjectRevision[],
   persistedUndoHistory?: PersistedUndoHistory
 ): UndoRedoState {
-  if (
+  const hasPersisted =
     persistedUndoHistory &&
     Array.isArray(persistedUndoHistory.past) &&
-    Array.isArray(persistedUndoHistory.future)
-  ) {
+    Array.isArray(persistedUndoHistory.future);
+  if (hasPersisted) {
     return reconstructFromPersistedHistory(initialSnapshot, persistedUndoHistory);
   }
 
@@ -147,6 +153,8 @@ function normalizeEntityForComparison(e: Entity) {
     excluded: Boolean(e.excluded),
     status: e.status,
     provenance: e.provenance,
+    epistemicKind: e.epistemicKind,
+    ...(e.sourceBacked ? { sourceBacked: true } : {}),
     groupId: e.groupId,
     aliases: e.aliases ?? [],
     attributes: e.attributes.map((a) => ({
@@ -156,6 +164,8 @@ function normalizeEntityForComparison(e: Entity) {
       confirmedValue: a.confirmedValue,
       status: a.status,
       provenance: a.provenance,
+      epistemicKind: a.epistemicKind,
+      ...(a.sourceBacked ? { sourceBacked: true } : {}),
       value: a.value.map((v) => v.name),
     })),
   };
@@ -172,6 +182,8 @@ function normalizeRelationshipForComparison(r: Relationship) {
     alternatives: Array.isArray(r.alternatives) ? r.alternatives.map((c) => c.name) : [],
     status: r.status,
     provenance: r.provenance,
+    epistemicKind: r.epistemicKind,
+    ...(r.sourceBacked ? { sourceBacked: true } : {}),
     presence_in_prompt: Boolean(r.presence_in_prompt),
     evidenceExcerpt: r.evidenceExcerpt,
   };
@@ -239,7 +251,13 @@ export function normalizeSnapshotForComparison(snapshot: ProjectSnapshot): unkno
     storyBible: Object.fromEntries(
       Object.entries(snapshot.storyBible).map(([k, v]) => [
         k,
-        { value: v.value, status: v.status, provenance: v.provenance },
+        {
+          value: v.value,
+          status: v.status,
+          provenance: v.provenance,
+          epistemicKind: v.epistemicKind,
+          ...(v.sourceBacked ? { sourceBacked: true } : {}),
+        },
       ])
     ),
     clarifications: snapshot.clarifications.map(normalizeClarificationForComparison),
@@ -250,10 +268,7 @@ export function normalizeSnapshotForComparison(snapshot: ProjectSnapshot): unkno
 }
 
 export function isSnapshotSemanticallyEqual(a: ProjectSnapshot, b: ProjectSnapshot): boolean {
-  return (
-    JSON.stringify(normalizeSnapshotForComparison(a)) ===
-    JSON.stringify(normalizeSnapshotForComparison(b))
-  );
+  return areSnapshotsSemanticallyEqual(a, b);
 }
 
 /**
@@ -275,7 +290,6 @@ export function computeSnapshotDigest(snapshot: ProjectSnapshot): string {
 
 /**
  * Commits a new confirmed snapshot onto the Undo/Redo stack and invalidates any incompatible redo branch.
- * Skips no-op commits when nextSnapshot is semantically identical to state.present.
  */
 export function pushUndoableTransaction(
   state: UndoRedoState,
@@ -295,17 +309,15 @@ export function pushUndoableTransaction(
     snapshot: structuredClone(state.present),
   };
 
-  const nextPast = [...state.past, entry].slice(-MAX_UNDO_STACK);
   return {
-    past: nextPast,
+    past: [...state.past, entry].slice(-MAX_UNDO_STACK),
     present: structuredClone(nextSnapshot),
     future: [],
   };
 }
 
 /**
- * Commits a transaction while coalescing rapid consecutive edits sharing the same coalesceKey
- * within windowMs (e.g. typing in seed prompt, freeform notes, or Story Bible fields).
+ * Commits a transaction while coalescing rapid consecutive edits sharing the same coalesceKey.
  */
 export function pushCoalescedTransaction(
   state: UndoRedoState,
@@ -320,13 +332,13 @@ export function pushCoalescedTransaction(
 
   const now = Date.now();
   const lastEntry = state.past[state.past.length - 1];
-
-  if (
-    lastEntry &&
+  const canCoalesce =
+    Boolean(lastEntry) &&
     lastEntry.coalesceKey === coalesceKey &&
     state.future.length === 0 &&
-    now - lastEntry.timestamp <= windowMs
-  ) {
+    now - lastEntry.timestamp <= windowMs;
+
+  if (canCoalesce && lastEntry) {
     const updatedPast = [...state.past];
     updatedPast[updatedPast.length - 1] = {
       ...lastEntry,
@@ -351,64 +363,62 @@ export function pushCoalescedTransaction(
   };
 }
 
-export function performUndo(state: UndoRedoState): {
-  state: UndoRedoState;
-  undoneLabel: string | null;
-} {
-  if (state.past.length === 0) {
-    return { state, undoneLabel: null };
+function stepHistoryCursor(
+  state: UndoRedoState,
+  direction: 'undo' | 'redo'
+): { state: UndoRedoState; label: string | null } {
+  const source = direction === 'undo' ? state.past : state.future;
+  if (source.length === 0) {
+    return { state, label: null };
   }
 
-  const previousEntry = state.past[state.past.length - 1];
-  const nextPast = state.past.slice(0, -1);
-  const redoEntry: UndoRedoEntry = {
-    id: previousEntry.id,
-    label: previousEntry.label,
+  const targetEntry = direction === 'undo' ? source[source.length - 1] : source[0];
+  const oppositeEntry: UndoRedoEntry = {
+    id: targetEntry.id,
+    label: targetEntry.label,
     timestamp: Date.now(),
     snapshot: structuredClone(state.present),
   };
 
+  if (direction === 'undo') {
+    return {
+      state: {
+        past: state.past.slice(0, -1),
+        present: structuredClone(targetEntry.snapshot),
+        future: [oppositeEntry, ...state.future],
+      },
+      label: targetEntry.label,
+    };
+  }
+
   return {
     state: {
-      past: nextPast,
-      present: structuredClone(previousEntry.snapshot),
-      future: [redoEntry, ...state.future],
+      past: [...state.past, oppositeEntry].slice(-MAX_UNDO_STACK),
+      present: structuredClone(targetEntry.snapshot),
+      future: state.future.slice(1),
     },
-    undoneLabel: previousEntry.label,
+    label: targetEntry.label,
   };
+}
+
+export function performUndo(state: UndoRedoState): {
+  state: UndoRedoState;
+  undoneLabel: string | null;
+} {
+  const stepped = stepHistoryCursor(state, 'undo');
+  return { state: stepped.state, undoneLabel: stepped.label };
 }
 
 export function performRedo(state: UndoRedoState): {
   state: UndoRedoState;
   redoneLabel: string | null;
 } {
-  if (state.future.length === 0) {
-    return { state, redoneLabel: null };
-  }
-
-  const nextEntry = state.future[0];
-  const remainingFuture = state.future.slice(1);
-  const undoEntry: UndoRedoEntry = {
-    id: nextEntry.id,
-    label: nextEntry.label,
-    timestamp: Date.now(),
-    snapshot: structuredClone(state.present),
-  };
-
-  return {
-    state: {
-      past: [...state.past, undoEntry].slice(-MAX_UNDO_STACK),
-      present: structuredClone(nextEntry.snapshot),
-      future: remainingFuture,
-    },
-    redoneLabel: nextEntry.label,
-  };
+  const stepped = stepHistoryCursor(state, 'redo');
+  return { state: stepped.state, redoneLabel: stepped.label };
 }
 
 /**
- * Records a durable named revision in the project's persistent version history
- * and increments the monotonic logical revision counter.
- * Supports coalescing rapid text edits sharing a coalesceKey so keystrokes do not flood revision history.
+ * Records a durable named revision in the project's persistent version history.
  */
 export function recordProjectRevision(
   project: CreativeProject,
@@ -424,13 +434,13 @@ export function recordProjectRevision(
   const nextRevisionNumber = (project.revision ?? 1) + 1;
   const windowMs = options?.windowMs ?? 1500;
   const latestRev = project.revisions[0];
+  const canCoalesce =
+    Boolean(options?.coalesceKey) &&
+    Boolean(latestRev) &&
+    latestRev.coalesceKey === options?.coalesceKey &&
+    now - latestRev.timestamp <= windowMs;
 
-  if (
-    options?.coalesceKey &&
-    latestRev &&
-    latestRev.coalesceKey === options.coalesceKey &&
-    now - latestRev.timestamp <= windowMs
-  ) {
+  if (canCoalesce && latestRev) {
     const updatedLatest: ProjectRevision = {
       ...latestRev,
       revisionNumber: nextRevisionNumber,
@@ -467,8 +477,7 @@ export function recordProjectRevision(
 }
 
 /**
- * Safely restores a historical revision while preserving the state immediately preceding the restore
- * as a recoverable revision and undo entry.
+ * Safely restores a historical revision while preserving the state immediately preceding the restore.
  */
 export function restoreProjectRevision(
   project: CreativeProject,
@@ -482,7 +491,6 @@ export function restoreProjectRevision(
   const backupRevNum = (project.revision ?? 1) + 1;
   const restoredRevNum = backupRevNum + 1;
 
-  // First save a pre-restore checkpoint revision so nothing is ever lost
   const preRestoreRev: ProjectRevision = {
     id: makeStableId('rev_backup'),
     revisionNumber: backupRevNum,

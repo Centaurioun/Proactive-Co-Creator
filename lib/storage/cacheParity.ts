@@ -5,6 +5,7 @@
 
 import { migrateProjectPayload } from './migration.ts';
 import type { IndexedDbLoadResult } from './constants.ts';
+import { areStableValuesEqual } from './casPolicy.ts';
 import { isSnapshotSemanticallyEqual } from '../historyEngine.ts';
 import type {
   CreativeProject,
@@ -87,8 +88,9 @@ function verifyArtifactsParity(
   if (sameRevision && localArtifacts.length !== idbArtifacts.length) {
     return false;
   }
+  const idbById = new Map(idbArtifacts.map((candidate) => [candidate.id, candidate]));
   for (const localArt of localArtifacts) {
-    const idbArt = idbArtifacts.find((candidate) => candidate.id === localArt.id);
+    const idbArt = idbById.get(localArt.id);
     if (!idbArt || !areArtifactsContentEqual(localArt, idbArt, sameRevision)) {
       return false;
     }
@@ -104,8 +106,9 @@ function verifyRevisionsParity(
   if (sameRevision && localRevs.length !== idbRevs.length) {
     return false;
   }
+  const idbById = new Map(idbRevs.map((candidate) => [candidate.id, candidate]));
   for (const localRevEntry of localRevs) {
-    const idbRevEntry = idbRevs.find((candidate) => candidate.id === localRevEntry.id);
+    const idbRevEntry = idbById.get(localRevEntry.id);
     if (!idbRevEntry) return false;
     if ((localRevEntry.revisionNumber ?? null) !== (idbRevEntry.revisionNumber ?? null)) {
       return false;
@@ -176,7 +179,7 @@ export function verifyProjectCacheParity(
   if (!localProject || !idbProject) return false;
   if (localProject.id !== idbProject.id) return false;
   if ((localProject.name ?? '') !== (idbProject.name ?? '')) return false;
-  if (JSON.stringify(localProject.narrative) !== JSON.stringify(idbProject.narrative)) return false;
+  if (!areStableValuesEqual(localProject.narrative, idbProject.narrative)) return false;
 
   const localRev = localProject.revision ?? 1;
   const idbRev = idbProject.revision ?? 1;

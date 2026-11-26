@@ -4,8 +4,15 @@
  */
 
 import { getEffectiveAttributeValue, isSceneEntityName } from './beliefGraphUtils.ts';
-import type { GenerationMode, ProjectSnapshot, StoryBibleFields } from '../shared/types.ts';
-import type { CreativeProject, EpistemicKind } from '../shared/types.ts';
+import type {
+  CreativeProject,
+  DecisionProvenance,
+  Entity,
+  EpistemicKind,
+  GenerationMode,
+  ProjectSnapshot,
+  StoryBibleFields,
+} from '../shared/types.ts';
 
 const STORY_FIELD_LABELS: Record<keyof StoryBibleFields, string> = {
   genre: 'Genre',
@@ -22,54 +29,107 @@ const STORY_FIELD_LABELS: Record<keyof StoryBibleFields, string> = {
   cameraAndLighting: 'Camera & Lighting',
 };
 
-const promptEligibleKind = (kind: EpistemicKind | undefined) => kind === 'explicit' || kind === 'user-authored';
+const IMAGE_BIBLE_KEYS: Array<keyof StoryBibleFields> = [
+  'setting',
+  'tone',
+  'visualStyle',
+  'cameraAndLighting',
+  'genre',
+];
 
-function hasUnknownImportedContext(snapshot: ProjectSnapshot): boolean {
-  return snapshot.storyBible && Object.values(snapshot.storyBible).some(field =>
-    field.status === 'confirmed' && field.sourceBacked && field.epistemicKind === undefined
-  ) || snapshot.entities.some(entity =>
-    (entity.status === 'confirmed' && entity.sourceBacked && entity.epistemicKind === undefined) ||
-    entity.attributes.some(attribute => attribute.status === 'confirmed' && attribute.sourceBacked && attribute.epistemicKind === undefined)
-  ) || snapshot.relationships.some(relationship =>
-    relationship.status === 'confirmed' && relationship.sourceBacked && relationship.epistemicKind === undefined
+const STORY_BIBLE_KEYS: Array<keyof StoryBibleFields> = [
+  'genre',
+  'tone',
+  'setting',
+  'narrativePerspective',
+  'intendedAudience',
+  'themes',
+  'centralConflict',
+  'pacing',
+  'continuityRules',
+];
+
+interface EpistemicRecord {
+  status?: string;
+  sourceBacked?: boolean;
+  epistemicKind?: EpistemicKind;
+  provenance?: DecisionProvenance;
+}
+
+const promptEligibleKind = (kind: EpistemicKind | undefined): boolean =>
+  kind === 'explicit' || kind === 'user-authored';
+
+function isUnknownImportedRecord(record: EpistemicRecord): boolean {
+  return (
+    record.status === 'confirmed' &&
+    Boolean(record.sourceBacked) &&
+    record.epistemicKind === undefined
   );
 }
 
-function withoutUnreviewedImportedContext(snapshot: ProjectSnapshot): ProjectSnapshot {
-  const filtered = structuredClone(snapshot);
-  for (const field of Object.values(filtered.storyBible)) {
-    if (field.status === 'confirmed' && field.sourceBacked && !promptEligibleKind(field.epistemicKind) ||
-      field.status === 'confirmed' && field.epistemicKind && !promptEligibleKind(field.epistemicKind) && field.provenance !== 'user-edit') field.status = 'pending';
+function needsEpistemicSuppression(record: EpistemicRecord): boolean {
+  if (promptEligibleKind(record.epistemicKind)) return false;
+  if (record.sourceBacked) return true;
+  return Boolean(record.epistemicKind) && record.provenance !== 'user-edit';
+}
+
+function isConfirmedUnreviewed(record: EpistemicRecord): boolean {
+  return record.status === 'confirmed' && needsEpistemicSuppression(record);
+}
+
+function hasUnknownImportedContext(snapshot: ProjectSnapshot): boolean {
+  if (snapshot.storyBible && Object.values(snapshot.storyBible).some(isUnknownImportedRecord)) {
+    return true;
   }
-  filtered.entities = filtered.entities.flatMap(entity => {
-    if ((entity.sourceBacked && !promptEligibleKind(entity.epistemicKind)) ||
-      (entity.epistemicKind && !promptEligibleKind(entity.epistemicKind) && entity.provenance !== 'user-edit')) return [];
-    entity.attributes = entity.attributes.map(attribute => {
-      if (attribute.status === 'confirmed' && (attribute.sourceBacked && !promptEligibleKind(attribute.epistemicKind) ||
-        attribute.epistemicKind && !promptEligibleKind(attribute.epistemicKind) && attribute.provenance !== 'user-edit')) {
-        return { ...attribute, status: 'pending' as const, confirmedValue: undefined, presence_in_prompt: false };
-      }
-      return attribute;
-    });
-    return [entity];
-  });
-  filtered.relationships = filtered.relationships.map(relationship =>
-    relationship.status === 'confirmed' && (relationship.sourceBacked && !promptEligibleKind(relationship.epistemicKind) ||
-      relationship.epistemicKind && !promptEligibleKind(relationship.epistemicKind) && relationship.provenance !== 'user-edit')
-      ? { ...relationship, status: 'pending' as const, presence_in_prompt: false }
-      : relationship
-  );
-  return filtered;
+  for (const entity of snapshot.entities) {
+    if (isUnknownImportedRecord(entity) || entity.attributes.some(isUnknownImportedRecord)) {
+      return true;
+    }
+  }
+  return snapshot.relationships.some(isUnknownImportedRecord);
 }
 
 function hasSuppressedImportedContext(snapshot: ProjectSnapshot): boolean {
-  return Object.values(snapshot.storyBible).some(field => field.status === 'confirmed' &&
-    (field.sourceBacked && !promptEligibleKind(field.epistemicKind) || field.epistemicKind && !promptEligibleKind(field.epistemicKind) && field.provenance !== 'user-edit')) ||
-    snapshot.entities.some(entity => entity.sourceBacked && !promptEligibleKind(entity.epistemicKind) ||
-      entity.attributes.some(attribute => attribute.status === 'confirmed' &&
-        (attribute.sourceBacked && !promptEligibleKind(attribute.epistemicKind) || attribute.epistemicKind && !promptEligibleKind(attribute.epistemicKind) && attribute.provenance !== 'user-edit'))) ||
-    snapshot.relationships.some(relationship => relationship.status === 'confirmed' &&
-      (relationship.sourceBacked && !promptEligibleKind(relationship.epistemicKind) || relationship.epistemicKind && !promptEligibleKind(relationship.epistemicKind) && relationship.provenance !== 'user-edit'));
+  if (Object.values(snapshot.storyBible).some(isConfirmedUnreviewed)) {
+    return true;
+  }
+  for (const entity of snapshot.entities) {
+    if (needsEpistemicSuppression(entity) || entity.attributes.some(isConfirmedUnreviewed)) {
+      return true;
+    }
+  }
+  return snapshot.relationships.some(isConfirmedUnreviewed);
+}
+
+function filterImportedContext(snapshot: ProjectSnapshot): {
+  contextSnapshot: ProjectSnapshot;
+  withheld: boolean;
+} {
+  if (!hasSuppressedImportedContext(snapshot)) {
+    return { contextSnapshot: snapshot, withheld: false };
+  }
+
+  const filtered = structuredClone(snapshot);
+  for (const field of Object.values(filtered.storyBible)) {
+    if (isConfirmedUnreviewed(field)) {
+      field.status = 'pending';
+    }
+  }
+  filtered.entities = filtered.entities.flatMap((entity) => {
+    if (needsEpistemicSuppression(entity)) return [];
+    entity.attributes = entity.attributes.map((attribute) =>
+      isConfirmedUnreviewed(attribute)
+        ? { ...attribute, status: 'pending' as const, confirmedValue: undefined, presence_in_prompt: false }
+        : attribute
+    );
+    return [entity];
+  });
+  filtered.relationships = filtered.relationships.map((relationship) =>
+    isConfirmedUnreviewed(relationship)
+      ? { ...relationship, status: 'pending' as const, presence_in_prompt: false }
+      : relationship
+  );
+  return { contextSnapshot: filtered, withheld: true };
 }
 
 export type ProviderPromptDecision =
@@ -78,16 +138,20 @@ export type ProviderPromptDecision =
 
 export function resolveProviderPrompt(project: CreativeProject, targetMode: GenerationMode): ProviderPromptDecision {
   if (hasUnknownImportedContext(project.snapshot)) {
-    return { ok: false, reason: 'Prompt review required: imported context has an unknown epistemic class. Review or edit it before using this AI operation.' };
+    return {
+      ok: false,
+      reason: 'Prompt review required: imported context has an unknown epistemic class. Review or edit it before using this AI operation.',
+    };
   }
-  const contextSnapshot = withoutUnreviewedImportedContext(project.snapshot);
-  const prompt = synthesizeRefinedPrompt(contextSnapshot, targetMode);
-  const withheld = hasSuppressedImportedContext(project.snapshot);
+  const { contextSnapshot, withheld } = filterImportedContext(project.snapshot);
+  const prompt = synthesizeRefinedPromptCore(contextSnapshot, targetMode);
   return {
     ok: true,
     prompt: withheld ? prompt : (project.snapshot.refinedPrompt || prompt),
     contextSnapshot,
-    ...(withheld ? { warning: 'Unattributed or non-explicit imported claims were withheld from AI context; source evidence remains available in Review.' } : {}),
+    ...(withheld
+      ? { warning: 'Unattributed or non-explicit imported claims were withheld from AI context; source evidence remains available in Review.' }
+      : {}),
   };
 }
 
@@ -103,10 +167,12 @@ export function buildStartupAnalysisProviderInputs(project: CreativeProject): St
       .filter(([, field]) => field.status === 'confirmed' && field.value)
       .map(([key, field]) => `${key}: ${field.value}`),
     ...decision.contextSnapshot.entities
-      .filter(entity => !entity.excluded)
-      .flatMap(entity => entity.attributes
-        .filter(attribute => attribute.status === 'confirmed' && attribute.confirmedValue)
-        .map(attribute => `${entity.name} ${attribute.name}: ${attribute.confirmedValue}`)),
+      .filter((entity) => !entity.excluded)
+      .flatMap((entity) =>
+        entity.attributes
+          .filter((attribute) => attribute.status === 'confirmed' && attribute.confirmedValue)
+          .map((attribute) => `${entity.name} ${attribute.name}: ${attribute.confirmedValue}`)
+      ),
   ];
   return {
     ok: true,
@@ -135,61 +201,33 @@ export function computePromptDigest(prompt: string, mode: GenerationMode): strin
   return `pd_${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-/**
- * Synthesizes a clean, authoritative generation prompt from confirmed creative decisions.
- * Never includes rejected suggestions or unconfirmed AI guesses.
- * Emits explicit Seed Overrides when seed entities are renamed or excluded so downstream
- * generation never reintroduces stale seed names or excluded subjects.
- */
-export function synthesizeRefinedPrompt(
-  snapshot: ProjectSnapshot,
-  targetMode: GenerationMode = snapshot.mode
-): string {
-  snapshot = withoutUnreviewedImportedContext(snapshot);
-  const baseIdea = snapshot.originalIdea.trim();
-  if (!baseIdea) return '';
-
-  const sections: string[] = [baseIdea];
-
-  // 1. Confirmed Story Bible properties
-  const bibleLines: string[] = [];
-  const relevantBibleKeys: Array<keyof StoryBibleFields> =
-    targetMode === 'image'
-      ? [
-          'setting',
-          'tone',
-          'visualStyle',
-          'cameraAndLighting',
-          'genre',
-        ]
-      : [
-          'genre',
-          'tone',
-          'setting',
-          'narrativePerspective',
-          'intendedAudience',
-          'themes',
-          'centralConflict',
-          'pacing',
-          'continuityRules',
-        ];
-
-  for (const key of relevantBibleKeys) {
+function formatStoryBibleSection(snapshot: ProjectSnapshot, targetMode: GenerationMode): string | null {
+  const keys = targetMode === 'image' ? IMAGE_BIBLE_KEYS : STORY_BIBLE_KEYS;
+  const lines: string[] = [];
+  for (const key of keys) {
     const field = snapshot.storyBible[key];
     if (field && field.status === 'confirmed' && field.value.trim()) {
-      bibleLines.push(`${STORY_FIELD_LABELS[key]}: ${field.value.trim()}`);
+      lines.push(`${STORY_FIELD_LABELS[key]}: ${field.value.trim()}`);
     }
   }
+  return lines.length > 0 ? `Creative Direction:\n- ${lines.join('\n- ')}` : null;
+}
 
-  if (bibleLines.length > 0) {
-    sections.push(`Creative Direction:\n- ${bibleLines.join('\n- ')}`);
-  }
+function isEntityExcludedForPrompt(entity: Entity): boolean {
+  if (entity.excluded) return true;
+  const exAttr = entity.attributes.find(
+    (a) => a.name === 'existence' || a.name === 'existence_in_image'
+  );
+  return Boolean(exAttr && exAttr.status === 'confirmed' && exAttr.confirmedValue === 'false');
+}
 
-  // 2. Confirmed Entities, Attributes, and Seed Overrides
+function formatEntitiesAndOverrides(
+  snapshot: ProjectSnapshot,
+  baseIdeaLower: string
+): { entityLines: string[]; excludedNames: string[]; seedOverrides: string[] } {
   const entityLines: string[] = [];
   const excludedNames: string[] = [];
   const seedOverrides: string[] = [];
-  const entityById = new Map(snapshot.entities.map((e) => [e.id, e]));
 
   for (const entity of snapshot.entities) {
     if (isSceneEntityName(entity.name) || entity.category === 'scene') continue;
@@ -198,14 +236,7 @@ export function synthesizeRefinedPrompt(
       continue;
     }
 
-    const exAttr = entity.attributes.find(
-      (a) => a.name === 'existence' || a.name === 'existence_in_image'
-    );
-    const isExcluded =
-      entity.excluded ||
-      (exAttr && exAttr.status === 'confirmed' && exAttr.confirmedValue === 'false');
-
-    if (isExcluded) {
+    if (isEntityExcludedForPrompt(entity)) {
       excludedNames.push(entity.name);
       if (entity.aliases && entity.aliases.length > 0) {
         excludedNames.push(...entity.aliases);
@@ -221,7 +252,7 @@ export function synthesizeRefinedPrompt(
     );
     if (entity.provenance === 'user-edit' && priorAliases.length > 0) {
       const seedMatchingAliases = priorAliases.filter((alias) =>
-        baseIdea.toLowerCase().includes(alias.trim().toLowerCase())
+        baseIdeaLower.includes(alias.trim().toLowerCase())
       );
       const relevantAliases =
         seedMatchingAliases.length > 0
@@ -257,42 +288,65 @@ export function synthesizeRefinedPrompt(
     }
   }
 
-  if (seedOverrides.length > 0) {
-    sections.push(`Seed Overrides & Canonical Identity:\n- ${seedOverrides.join('\n- ')}`);
-  }
+  return { entityLines, excludedNames, seedOverrides };
+}
 
-  if (entityLines.length > 0) {
-    sections.push(`Confirmed Elements:\n- ${entityLines.join('\n- ')}`);
-  }
-
-  // 3. Confirmed Relationships between active (non-excluded) entities
+function formatRelationshipsSection(
+  snapshot: ProjectSnapshot,
+  entityById: Map<string, Entity>,
+  excludedNames: string[]
+): string | null {
   const excludedSet = new Set(excludedNames.map((n) => n.toLowerCase()));
   const relLines: string[] = [];
 
   for (const rel of snapshot.relationships) {
     if (rel.status !== 'confirmed') continue;
-
     const sourceEntity = rel.sourceId ? entityById.get(rel.sourceId) : undefined;
     const targetEntity = rel.targetId ? entityById.get(rel.targetId) : undefined;
-
     if (sourceEntity?.excluded || targetEntity?.excluded) continue;
     if (sourceEntity?.status === 'rejected' || targetEntity?.status === 'rejected') continue;
 
     const sourceName = sourceEntity?.name ?? rel.source;
     const targetName = targetEntity?.name ?? rel.target;
-
     if (excludedSet.has(sourceName.toLowerCase()) || excludedSet.has(targetName.toLowerCase())) {
       continue;
     }
-
     relLines.push(`${sourceName} ${rel.label} ${targetName}`);
   }
 
-  if (relLines.length > 0) {
-    sections.push(`Relationships & Dynamics:\n- ${relLines.join('\n- ')}`);
+  return relLines.length > 0 ? `Relationships & Dynamics:\n- ${relLines.join('\n- ')}` : null;
+}
+
+function synthesizeRefinedPromptCore(
+  snapshot: ProjectSnapshot,
+  targetMode: GenerationMode
+): string {
+  const baseIdea = snapshot.originalIdea.trim();
+  if (!baseIdea) return '';
+
+  const sections: string[] = [baseIdea];
+  const bibleSection = formatStoryBibleSection(snapshot, targetMode);
+  if (bibleSection) sections.push(bibleSection);
+
+  const entityById = new Map<string, Entity>();
+  for (const e of snapshot.entities) {
+    if (e.id) entityById.set(e.id, e);
+  }
+  const { entityLines, excludedNames, seedOverrides } = formatEntitiesAndOverrides(
+    snapshot,
+    baseIdea.toLowerCase()
+  );
+
+  if (seedOverrides.length > 0) {
+    sections.push(`Seed Overrides & Canonical Identity:\n- ${seedOverrides.join('\n- ')}`);
+  }
+  if (entityLines.length > 0) {
+    sections.push(`Confirmed Elements:\n- ${entityLines.join('\n- ')}`);
   }
 
-  // 4. Explicit Exclusions
+  const relSection = formatRelationshipsSection(snapshot, entityById, excludedNames);
+  if (relSection) sections.push(relSection);
+
   const manualExclusions =
     snapshot.storyBible.explicitExclusions.status === 'confirmed'
       ? snapshot.storyBible.explicitExclusions.value
@@ -305,10 +359,23 @@ export function synthesizeRefinedPrompt(
     sections.push(`Do NOT include (Explicit Exclusions): ${allExclusions.join(', ')}.`);
   }
 
-  // 5. Freeform user notes (never overwritten by AI analysis)
   if (snapshot.freeformNotes.trim()) {
     sections.push(`Additional Author Notes:\n${snapshot.freeformNotes.trim()}`);
   }
 
   return sections.join('\n\n');
+}
+
+/**
+ * Synthesizes a clean, authoritative generation prompt from confirmed creative decisions.
+ * Never includes rejected suggestions or unconfirmed AI guesses.
+ * Emits explicit Seed Overrides when seed entities are renamed or excluded so downstream
+ * generation never reintroduces stale seed names or excluded subjects.
+ */
+export function synthesizeRefinedPrompt(
+  snapshot: ProjectSnapshot,
+  targetMode: GenerationMode = snapshot.mode
+): string {
+  const { contextSnapshot } = filterImportedContext(snapshot);
+  return synthesizeRefinedPromptCore(contextSnapshot, targetMode);
 }
