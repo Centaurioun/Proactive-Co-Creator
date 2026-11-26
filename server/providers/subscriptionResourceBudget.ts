@@ -23,6 +23,8 @@ export const CHATGPT_STORY_SRB_V1 = Object.freeze({
 export const CHATGPT_STORY_SRB_ENABLED_BY_DEFAULT = false;
 const MAX_STORED_STORY_PLANS = 64;
 const STORY_PLAN_LIFETIME_MS = 60_000;
+const MAX_REQUEST_BINDINGS = 4_096;
+const utf8Encoder = new TextEncoder();
 
 export interface ChatGptStoryPlanInput {
   requestId: string;
@@ -89,6 +91,58 @@ function fail(code: string, message: string, statusCode: number): AppApiError {
   return new AppApiError(code as ConstructorParameters<typeof AppApiError>[0], message, statusCode, false);
 }
 
+function validateStoryPlanInput(input: ChatGptStoryPlanInput): void {
+  if (!/^[A-Za-z0-9._:-]{16,128}$/.test(input.requestId)) {
+    throw fail('VALIDATION_ERROR', 'The ChatGPT story request identity is invalid.', 400);
+  }
+  const hasInvalidIdentity = !input.modelId.trim() || !input.sourceDigest.trim() ||
+    !Number.isSafeInteger(input.grantGeneration) || input.grantGeneration < 0;
+  if (hasInvalidIdentity) {
+    throw fail('VALIDATION_ERROR', 'The ChatGPT story plan identity is invalid.', 400);
+  }
+  if (input.sourceText.length > CHATGPT_STORY_SRB_V1.maxSourceChars) {
+    throw fail('VALIDATION_ERROR', 'This ChatGPT story plan exceeds the 8,000-character source limit.', 413);
+  }
+}
+
+function buildPinnedStoryRequest(input: ChatGptStoryPlanInput): {
+  requestBody: string;
+  requestBodyBytes: number;
+  estimatedInputTokens: number;
+} {
+  const requestBody = JSON.stringify({
+    model: input.modelId,
+    input: [{ role: 'user', content: input.sourceText }],
+    ...(input.instructions ? { instructions: input.instructions } : {}),
+    store: false,
+    stream: true,
+  });
+  const requestBodyBytes = utf8Encoder.encode(requestBody).byteLength;
+  const estimatedInputTokens = estimateSrbInputTokens(`${input.instructions ?? ''}\n${input.sourceText}`);
+  if (requestBodyBytes > CHATGPT_STORY_SRB_V1.maxRequestBodyBytes) {
+    throw fail('VALIDATION_ERROR', 'The complete serialized ChatGPT story request exceeds 32 KiB.', 413);
+  }
+  if (estimatedInputTokens > CHATGPT_STORY_SRB_V1.maxEstimatedInputTokens) {
+    throw fail('VALIDATION_ERROR', 'The conservative ChatGPT story input estimate exceeds 4,000 tokens.', 413);
+  }
+  return { requestBody, requestBodyBytes, estimatedInputTokens };
+}
+
+function validateStoryResult(result: ChatGptStoryTransportResult): ChatGptStoryTransportResult {
+  const visibleOutputBytes = utf8Encoder.encode(result.text).byteLength;
+  if (result.terminalEvent !== 'response.completed' || result.refusal || !result.text.trim()) {
+    throw fail('INVALID_RESPONSE', 'The ChatGPT story stream did not complete with a non-refusal text result.', 502);
+  }
+  const invalidStreamStats = !Number.isSafeInteger(result.streamBytes) || result.streamBytes < 0 ||
+    result.streamBytes > CHATGPT_STORY_SRB_V1.maxStreamBytes ||
+    !Number.isSafeInteger(result.eventCount) || result.eventCount < 1 ||
+    result.eventCount > CHATGPT_STORY_SRB_V1.maxStreamEvents;
+  if (invalidStreamStats || visibleOutputBytes > CHATGPT_STORY_SRB_V1.maxAcceptedOutputBytes) {
+    throw fail('VALIDATION_ERROR', 'The ChatGPT story response exceeded an SRB v1 stream or output limit.', 413);
+  }
+  return result;
+}
+
 export function createChatGptStorySrbAuthority(options: {
   enabled?: boolean;
   now?: () => number;
@@ -113,37 +167,7 @@ export function createChatGptStorySrbAuthority(options: {
     if (!enabled) throw fail('MODEL_UNSUPPORTED', 'ChatGPT story generation is not activated for production admission.', 422);
   };
 
-  function prepare(input: ChatGptStoryPlanInput): ChatGptStoryPlan {
-    assertEnabled();
-    const timestamp = now();
-    prunePlans(timestamp);
-    if (plans.size >= MAX_STORED_STORY_PLANS) {
-      throw fail('RATE_LIMITED', 'The ChatGPT story pilot has no available bounded plan capacity.', 429);
-    }
-    if (!/^[A-Za-z0-9._:-]{16,128}$/.test(input.requestId)) {
-      throw fail('VALIDATION_ERROR', 'The ChatGPT story request identity is invalid.', 400);
-    }
-    if (!input.modelId.trim() || !input.sourceDigest.trim() || !Number.isSafeInteger(input.grantGeneration) || input.grantGeneration < 0) {
-      throw fail('VALIDATION_ERROR', 'The ChatGPT story plan identity is invalid.', 400);
-    }
-    if (input.sourceText.length > CHATGPT_STORY_SRB_V1.maxSourceChars) {
-      throw fail('VALIDATION_ERROR', 'This ChatGPT story plan exceeds the 8,000-character source limit.', 413);
-    }
-    const requestBody = JSON.stringify({
-      model: input.modelId,
-      input: [{ role: 'user', content: input.sourceText }],
-      ...(input.instructions ? { instructions: input.instructions } : {}),
-      store: false,
-      stream: true,
-    });
-    const requestBodyBytes = new TextEncoder().encode(requestBody).byteLength;
-    const estimatedInputTokens = estimateSrbInputTokens(`${input.instructions ?? ''}\n${input.sourceText}`);
-    if (requestBodyBytes > CHATGPT_STORY_SRB_V1.maxRequestBodyBytes) {
-      throw fail('VALIDATION_ERROR', 'The complete serialized ChatGPT story request exceeds 32 KiB.', 413);
-    }
-    if (estimatedInputTokens > CHATGPT_STORY_SRB_V1.maxEstimatedInputTokens) {
-      throw fail('VALIDATION_ERROR', 'The conservative ChatGPT story input estimate exceeds 4,000 tokens.', 413);
-    }
+  const checkRequestBindingAndCapacity = (input: ChatGptStoryPlanInput, requestBody: string): string => {
     const requestBinding = JSON.stringify({
       operation: 'story', requestId: input.requestId, sourceDigest: input.sourceDigest,
       approvedPayloadDigest: createHash('sha256').update(requestBody).digest('hex'),
@@ -156,12 +180,25 @@ export function createChatGptStorySrbAuthority(options: {
         ? 'This explicit story request was already admitted and cannot be replayed.'
         : 'This story request identity is already bound to a different approved payload or provider selection.', 409);
     }
-    if (requestBindings.size >= 4096) {
+    if (requestBindings.size >= MAX_REQUEST_BINDINGS) {
       throw fail('RATE_LIMITED', 'The ChatGPT story request identity ledger is full for this server process.', 429);
     }
     if (quotaBlocked) {
       throw fail('RATE_LIMITED', 'ChatGPT plan quota is blocked after a provider quota response; an explicit recovery decision is required.', 429);
     }
+    return requestBinding;
+  };
+
+  function prepare(input: ChatGptStoryPlanInput): ChatGptStoryPlan {
+    assertEnabled();
+    const timestamp = now();
+    prunePlans(timestamp);
+    if (plans.size >= MAX_STORED_STORY_PLANS) {
+      throw fail('RATE_LIMITED', 'The ChatGPT story pilot has no available bounded plan capacity.', 429);
+    }
+    validateStoryPlanInput(input);
+    const { requestBody, requestBodyBytes, estimatedInputTokens } = buildPinnedStoryRequest(input);
+    const requestBinding = checkRequestBindingAndCapacity(input, requestBody);
     requestBindings.set(input.requestId, requestBinding);
     const value: ChatGptStoryPlan = Object.freeze({
       id: makeId(), requestId: input.requestId, operation: 'story', modelId: input.modelId,
@@ -175,6 +212,41 @@ export function createChatGptStorySrbAuthority(options: {
     return value;
   }
 
+  const validateRunAdmission = (
+    plan: ChatGptStoryPlan,
+    currentGrantGeneration: () => number,
+    signal?: AbortSignal,
+  ): { stored: StoredPlan; timestamp: number } => {
+    const timestamp = now();
+    prunePlans(timestamp);
+    const stored = plans.get(plan.id);
+    const isValidStored = stored && stored.value === plan &&
+      stored.value.policyVersion === CHATGPT_STORY_SRB_V1.version && stored.value.expiresAt > timestamp;
+    if (!isValidStored) {
+      if (stored && stored.value.expiresAt <= timestamp) plans.delete(plan.id);
+      throw fail('VALIDATION_ERROR', 'The ChatGPT story plan is missing, stale, or was not issued by this server.', 409);
+    }
+    if (currentGrantGeneration() !== stored.value.grantGeneration) {
+      plans.delete(stored.value.id);
+      throw fail('CANCELLED', 'The ChatGPT account session changed after this story plan was prepared.', 499);
+    }
+    if (signal?.aborted) throw fail('CANCELLED', 'The ChatGPT story operation was cancelled before admission.', 499);
+    while (attempts.length && timestamp - attempts[0].at >= 60_000) attempts.shift();
+    if (stored.attempted) throw fail('RATE_LIMITED', 'This approved ChatGPT story plan has already used its one inference attempt.', 429);
+    if (activePlanId) throw fail('RATE_LIMITED', 'A ChatGPT story inference is already in progress in this server process.', 429);
+    if (attempts.length >= CHATGPT_STORY_SRB_V1.maxAttemptsPerMinute) {
+      throw fail('RATE_LIMITED', 'The ChatGPT story pilot reached its two-attempts-per-minute limit.', 429);
+    }
+    const totalEstimatedTokens = attempts.reduce(
+      (total, attempt) => total + attempt.estimatedInputTokens,
+      stored.value.estimatedInputTokens,
+    );
+    if (totalEstimatedTokens > CHATGPT_STORY_SRB_V1.maxEstimatedInputTokens * CHATGPT_STORY_SRB_V1.maxAttemptsPerMinute) {
+      throw fail('RATE_LIMITED', 'The ChatGPT story pilot reached its aggregate estimated-input limit.', 429);
+    }
+    return { stored, timestamp };
+  };
+
   async function run(input: {
     plan: ChatGptStoryPlan;
     currentGrantGeneration: () => number;
@@ -182,29 +254,7 @@ export function createChatGptStorySrbAuthority(options: {
     transport: (request: { body: string; limits: typeof CHATGPT_STORY_SRB_V1 }, signal: AbortSignal) => Promise<ChatGptStoryTransportResult>;
   }): Promise<ChatGptStoryTransportResult> {
     assertEnabled();
-    prunePlans(now());
-    const stored = plans.get(input.plan.id);
-    if (!stored || stored.value !== input.plan || stored.value.policyVersion !== CHATGPT_STORY_SRB_V1.version ||
-      stored.value.expiresAt <= now()) {
-      if (stored && stored.value.expiresAt <= now()) plans.delete(input.plan.id);
-      throw fail('VALIDATION_ERROR', 'The ChatGPT story plan is missing, stale, or was not issued by this server.', 409);
-    }
-    if (input.currentGrantGeneration() !== stored.value.grantGeneration) {
-      plans.delete(stored.value.id);
-      throw fail('CANCELLED', 'The ChatGPT account session changed after this story plan was prepared.', 499);
-    }
-    if (input.signal?.aborted) throw fail('CANCELLED', 'The ChatGPT story operation was cancelled before admission.', 499);
-    const timestamp = now();
-    while (attempts.length && timestamp - attempts[0].at >= 60_000) attempts.shift();
-    if (stored.attempted) throw fail('RATE_LIMITED', 'This approved ChatGPT story plan has already used its one inference attempt.', 429);
-    if (activePlanId) throw fail('RATE_LIMITED', 'A ChatGPT story inference is already in progress in this server process.', 429);
-    if (attempts.length >= CHATGPT_STORY_SRB_V1.maxAttemptsPerMinute) {
-      throw fail('RATE_LIMITED', 'The ChatGPT story pilot reached its two-attempts-per-minute limit.', 429);
-    }
-    if (attempts.reduce((total, attempt) => total + attempt.estimatedInputTokens, stored.value.estimatedInputTokens) >
-      CHATGPT_STORY_SRB_V1.maxEstimatedInputTokens * CHATGPT_STORY_SRB_V1.maxAttemptsPerMinute) {
-      throw fail('RATE_LIMITED', 'The ChatGPT story pilot reached its aggregate estimated-input limit.', 429);
-    }
+    const { stored, timestamp } = validateRunAdmission(input.plan, input.currentGrantGeneration, input.signal);
 
     // Charge the attempt before transport begins. Failures, cancellation and
     // ambiguous upstream outcomes cannot be retried with a fresh task id.
@@ -227,9 +277,13 @@ export function createChatGptStorySrbAuthority(options: {
     ));
     // A caller timeout/cancel revokes result authority immediately, but the
     // single-flight slot stays held until this local transport really settles.
+    // Late RATE_LIMITED errors arriving after caller abort still engage quotaBlocked.
     void transportPromise.then(
       () => { if (activePlanId === stored.value.id) activePlanId = undefined; },
-      () => { if (activePlanId === stored.value.id) activePlanId = undefined; },
+      (error: unknown) => {
+        if (error instanceof AppApiError && error.code === 'RATE_LIMITED') quotaBlocked = true;
+        if (activePlanId === stored.value.id) activePlanId = undefined;
+      },
     );
     try {
       let result: ChatGptStoryTransportResult;
@@ -242,16 +296,7 @@ export function createChatGptStorySrbAuthority(options: {
       if (input.currentGrantGeneration() !== stored.value.grantGeneration || controller.signal.aborted) {
         throw fail('CANCELLED', 'The ChatGPT story result is stale and was discarded.', 499);
       }
-      const visibleOutputBytes = new TextEncoder().encode(result.text).byteLength;
-      if (result.terminalEvent !== 'response.completed' || result.refusal || !result.text.trim()) {
-        throw fail('INVALID_RESPONSE', 'The ChatGPT story stream did not complete with a non-refusal text result.', 502);
-      }
-      if (!Number.isSafeInteger(result.streamBytes) || result.streamBytes < 0 || result.streamBytes > CHATGPT_STORY_SRB_V1.maxStreamBytes ||
-        !Number.isSafeInteger(result.eventCount) || result.eventCount < 1 || result.eventCount > CHATGPT_STORY_SRB_V1.maxStreamEvents ||
-        visibleOutputBytes > CHATGPT_STORY_SRB_V1.maxAcceptedOutputBytes) {
-        throw fail('VALIDATION_ERROR', 'The ChatGPT story response exceeded an SRB v1 stream or output limit.', 413);
-      }
-      return result;
+      return validateStoryResult(result);
     } finally {
       clearTimeout(timeout);
       input.signal?.removeEventListener('abort', abort);

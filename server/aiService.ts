@@ -64,19 +64,32 @@ function combineSignals(
 
 async function runWithConcurrency<T>(
   tasks: Array<() => Promise<T>>,
-  concurrency: number
+  concurrency: number,
+  onFatalError?: (error: unknown) => void,
 ): Promise<T[]> {
   const results: T[] = new Array(tasks.length);
   let nextIndex = 0;
+  let firstError: unknown;
+  let hasError = false;
 
   const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
-    while (nextIndex < tasks.length) {
+    while (!hasError && nextIndex < tasks.length) {
       const idx = nextIndex++;
-      results[idx] = await tasks[idx]();
+      try {
+        results[idx] = await tasks[idx]();
+      } catch (error) {
+        if (!hasError) {
+          hasError = true;
+          firstError = error;
+          onFatalError?.(error);
+        }
+        throw error;
+      }
     }
   });
 
-  await Promise.all(workers);
+  await Promise.allSettled(workers);
+  if (hasError) throw firstError;
   return results;
 }
 
@@ -541,7 +554,8 @@ Story:`;
 
 export async function generateImagesBatch(
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientOverride?: ReturnType<typeof getGeminiClient>,
 ): Promise<ImageGenerationResult> {
   const policy = AI_OPERATION_POLICIES.image;
   const budget = evaluateOperationBudget({
@@ -554,12 +568,15 @@ export async function generateImagesBatch(
   const slot = acquireAiSlot('image');
   if (!slot.ok) throw new AppApiError('RATE_LIMITED', slot.reason, 429, true);
   const operationKey = randomUUID();
+  const batchController = new AbortController();
+  const abortBatch = () => batchController.abort(signal?.reason);
+  signal?.addEventListener('abort', abortBatch, { once: true });
 
   try {
-  const ai = getGeminiClient();
+  const ai = clientOverride ?? getGeminiClient();
 
   const generateSingleImage = async (): Promise<{ image: string | null; error: AppApiError | null }> => {
-    const { signal: slotSignal, cleanup } = combineSignals(signal, IMAGE_TIMEOUT_MS);
+    const { signal: slotSignal, cleanup } = combineSignals(batchController.signal, IMAGE_TIMEOUT_MS);
     try {
       const response = await withRetry(
         () => {
@@ -611,7 +628,7 @@ export async function generateImagesBatch(
   };
 
   const tasks = Array.from({ length: TARGET_IMAGE_COUNT }, () => generateSingleImage);
-  const slotResults = await runWithConcurrency(tasks, IMAGE_CONCURRENCY);
+  const slotResults = await runWithConcurrency(tasks, IMAGE_CONCURRENCY, (err) => batchController.abort(err));
 
   const images = slotResults
     .map((r) => r.image)
@@ -640,6 +657,8 @@ export async function generateImagesBatch(
     warning,
   };
   } finally {
+    signal?.removeEventListener('abort', abortBatch);
+    batchController.abort();
     slot.release();
   }
 }

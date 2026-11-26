@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import express from 'express';
 import { AppApiError } from '../server/errors.ts';
-import { createApiRouter, type AiServiceHandlers, type ApiRouterOptions } from '../server/routes.ts';
+import { createApiRouter, createIpRateLimiter, type AiServiceHandlers, type ApiRouterOptions } from '../server/routes.ts';
 import { CAPABILITY_POLICY_VERSION, describeChatGptModel } from '../server/providers/policy.ts';
 import { getAiProviderRequestContext } from '../server/providers/requestContext.ts';
 import { getChatGptModels, getCredentialAuthorityId, setChatGptModels } from '../server/providers/runtime.ts';
@@ -231,44 +231,49 @@ describe('server/routes API contract', () => {
     assert.equal(JSON.stringify(payload).includes('do-not-expose-test-secret'), false);
   });
 
+async function createSrbStoryTestSetup(modelId: string) {
+  let transportCalls = 0;
+  let fallbackCalls = 0;
+  const authority = createChatGptStorySrbAuthority({ enabled: true, makeId: () => 'story-plan-test-1' });
+  const server = await startTestServer(createStubHandlers({
+    generateStoryText: async () => { fallbackCalls += 1; return 'Gemini fallback must not run.'; },
+  }), {
+    chatGptStorySrbTestInjection: {
+      authority,
+      currentGrantGeneration: () => 9,
+      adapterFactory: generation => {
+        assert.equal(generation, 9);
+        return {
+          generateStoryText: async (request, approvedBody, limits): Promise<ChatGptStoryTransportResult> => {
+            transportCalls += 1;
+            const body = JSON.parse(approvedBody) as Record<string, unknown>;
+            assert.equal(body.model, modelId);
+            assert.equal(body.store, false);
+            assert.equal(body.stream, true);
+            assert.equal('reasoning' in body, false);
+            assert.equal(request.operation, 'story');
+            assert.equal(request.reasoningLevel, 'default');
+            assert.equal(request.maxOutputTokens, undefined);
+            assert.equal(limits.maxStreamBytes, CHATGPT_STORY_SRB_V1.maxStreamBytes);
+            assert.equal(limits.maxAcceptedOutputBytes, CHATGPT_STORY_SRB_V1.maxAcceptedOutputBytes);
+            assert.equal(limits.maxStreamEvents, CHATGPT_STORY_SRB_V1.maxStreamEvents);
+            return {
+              text: 'A mocked story.', terminalEvent: 'response.completed', refusal: false,
+              streamBytes: 128, eventCount: 2,
+            };
+          },
+        };
+      },
+    },
+  });
+  return { server, getCounts: () => ({ transportCalls, fallbackCalls }) };
+}
+
   it('qualifies the ChatGPT story route through the injected SRB and Responses transport chain', async () => {
     const originalModels = getChatGptModels();
     const modelId = 'gpt-6-luna';
     setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT-6 Luna' })]);
-    let transportCalls = 0;
-    let fallbackCalls = 0;
-    const authority = createChatGptStorySrbAuthority({ enabled: true, makeId: () => 'story-plan-test-1' });
-    const server = await startTestServer(createStubHandlers({
-      generateStoryText: async () => { fallbackCalls += 1; return 'Gemini fallback must not run.'; },
-    }), {
-      chatGptStorySrbTestInjection: {
-        authority,
-        currentGrantGeneration: () => 9,
-        adapterFactory: generation => {
-          assert.equal(generation, 9);
-          return {
-            generateStoryText: async (request, approvedBody, limits): Promise<ChatGptStoryTransportResult> => {
-              transportCalls += 1;
-              const body = JSON.parse(approvedBody) as Record<string, unknown>;
-              assert.equal(body.model, modelId);
-              assert.equal(body.store, false);
-              assert.equal(body.stream, true);
-              assert.equal('reasoning' in body, false);
-              assert.equal(request.operation, 'story');
-              assert.equal(request.reasoningLevel, 'default');
-              assert.equal(request.maxOutputTokens, undefined);
-              assert.equal(limits.maxStreamBytes, CHATGPT_STORY_SRB_V1.maxStreamBytes);
-              assert.equal(limits.maxAcceptedOutputBytes, CHATGPT_STORY_SRB_V1.maxAcceptedOutputBytes);
-              assert.equal(limits.maxStreamEvents, CHATGPT_STORY_SRB_V1.maxStreamEvents);
-              return {
-                text: 'A mocked story.', terminalEvent: 'response.completed', refusal: false,
-                streamBytes: 128, eventCount: 2,
-              };
-            },
-          };
-        },
-      },
-    });
+    const { server, getCounts } = await createSrbStoryTestSetup(modelId);
     closeServer = server.close;
     try {
       const response = await fetch(`${server.baseUrl}/api/generate/story`, {
@@ -281,8 +286,7 @@ describe('server/routes API contract', () => {
       });
       assert.equal(response.status, 200, await response.clone().text());
       assert.deepEqual(await response.json(), { story: 'A mocked story.', usage: { source: 'unknown' } });
-      assert.equal(transportCalls, 1);
-      assert.equal(fallbackCalls, 0);
+      assert.deepEqual(getCounts(), { transportCalls: 1, fallbackCalls: 0 });
 
       const duplicate = await fetch(`${server.baseUrl}/api/generate/story`, {
         method: 'POST',
@@ -293,7 +297,6 @@ describe('server/routes API contract', () => {
         body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
       });
       assert.equal(duplicate.status, 409);
-      assert.equal(transportCalls, 1);
 
       const unqualifiedReasoning = await fetch(`${server.baseUrl}/api/generate/story`, {
         method: 'POST',
@@ -304,8 +307,7 @@ describe('server/routes API contract', () => {
         body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
       });
       assert.equal(unqualifiedReasoning.status, 422);
-      assert.equal(transportCalls, 1);
-      assert.equal(fallbackCalls, 0);
+      assert.deepEqual(getCounts(), { transportCalls: 1, fallbackCalls: 0 });
     } finally {
       await server.close();
       closeServer = null;
@@ -516,5 +518,26 @@ describe('server/routes API contract', () => {
     const json = (await res.json()) as { error: { code: string; message: string; retryable: boolean } };
     assert.equal(json.error.code, 'MISSING_API_KEY');
     assert.equal(json.error.retryable, false);
+  });
+
+  it('W1-D15: does not reject /api/ai/capabilities when provider selection headers are present', async () => {
+    const srv = await startTestServer(createStubHandlers());
+    closeServer = srv.close;
+
+    const res = await fetch(`${srv.baseUrl}/api/ai/capabilities`, {
+      headers: {
+        Origin: srv.baseUrl,
+        'x-pcc-ai-connection': 'chatgpt-plan',
+      },
+    });
+    assert.equal(res.status, 200);
+    const json = (await res.json()) as { operations: Record<string, unknown> };
+    assert.ok(json.operations.story);
+
+    const limiter = createIpRateLimiter(1_000, 5, 16);
+    for (let i = 0; i < 40; i += 1) {
+      assert.equal(limiter.check(`10.0.0.${i}`, 100 + i).allowed, true);
+    }
+    assert.ok(limiter.size() <= 16);
   });
 });

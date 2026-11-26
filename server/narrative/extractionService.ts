@@ -103,6 +103,14 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       abortSignal: abort.signal,
       ...(getAiProviderRequestContext()?.selection.connectionId === 'openai-api' ? { responseSchema: extractionResponseSchema } : {}),
     };
+    const abortErrorForExtraction = (): AppApiError => {
+      const reason = abort.signal.reason;
+      if (reason instanceof AppApiError) return reason;
+      if (reason instanceof Error && /timeout|timed out/i.test(reason.message)) {
+        return new AppApiError('TIMEOUT', 'Narrative import extraction timed out.', 504, true);
+      }
+      return new AppApiError('CANCELLED', 'Extraction was cancelled before generation.', 499, false);
+    };
     // The native Gemini countTokens SDK config does not define responseSchema;
     // the legacy provider boundary consumes it for OpenAI preflight only.
     const countTokens = ai.models.countTokens as unknown as (params: {
@@ -112,12 +120,13 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       countTokens.call(ai.models, { model: selectedModel, contents: prompt, config: countConfig }),
       new Promise<never>((_, reject) => {
         countTimer = setTimeout(() => {
-          abort.abort(new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true));
-          reject(new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true));
+          const timeoutErr = new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true);
+          abort.abort(timeoutErr);
+          reject(timeoutErr);
         }, 5_000);
       }),
     ]).finally(() => { if (countTimer) clearTimeout(countTimer); });
-    if (abort.signal.aborted) throw new AppApiError('CANCELLED', 'Extraction was cancelled before generation.', 499, false);
+    if (abort.signal.aborted) throw abortErrorForExtraction();
     if (typeof tokenCount.totalTokens !== 'number' || !Number.isSafeInteger(tokenCount.totalTokens) || tokenCount.totalTokens < 0) {
       throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; extraction was not started.', 503, false);
     }
@@ -140,19 +149,38 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
     if (!aggregateBudget.ok) {
       throw new AppApiError('VALIDATION_ERROR', aggregateBudget.reason, 429, false);
     }
-    const response = await ai.models.generateContent({
-      model: selectedModel,
-      contents: prompt,
-      config: {
-        abortSignal: abort.signal,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        maxOutputTokens: Math.min(2048, AI_OPERATION_POLICIES['narrative-import'].maxOutputTokens),
-        responseMimeType: 'application/json',
-        responseSchema: extractionResponseSchema,
-      },
+    let removeAbortRaceListener: () => void = () => {};
+    const generateAbortRace = new Promise<never>((_resolve, reject) => {
+      const onGenerateAbort = () => reject(abortErrorForExtraction());
+      if (abort.signal.aborted) onGenerateAbort();
+      else {
+        abort.signal.addEventListener('abort', onGenerateAbort, { once: true });
+        removeAbortRaceListener = () => abort.signal.removeEventListener('abort', onGenerateAbort);
+      }
+    });
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model: selectedModel,
+        contents: prompt,
+        config: {
+          abortSignal: abort.signal,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          maxOutputTokens: Math.min(2048, AI_OPERATION_POLICIES['narrative-import'].maxOutputTokens),
+          responseMimeType: 'application/json',
+          responseSchema: extractionResponseSchema,
+        },
+      }),
+      generateAbortRace,
+    ]).finally(() => {
+      removeAbortRaceListener();
     });
     if (!response.text?.trim()) throw new AppApiError('INVALID_RESPONSE', 'Narrative analysis returned an empty response.', 502, false);
-    const extracted = NarrativeExtractionSchema.parse(JSON.parse(response.text));
+    let extracted;
+    try {
+      extracted = NarrativeExtractionSchema.parse(JSON.parse(response.text));
+    } catch {
+      throw new AppApiError('INVALID_RESPONSE', 'Narrative analysis returned malformed or schema-invalid JSON.', 502, false);
+    }
     return filterExtractionScope(extracted, { scope: request.scope, categories: selected as NarrativeExtractionRequest['categories'] });
   } catch (error) {
     if (error instanceof AppApiError) throw error;

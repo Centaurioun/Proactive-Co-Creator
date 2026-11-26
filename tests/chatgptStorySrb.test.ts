@@ -238,3 +238,85 @@ test('story SRB keeps its slot while the actual adapter has an abort-ignoring fe
   finishFetch!(new Response('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{}}\n\n', { headers: { 'content-type': 'text/event-stream' } }));
   await assert.rejects(transportPromise!, /cancelled/);
 });
+
+test('W1-D02 (R02): story SRB engages quotaBlock when a late 429 RATE_LIMITED error arrives after caller abort', async () => {
+  const authority = createChatGptStorySrbAuthority({ enabled: true });
+  const plan = authority.prepare(nextPlanInput());
+  const controller = new AbortController();
+  let rejectTransport!: (error: unknown) => void;
+  const pending = authority.run({
+    plan,
+    currentGrantGeneration: () => 7,
+    signal: controller.signal,
+    transport: () => new Promise<ChatGptStoryTransportResult>((_resolve, reject) => {
+      rejectTransport = reject;
+    }),
+  });
+  controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  rejectTransport(new AppApiError('RATE_LIMITED', 'Late subscription quota exhausted.', 429, false));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.throws(() => authority.prepare(nextPlanInput()), /explicit recovery decision/);
+});
+
+test('W1-D02 (R02): adapter 429 response arriving after caller abort still triggers SRB quotaBlock', async () => {
+  let resolveFetch!: (response: Response) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const adapter = new ChatGptResponsesAdapter('local-token', async () => {
+    markStarted();
+    return new Promise<Response>(resolve => { resolveFetch = resolve; });
+  });
+  const authority = createChatGptStorySrbAuthority({ enabled: true });
+  const plan = authority.prepare(nextPlanInput());
+  const controller = new AbortController();
+  const pending = authority.run({
+    plan,
+    currentGrantGeneration: () => 7,
+    signal: controller.signal,
+    transport: (args, signal) => adapter.generateStoryText({
+      operation: 'story',
+      modelId: plan.modelId,
+      input: plan.sourceText,
+      reasoningLevel: 'default',
+      maxInputBytes: args.limits.maxRequestBodyBytes,
+      maxOutputBytes: args.limits.maxAcceptedOutputBytes,
+      timeoutMs: args.limits.timeoutMs,
+      signal,
+    }, args.body, {
+      maxStreamBytes: args.limits.maxStreamBytes,
+      maxAcceptedOutputBytes: args.limits.maxAcceptedOutputBytes,
+      maxStreamEvents: args.limits.maxStreamEvents,
+    }),
+  });
+  await started;
+  controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  resolveFetch(new Response(JSON.stringify({
+    error: { code: 'subscription_sharing_usage_limit_exceeded' },
+  }), { status: 429, headers: { 'content-type': 'application/json' } }));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.throws(() => authority.prepare(nextPlanInput()), /explicit recovery decision/);
+});
+
+test('R12: story SRB enforces the 4,096 request-binding ledger cap', () => {
+  let now = 0;
+  let id = 0;
+  const authority = createChatGptStorySrbAuthority({
+    enabled: true,
+    now: () => now,
+    makeId: () => `cap-plan-${++id}`,
+  });
+  for (let index = 0; index < 4096; index += 1) {
+    if (index > 0 && index % 64 === 0) now += 60_001;
+    authority.prepare({
+      ...planInput,
+      requestId: `cap-story-request-${String(index).padStart(4, '0')}`,
+    });
+  }
+  now += 60_001;
+  assert.throws(() => authority.prepare({
+    ...planInput,
+    requestId: 'cap-story-request-4096',
+  }), /identity ledger is full/);
+});

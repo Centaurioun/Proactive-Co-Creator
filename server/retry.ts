@@ -32,16 +32,34 @@ export function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-export function extractRetryAfterMs(error: unknown): number | null {
-  if (typeof error === 'object' && error !== null) {
-    const headers = (error as { headers?: Record<string, string> }).headers;
-    const retryAfter = headers?.['retry-after'] ?? headers?.['Retry-After'];
-    if (typeof retryAfter === 'string') {
-      const seconds = Number(retryAfter);
-      if (Number.isFinite(seconds) && seconds >= 0) {
-        return Math.min(seconds * 1000, 30000);
-      }
+function readRetryAfterHeader(headers: unknown): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    const val = (headers as { get: (name: string) => string | null }).get('retry-after');
+    return typeof val === 'string' ? val : undefined;
+  }
+  const record = headers as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key.toLowerCase() === 'retry-after' && typeof record[key] === 'string') {
+      return record[key] as string;
     }
+  }
+  return undefined;
+}
+
+export function extractRetryAfterMs(error: unknown, nowMs: number = Date.now()): number | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const raw = readRetryAfterHeader((error as { headers?: unknown }).headers);
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, 30000);
+  }
+  const parsedDateMs = Date.parse(trimmed);
+  if (Number.isFinite(parsedDateMs)) {
+    return Math.min(Math.max(0, parsedDateMs - nowMs), 30000);
   }
   return null;
 }
@@ -66,7 +84,11 @@ export async function withRetry<T>(
     }
 
     try {
-      return await fn();
+      const value = await fn();
+      if (options.signal?.aborted) {
+        throw new AppApiError('CANCELLED', 'The request was cancelled.', 499, false);
+      }
+      return value;
     } catch (error) {
       lastError = error;
       if (options.signal?.aborted) {
