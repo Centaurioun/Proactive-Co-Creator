@@ -53,6 +53,21 @@ export interface BeliefGraphProps {
   relationshipProjection: RelationshipProjection;
 }
 
+export function resolveEgoFocusId(
+  egoFocusId: string,
+  rawObjectEntities: Entity[],
+  selectedEntity: Entity | null
+): string {
+  const validEntities = rawObjectEntities.filter((e) => !e.excluded && Boolean(e.id));
+  if (egoFocusId && validEntities.some((e) => e.id === egoFocusId)) {
+    return egoFocusId;
+  }
+  if (selectedEntity?.id && validEntities.some((e) => e.id === selectedEntity.id)) {
+    return selectedEntity.id;
+  }
+  return validEntities[0]?.id ?? '';
+}
+
 const BeliefGraph: React.FC<BeliefGraphProps> = ({
   data,
   isLoading,
@@ -135,11 +150,7 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
     [rawObjectEntities, data?.relationships]
   );
 
-  const resolvedEgoFocusId =
-    egoFocusId ||
-    selectedEntity?.id ||
-    rawObjectEntities.find((e) => !e.excluded && e.id)?.id ||
-    '';
+  const resolvedEgoFocusId = resolveEgoFocusId(egoFocusId, rawObjectEntities, selectedEntity);
 
   const egoNetwork = useMemo(
     () =>

@@ -348,7 +348,7 @@ const StyleProfilePanel: React.FC<StyleProfilePanelProps> = ({
                     <button
                       type="button"
                       className={buttonClassName}
-                      disabled={!isCurrent}
+                      disabled={!isCurrent || saving}
                       onClick={() => reviewStyle(item.id, 'confirmed')}
                     >
                       Confirm
@@ -356,6 +356,7 @@ const StyleProfilePanel: React.FC<StyleProfilePanelProps> = ({
                     <button
                       type="button"
                       className={buttonClassName}
+                      disabled={saving}
                       onClick={() => reviewStyle(item.id, 'rejected')}
                     >
                       Reject

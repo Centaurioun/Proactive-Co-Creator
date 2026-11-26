@@ -4,17 +4,29 @@
  */
 
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { truncateLabel } from '../../lib/beliefGraphUtils';
 import {
-  computeFitTransform,
-  computeForceLayout,
-  computeNodeDimensions,
+  computeFitTransformByKey,
+  computeForceLayoutByKey,
+  computeNodeDimensionsByKey,
   computeParallelEdgeOffsets,
-  getEdgePath,
+  getEntityGraphKey,
   type ViewTransform,
 } from '../../lib/graphLayout';
 import type { BeliefState, Entity, Relationship } from '../../shared/types';
 import RelationshipEditor from '../RelationshipEditor';
+import {
+  buildEntityKeyByNameMap,
+  buildGraphTopologySignature,
+  computeNeighborKeys,
+  isRelationshipSelected,
+  removeTrackedPointer,
+} from './graphCanvasHelpers';
+import GraphEdgeLayer from './GraphEdgeLayer';
+import GraphNodeLayer from './GraphNodeLayer';
+import { useContainerDimensions } from './useContainerDimensions';
+import { usePanZoomGestures } from './usePanZoomGestures';
+
+export { buildGraphTopologySignature, isRelationshipSelected, removeTrackedPointer };
 
 export interface GraphCanvasProps {
   data: BeliefState | null;
@@ -56,50 +68,19 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
   onExpandGuestGroup,
   onRelationshipChange,
 }) => {
-  const [hoveredEntity, setHoveredEntity] = useState<string | null>(null);
+  const [hoveredEntityKey, setHoveredEntityKey] = useState<string | null>(null);
   const [hoveredRel, setHoveredRel] = useState<Relationship | null>(null);
   const [selectedRel, setSelectedRel] = useState<{
     rel: Relationship;
     position: { x: number; y: number };
   } | null>(null);
-  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-  const [isDragging, setIsDragging] = useState(false);
 
   const markerId = useId();
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
-  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const prevPinchDistRef = useRef<number | null>(null);
   const containerElementRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const node = containerElementRef.current;
-    if (!node) return;
-
-    const resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 0 && height > 0) {
-          setDimensions((prev) => {
-            if (Math.abs(prev.width - width) > 2 || Math.abs(prev.height - height) > 2) {
-              return { width, height };
-            }
-            return prev;
-          });
-        }
-      }
-    });
-    resizeObserver.observe(node);
-
-    const rect = node.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setDimensions({ width: rect.width, height: rect.height });
-    }
-
-    return () => resizeObserver.disconnect();
-  }, []);
+  const dimensions = useContainerDimensions(containerElementRef);
 
   const nodeDimensions = useMemo(
-    () => computeNodeDimensions(visibleEntities),
+    () => computeNodeDimensionsByKey(visibleEntities),
     [visibleEntities]
   );
 
@@ -108,22 +89,20 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
     [relationships]
   );
 
-  // Structural signature for layout stability (only re-run full layout if entity names/edges change)
-  const topologySignature = useMemo(() => {
-    const nodeKeys = visibleEntities
-      .map((e) => e.id ?? e.name)
-      .sort()
-      .join('|');
-    const edgeKeys = relationships
-      .map((r) => `${r.source}->${r.target}::${r.label}`)
-      .sort()
-      .join('|');
-    return `${nodeKeys}::${edgeKeys}`;
-  }, [visibleEntities, relationships]);
+  const entityKeyByName = useMemo(
+    () => buildEntityKeyByNameMap(visibleEntities),
+    [visibleEntities]
+  );
+
+  // Structural signature for layout stability (re-runs when keyed entities, names, or edges change)
+  const topologySignature = useMemo(
+    () => buildGraphTopologySignature(visibleEntities, relationships),
+    [visibleEntities, relationships]
+  );
 
   const nodePositions = useMemo(() => {
     if (visibleEntities.length === 0) return {};
-    return computeForceLayout({
+    return computeForceLayoutByKey({
       objectEntities: visibleEntities,
       relationships,
       nodeDimensions,
@@ -135,7 +114,7 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
   const fitTransform = useMemo(
     () =>
-      computeFitTransform(
+      computeFitTransformByKey(
         nodePositions,
         nodeDimensions,
         dimensions.width || 680,
@@ -150,7 +129,8 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
   useEffect(() => {
     if (!focusRequest || focusRequest.seq === lastFocusSeqRef.current) return;
     lastFocusSeqRef.current = focusRequest.seq;
-    const pos = nodePositions[focusRequest.entityName];
+    const targetKey = entityKeyByName.get(focusRequest.entityName) ?? focusRequest.entityName;
+    const pos = nodePositions[targetKey];
     if (!pos) return;
     const w = dimensions.width || 680;
     const h = dimensions.height || 440;
@@ -160,126 +140,68 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
       y: h / 2 - pos.y * targetK,
       k: targetK,
     });
-  }, [focusRequest, nodePositions, dimensions.width, dimensions.height, onChangeUserTransform]);
+  }, [focusRequest, entityKeyByName, nodePositions, dimensions.width, dimensions.height, onChangeUserTransform]);
 
-  const neighborsOfSelected = useMemo(() => {
-    if (!selectedEntity) return null;
-    const neighbors = new Set<string>();
-    for (const rel of relationships) {
-      if (rel.source === selectedEntity.name) neighbors.add(rel.target);
-      if (rel.target === selectedEntity.name) neighbors.add(rel.source);
-    }
-    return neighbors;
-  }, [selectedEntity, relationships]);
+  const selectedEntityKey = selectedEntity ? getEntityGraphKey(selectedEntity) : null;
 
-  const neighborsOfHovered = useMemo(() => {
-    if (!hoveredEntity) return new Set<string>();
-    const neighbors = new Set<string>();
-    for (const rel of relationships) {
-      if (rel.source === hoveredEntity) neighbors.add(rel.target);
-      if (rel.target === hoveredEntity) neighbors.add(rel.source);
-    }
-    return neighbors;
-  }, [hoveredEntity, relationships]);
+  const neighborsOfSelected = useMemo(
+    () => computeNeighborKeys(selectedEntityKey, relationships, entityKeyByName),
+    [selectedEntityKey, relationships, entityKeyByName]
+  );
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest('button, input, select')) return;
-    e.preventDefault();
-    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (activePointersRef.current.size === 1) {
-      setIsDragging(true);
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-    }
-    if (activePointersRef.current.size === 2) {
-      prevPinchDistRef.current = null;
-    }
-    setSelectedRel(null);
-  };
+  const neighborsOfHovered = useMemo(
+    () => computeNeighborKeys(hoveredEntityKey, relationships, entityKeyByName),
+    [hoveredEntityKey, relationships, entityKeyByName]
+  );
 
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!activePointersRef.current.has(e.pointerId)) return;
-    e.preventDefault();
-    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const pointers = Array.from(activePointersRef.current.values());
-    if (pointers.length === 2) {
-      const dist = Math.hypot(
-        pointers[1].x - pointers[0].x,
-        pointers[1].y - pointers[0].y
-      );
-      if (prevPinchDistRef.current !== null && prevPinchDistRef.current > 0) {
-        const zoomFactor = dist / prevPinchDistRef.current;
-        onChangeUserTransform((prev) => {
-          const cur = prev ?? fitTransform;
-          return {
-            ...cur,
-            k: Math.min(4, Math.max(0.25, cur.k * zoomFactor)),
-          };
-        });
-      }
-      prevPinchDistRef.current = dist;
-    } else if (pointers.length === 1 && isDragging && dragStartRef.current) {
-      const dx = pointers[0].x - dragStartRef.current.x;
-      const dy = pointers[0].y - dragStartRef.current.y;
-      onChangeUserTransform((prev) => {
-        const cur = prev ?? fitTransform;
-        return { ...cur, x: cur.x + dx, y: cur.y + dy };
-      });
-      dragStartRef.current = { x: pointers[0].x, y: pointers[0].y };
-    }
-  };
+  // Derive active floating RelationshipEditor state against current relationships (closes if edge was deleted/replaced)
+  const activeSelectedRel = useMemo(() => {
+    if (!selectedRel) return null;
+    const matched = relationships.find((r) => isRelationshipSelected(selectedRel.rel, r));
+    return matched ? { rel: matched, position: selectedRel.position } : null;
+  }, [selectedRel, relationships]);
 
-  const handlePointerUp = (e: React.PointerEvent) => {
-    activePointersRef.current.delete(e.pointerId);
-    if (activePointersRef.current.size < 2) prevPinchDistRef.current = null;
-    if (activePointersRef.current.size === 0) {
-      setIsDragging(false);
-      dragStartRef.current = null;
-    } else if (activePointersRef.current.size === 1) {
-      const p = activePointersRef.current.values().next().value;
-      if (p) dragStartRef.current = { x: p.x, y: p.y };
-    }
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = -e.deltaY * 0.001;
-    onChangeUserTransform((prev) => {
-      const cur = prev ?? fitTransform;
-      return {
-        ...cur,
-        k: Math.min(4, Math.max(0.25, cur.k * Math.exp(delta))),
-      };
-    });
-  };
-
-  const zoomIn = () =>
-    onChangeUserTransform((prev) => {
-      const cur = prev ?? fitTransform;
-      return { ...cur, k: Math.min(4, cur.k * 1.2) };
-    });
-
-  const zoomOut = () =>
-    onChangeUserTransform((prev) => {
-      const cur = prev ?? fitTransform;
-      return { ...cur, k: Math.max(0.25, cur.k / 1.2) };
-    });
-
-  const resetView = () => onChangeUserTransform(null);
+  const {
+    handlePointerDown,
+    handlePointerMove,
+    handlePointerEnd,
+    zoomIn,
+    zoomOut,
+    resetView,
+  } = usePanZoomGestures({
+    containerRef: containerElementRef,
+    fitTransform,
+    onChangeUserTransform,
+    onClearSelectedRel: () => setSelectedRel(null),
+  });
 
   const openRelationshipEditorAtClientPoint = (
     rel: Relationship,
     clientX: number,
-    clientY: number,
-    element: Element
+    clientY: number
   ) => {
-    const container = element.closest('div.relative');
-    if (container) {
-      const svgRect = container.getBoundingClientRect();
-      setSelectedRel({
-        rel,
-        position: { x: clientX - svgRect.left, y: clientY - svgRect.top },
-      });
+    const container = containerElementRef.current;
+    if (!container) return;
+    const svgRect = container.getBoundingClientRect();
+    setSelectedRel({
+      rel,
+      position: { x: clientX - svgRect.left, y: clientY - svgRect.top },
+    });
+  };
+
+  const handleActivateRel = (rel: Relationship, clientX: number, clientY: number) => {
+    onSelectRelationship?.(rel);
+    openRelationshipEditorAtClientPoint(rel, clientX, clientY);
+  };
+
+  const handleActivateEntity = (entity: Entity) => {
+    if (entity.id === 'ent_group_guests_synthetic') {
+      onExpandGuestGroup();
+      return;
     }
+    onSelectEntity(entity);
+    onSelectRelationship?.(null);
+    setSelectedRel(null);
   };
 
   return (
@@ -288,9 +210,9 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
       className="flex-1 w-full min-h-0 cursor-move active:cursor-grabbing relative flex flex-col"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerLeave={handlePointerUp}
-      onWheel={handleWheel}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
+      onPointerLeave={handlePointerEnd}
     >
       <div
         ref={containerElementRef}
@@ -372,246 +294,54 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
             <g
               transform={`translate(${viewTransform.x}, ${viewTransform.y}) scale(${viewTransform.k})`}
             >
-              {relationships.map((rel, i) => {
-                const sourcePos = nodePositions[rel.source];
-                const targetPos = nodePositions[rel.target];
-                if (!sourcePos || !targetPos) return null;
-                const sourceDims = nodeDimensions[rel.source];
-                const targetDims = nodeDimensions[rel.target];
-                if (!sourceDims || !targetDims) return null;
-
-                const edgeKey = rel.id ?? `${rel.source}->${rel.target}::${rel.label}`;
-                const curveOffset = parallelEdgeOffsets[edgeKey] ?? 0;
-
-                const { path, labelX, labelY } = getEdgePath(
-                  sourcePos.x,
-                  sourcePos.y,
-                  targetPos.x,
-                  targetPos.y,
-                  sourceDims.width,
-                  sourceDims.height,
-                  targetDims.width,
-                  targetDims.height,
-                  curveOffset
-                );
-
-                let opacity = 1;
-                if (highlightConnections) {
-                  if (hoveredRel) opacity = rel === hoveredRel ? 1 : 0.2;
-                  else if (hoveredEntity)
-                    opacity =
-                      rel.source === hoveredEntity || rel.target === hoveredEntity ? 1 : 0.2;
-                  else if (selectedEntity)
-                    opacity =
-                      rel.source === selectedEntity.name || rel.target === selectedEntity.name
-                        ? 1
-                        : 0.2;
-                }
-
-                const isModified =
-                  rel.provenance === 'user-edit' || rel.provenance === 'accepted-suggestion';
-                const isPending = rel.status === 'pending';
-                const isSelectedRel =
-                  selectedRelationship?.id === rel.id ||
-                  (selectedRelationship?.source === rel.source &&
-                    selectedRelationship?.target === rel.target &&
-                    selectedRelationship?.label === rel.label);
-
-                return (
-                  <g
-                    key={rel.id ?? `rel-${rel.source}-${rel.target}-${rel.label}-${i}`}
-                    style={{ opacity, transition: 'opacity 0.15s ease-out' }}
-                    className="cursor-pointer focus:outline-none"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Directed relationship: ${rel.source} ${rel.label} ${rel.target} (${rel.status ?? 'confirmed'}). Press Enter to inspect or edit.`}
-                    onMouseEnter={() => setHoveredRel(rel)}
-                    onMouseLeave={() => setHoveredRel(null)}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectRelationship?.(rel);
-                      openRelationshipEditorAtClientPoint(
-                        rel,
-                        e.clientX,
-                        e.clientY,
-                        e.currentTarget
-                      );
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        onSelectRelationship?.(rel);
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        openRelationshipEditorAtClientPoint(
-                          rel,
-                          rect.left + rect.width / 2,
-                          rect.top + rect.height / 2,
-                          e.currentTarget
-                        );
-                      }
-                    }}
-                  >
-                    <path
-                      d={path}
-                      className={
-                        isSelectedRel
-                          ? 'stroke-amber-500 dark:stroke-amber-400'
-                          : isPending
-                            ? 'stroke-amber-500/80 dark:stroke-amber-400/80'
-                            : isModified
-                              ? 'stroke-blue-500 dark:stroke-blue-400'
-                              : 'stroke-slate-400 dark:stroke-slate-500'
-                      }
-                      strokeWidth={isSelectedRel || isModified ? 2.5 : 2}
-                      strokeDasharray={isPending ? '5 3' : 'none'}
-                      fill="none"
-                      markerEnd={`url(#${markerId})`}
-                    />
-                    <text
-                      x={labelX}
-                      y={labelY + 4}
-                      textAnchor="middle"
-                      fontSize="11"
-                      fontWeight="600"
-                      strokeWidth="6px"
-                      strokeLinejoin="round"
-                      paintOrder="stroke"
-                      className={
-                        isSelectedRel
-                          ? 'fill-amber-700 dark:fill-amber-300 stroke-white dark:stroke-gray-950'
-                          : isPending
-                            ? 'fill-amber-700 dark:fill-amber-300 stroke-white dark:stroke-gray-950'
-                            : isModified
-                              ? 'fill-blue-700 dark:fill-blue-300 stroke-white dark:stroke-gray-950'
-                              : 'fill-slate-700 dark:fill-slate-200 stroke-white dark:stroke-gray-950'
-                      }
-                    >
-                      {truncateLabel(rel.label, 20)}
-                      {isPending ? ' (?)' : ''}
-                    </text>
-                  </g>
-                );
-              })}
-
-              {visibleEntities.map((entity) => {
-                const pos = nodePositions[entity.name];
-                if (!pos) return null;
-                const isSelected = selectedEntity?.name === entity.name;
-                const dims = nodeDimensions[entity.name] ?? { width: 96, height: 36 };
-                const hasConfirmedUserEdit =
-                  entity.provenance === 'user-edit' ||
-                  entity.attributes.some(
-                    (a) =>
-                      a.name !== 'existence' &&
-                      (a.provenance === 'user-edit' || a.provenance === 'accepted-suggestion')
-                  );
-
-                let opacity = 1;
-                if (highlightConnections) {
-                  if (hoveredRel)
-                    opacity =
-                      entity.name === hoveredRel.source || entity.name === hoveredRel.target
-                        ? 1
-                        : 0.2;
-                  else if (hoveredEntity)
-                    opacity =
-                      entity.name === hoveredEntity || neighborsOfHovered.has(entity.name)
-                        ? 1
-                        : 0.2;
-                  else if (selectedEntity)
-                    opacity =
-                      entity.name === selectedEntity.name ||
-                      Boolean(neighborsOfSelected && neighborsOfSelected.has(entity.name))
-                        ? 1
-                        : 0.25;
-                }
-
-                return (
-                  <g
-                    key={entity.id ?? entity.name}
-                    transform={`translate(${pos.x}, ${pos.y})`}
-                    className="cursor-pointer focus:outline-none"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Entity ${entity.name}. ${entity.presence_in_prompt ? 'Explicit' : 'Implicit'}. Press Enter to inspect attributes.`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (entity.id === 'ent_group_guests_synthetic') {
-                        onExpandGuestGroup();
-                        return;
-                      }
-                      onSelectEntity(entity);
-                      onSelectRelationship?.(null);
-                      setSelectedRel(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        if (entity.id === 'ent_group_guests_synthetic') {
-                          onExpandGuestGroup();
-                          return;
-                        }
-                        onSelectEntity(entity);
-                        onSelectRelationship?.(null);
-                        setSelectedRel(null);
-                      }
-                    }}
-                    onMouseEnter={() => setHoveredEntity(entity.name)}
-                    onMouseLeave={() => setHoveredEntity(null)}
-                    style={{ opacity, transition: 'opacity 0.15s ease-out' }}
-                  >
-                    <rect
-                      x={-dims.width / 2}
-                      y={-dims.height / 2}
-                      width={dims.width}
-                      height={dims.height}
-                      rx="8"
-                      className={
-                        entity.excluded
-                          ? 'fill-red-50 dark:fill-red-950/50 stroke-red-400'
-                          : isSelected
-                            ? 'fill-amber-50 dark:fill-amber-900/50 stroke-amber-500'
-                            : hasConfirmedUserEdit
-                              ? 'fill-blue-50 dark:fill-blue-900/40 stroke-blue-500 dark:stroke-blue-400'
-                              : 'fill-white dark:fill-gray-800 stroke-slate-300 dark:stroke-gray-600'
-                      }
-                      strokeWidth={isSelected ? 2.5 : 2}
-                      strokeDasharray={entity.presence_in_prompt ? 'none' : '4 2'}
-                    />
-                    <text
-                      textAnchor="middle"
-                      dy="0.32em"
-                      fontSize="12"
-                      fontWeight="600"
-                      className={`fill-slate-800 dark:fill-gray-100 ${
-                        entity.excluded ? 'line-through opacity-70' : ''
-                      }`}
-                    >
-                      {entity.name}
-                    </text>
-                  </g>
-                );
-              })}
+              <GraphEdgeLayer
+                relationships={relationships}
+                nodePositions={nodePositions}
+                nodeDimensions={nodeDimensions}
+                entityKeyByName={entityKeyByName}
+                parallelEdgeOffsets={parallelEdgeOffsets}
+                highlightConnections={highlightConnections}
+                hoveredRel={hoveredRel}
+                hoveredEntityKey={hoveredEntityKey}
+                selectedEntityKey={selectedEntityKey}
+                selectedRelationship={selectedRelationship}
+                markerId={markerId}
+                onHoverRel={setHoveredRel}
+                onActivateRel={handleActivateRel}
+              />
+              <GraphNodeLayer
+                visibleEntities={visibleEntities}
+                nodePositions={nodePositions}
+                nodeDimensions={nodeDimensions}
+                entityKeyByName={entityKeyByName}
+                highlightConnections={highlightConnections}
+                hoveredRel={hoveredRel}
+                hoveredEntityKey={hoveredEntityKey}
+                selectedEntityKey={selectedEntityKey}
+                neighborsOfHovered={neighborsOfHovered}
+                neighborsOfSelected={neighborsOfSelected}
+                onHoverEntityKey={setHoveredEntityKey}
+                onActivateEntity={handleActivateEntity}
+              />
             </g>
           </svg>
         )}
       </div>
 
-      {selectedRel && (
+      {activeSelectedRel && (
         <RelationshipEditor
-          rel={selectedRel.rel}
-          currentLabel={selectedRel.rel.label}
-          position={selectedRel.position}
+          rel={activeSelectedRel.rel}
+          currentLabel={activeSelectedRel.rel.label}
+          position={activeSelectedRel.position}
           containerDimensions={dimensions}
           onClose={() => setSelectedRel(null)}
           isLoading={isLoading}
           onChange={(newLabel) =>
             onRelationshipChange(
-              selectedRel.rel.source,
-              selectedRel.rel.target,
+              activeSelectedRel.rel.source,
+              activeSelectedRel.rel.target,
               newLabel,
-              selectedRel.rel.id
+              activeSelectedRel.rel.id
             )
           }
         />

@@ -10,6 +10,7 @@ import {
   STORY_BIBLE_DOMAINS,
   type StoryBibleDomain,
 } from './storyBibleConfig';
+import StoryBibleFieldEditor from './StoryBibleFieldEditor';
 
 export type StoryBibleStatusFilter = 'all' | 'confirmed' | 'pending' | 'unset';
 
@@ -23,7 +24,18 @@ export interface StoryBiblePanelProps {
   onChangeDomainFilter: (domain: 'all' | StoryBibleDomain) => void;
   onChangeStatusFilter: (status: StoryBibleStatusFilter) => void;
   onUpdateStoryBible: (field: keyof StoryBibleFields, value: string) => void;
+  onConfirmPendingStoryBible?: (
+    items: Array<{ field: keyof StoryBibleFields; value: string }>
+  ) => void;
 }
+
+const DOMAIN_FILTERS = [
+  ['all', 'All'],
+  ['core', 'World'],
+  ['narrative', 'Arc & Voice'],
+  ['constraints', 'Rules'],
+  ['visual', 'Visual'],
+] as const;
 
 const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
   storyBible,
@@ -35,6 +47,7 @@ const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
   onChangeDomainFilter,
   onChangeStatusFilter,
   onUpdateStoryBible,
+  onConfirmPendingStoryBible,
 }) => {
   const bibleStats = STORY_BIBLE_CONFIG.reduce(
     (acc, item) => {
@@ -59,25 +72,29 @@ const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
     return f.status === 'pending' && f.value.trim().length > 0;
   });
 
-  const matchesFilters = (item: (typeof STORY_BIBLE_CONFIG)[number]) => {
-    if (domainFilter !== 'all' && item.domain !== domainFilter) {
-      return false;
-    }
+  const filteredItems = STORY_BIBLE_CONFIG.filter((item) => {
+    if (domainFilter !== 'all' && item.domain !== domainFilter) return false;
     const f = storyBible[item.key];
     const hasValue = f.value.trim().length > 0;
-    if (statusFilter === 'confirmed') {
-      return hasValue && f.status === 'confirmed';
-    }
-    if (statusFilter === 'pending') {
-      return hasValue && f.status === 'pending';
-    }
-    if (statusFilter === 'unset') {
-      return !hasValue;
-    }
+    if (statusFilter === 'confirmed') return hasValue && f.status === 'confirmed';
+    if (statusFilter === 'pending') return hasValue && f.status === 'pending';
+    if (statusFilter === 'unset') return !hasValue;
     return true;
-  };
+  });
 
-  const filteredItems = STORY_BIBLE_CONFIG.filter(matchesFilters);
+  const handleConfirmPending = () => {
+    const updates = pendingWithValues.map((item) => ({
+      field: item.key,
+      value: storyBible[item.key].value,
+    }));
+    if (onConfirmPendingStoryBible) {
+      onConfirmPendingStoryBible(updates);
+      return;
+    }
+    for (const item of updates) {
+      onUpdateStoryBible(item.field, item.value);
+    }
+  };
 
   return (
     <div className="flex-1 overflow-y-auto p-3.5 space-y-3 min-h-0">
@@ -104,11 +121,7 @@ const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
           {pendingWithValues.length > 0 && (
             <button
               type="button"
-              onClick={() => {
-                for (const item of pendingWithValues) {
-                  onUpdateStoryBible(item.key, storyBible[item.key].value);
-                }
-              }}
+              onClick={handleConfirmPending}
               className="px-2 py-1 text-[11px] font-semibold rounded bg-emerald-600 hover:bg-emerald-700 text-white transition-colors whitespace-nowrap"
             >
               Confirm Pending ({pendingWithValues.length})
@@ -120,30 +133,21 @@ const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
             aria-label="Story Bible layout mode"
             className="flex bg-gray-100 dark:bg-gray-800 p-0.5 rounded-md border border-gray-200 dark:border-gray-700"
           >
-            <button
-              type="button"
-              onClick={() => onChangeViewMode('grid')}
-              aria-pressed={viewMode === 'grid'}
-              className={`px-2 py-0.5 text-[11px] font-semibold rounded transition-colors ${
-                viewMode === 'grid'
-                  ? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              Grid
-            </button>
-            <button
-              type="button"
-              onClick={() => onChangeViewMode('list')}
-              aria-pressed={viewMode === 'list'}
-              className={`px-2 py-0.5 text-[11px] font-semibold rounded transition-colors ${
-                viewMode === 'list'
-                  ? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              List
-            </button>
+            {(['grid', 'list'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onChangeViewMode(mode)}
+                aria-pressed={viewMode === mode}
+                className={`px-2 py-0.5 text-[11px] font-semibold rounded transition-colors ${
+                  viewMode === mode
+                    ? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {mode === 'grid' ? 'Grid' : 'List'}
+              </button>
+            ))}
           </div>
         </div>
       </div>
@@ -155,15 +159,7 @@ const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
           aria-label="Filter Story Bible by domain"
           className="flex flex-wrap gap-1"
         >
-          {(
-            [
-              ['all', 'All'],
-              ['core', 'World'],
-              ['narrative', 'Arc & Voice'],
-              ['constraints', 'Rules'],
-              ['visual', 'Visual'],
-            ] as const
-          ).map(([domainKey, domainLabel]) => (
+          {DOMAIN_FILTERS.map(([domainKey, domainLabel]) => (
             <button
               key={domainKey}
               type="button"
@@ -198,7 +194,6 @@ const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
           No Story Bible fields match the active filter.
         </div>
       ) : viewMode === 'grid' ? (
-        /* Structured Domain-Grouped Editable Grid View */
         <div
           className="space-y-4"
           role="region"
@@ -229,254 +224,33 @@ const StoryBiblePanel: React.FC<StoryBiblePanelProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {domainFields.map(
-                    ({
-                      key,
-                      label,
-                      shortLabel,
-                      span,
-                      placeholder,
-                      multiline,
-                      examples,
-                    }) => {
-                      const field = storyBible[key];
-                      const fieldError = storyBibleErrors?.[key];
-                      const inputErrorId = `bible-error-${key}`;
-                      const hasValue = field.value.trim().length > 0;
-                      const isConfirmed = hasValue && field.status === 'confirmed';
-                      const isPending = hasValue && field.status === 'pending';
-
-                      return (
-                        <div
-                          key={key}
-                          className={`${
-                            span === 'full' ? 'sm:col-span-2' : 'col-span-1'
-                          } min-w-0 overflow-hidden rounded-md border p-2.5 flex flex-col justify-between gap-1.5 transition-colors ${
-                            isConfirmed
-                              ? 'border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/20 dark:bg-emerald-950/15'
-                              : isPending
-                                ? 'border-amber-300 dark:border-amber-800 border-dashed bg-amber-50/25 dark:bg-amber-950/15'
-                                : 'border-gray-200 dark:border-gray-800 bg-gray-50/40 dark:bg-gray-950/30'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-1.5 min-w-0">
-                            <label
-                              htmlFor={`bible-${key}`}
-                              title={label}
-                              className="text-xs font-semibold text-gray-900 dark:text-gray-100 truncate"
-                            >
-                              {shortLabel}
-                            </label>
-
-                            <span
-                              className={`text-[10px] px-1.5 py-0.2 rounded font-semibold uppercase tracking-wide shrink-0 ${
-                                isConfirmed
-                                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300'
-                                  : isPending
-                                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300'
-                                    : 'bg-gray-200/70 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
-                              }`}
-                            >
-                              {isConfirmed
-                                ? 'Confirmed'
-                                : isPending
-                                  ? 'Pending'
-                                  : 'Unset'}
-                            </span>
-                          </div>
-
-                          {multiline ? (
-                            <textarea
-                              id={`bible-${key}`}
-                              rows={2}
-                              value={field.value}
-                              onChange={(e) => onUpdateStoryBible(key, e.target.value)}
-                              placeholder={placeholder}
-                              aria-invalid={Boolean(fieldError)}
-                              aria-describedby={fieldError ? inputErrorId : undefined}
-                              className={`w-full text-xs bg-white dark:bg-gray-900 border rounded p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 resize-y ${
-                                fieldError
-                                  ? 'border-red-500 focus:ring-red-500'
-                                  : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
-                              }`}
-                            />
-                          ) : (
-                            <input
-                              id={`bible-${key}`}
-                              type="text"
-                              value={field.value}
-                              onChange={(e) => onUpdateStoryBible(key, e.target.value)}
-                              onBlur={(e) => {
-                                if (e.target.value !== e.target.value.trim()) {
-                                  onUpdateStoryBible(key, e.target.value.trim());
-                                }
-                              }}
-                              placeholder={placeholder}
-                              aria-invalid={Boolean(fieldError)}
-                              aria-describedby={fieldError ? inputErrorId : undefined}
-                              className={`w-full text-xs bg-white dark:bg-gray-900 border rounded px-2 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 ${
-                                fieldError
-                                  ? 'border-red-500 focus:ring-red-500'
-                                  : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
-                              }`}
-                            />
-                          )}
-                          {fieldError && (
-                            <p
-                              id={inputErrorId}
-                              role="alert"
-                              className="text-[11px] font-medium text-red-600 dark:text-red-400"
-                            >
-                              {fieldError}
-                            </p>
-                          )}
-
-                          {/* Provenance, Quick Suggestion Chips & Confirm/Clear Actions */}
-                          <div className="flex flex-wrap items-center justify-between gap-1 pt-0.5 min-w-0">
-                            {!hasValue && examples && examples.length > 0 ? (
-                              <div className="flex flex-wrap items-center gap-1 min-w-0">
-                                {examples.slice(0, 1).map((example) => (
-                                  <button
-                                    key={example}
-                                    type="button"
-                                    onClick={() => onUpdateStoryBible(key, example)}
-                                    className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-300 truncate max-w-full"
-                                    title={`Set ${shortLabel} to "${example}"`}
-                                  >
-                                    + {example}
-                                  </button>
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-[10px] text-gray-400 dark:text-gray-500 truncate">
-                                {field.provenance}
-                              </span>
-                            )}
-
-                            <div className="flex items-center gap-1.5 ml-auto shrink-0">
-                              {isPending && (
-                                <button
-                                  type="button"
-                                  onClick={() => onUpdateStoryBible(key, field.value)}
-                                  className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white"
-                                  title={`Confirm ${label}`}
-                                >
-                                  Confirm
-                                </button>
-                              )}
-                              {hasValue && (
-                                <button
-                                  type="button"
-                                  onClick={() => onUpdateStoryBible(key, '')}
-                                  className="text-[10px] text-gray-400 hover:text-red-600 dark:hover:text-red-400"
-                                  title={`Clear ${shortLabel}`}
-                                >
-                                  Clear
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    }
-                  )}
+                  {domainFields.map((config) => (
+                    <StoryBibleFieldEditor
+                      key={config.key}
+                      config={config}
+                      field={storyBible[config.key]}
+                      fieldError={storyBibleErrors?.[config.key]}
+                      variant="grid"
+                      onUpdateStoryBible={onUpdateStoryBible}
+                    />
+                  ))}
                 </div>
               </section>
             );
           })}
         </div>
       ) : (
-        /* Classic Compact Vertical List View */
         <div className="space-y-3" role="region" aria-label="Story Bible list">
-          {filteredItems.map(({ key, label, shortLabel, placeholder, multiline }) => {
-            const field = storyBible[key];
-            const fieldError = storyBibleErrors?.[key];
-            const hasValue = Boolean(field.value.trim());
-            const inputErrorId = `bible-error-${key}`;
-            return (
-              <div key={key} className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <label
-                    htmlFor={`bible-${key}`}
-                    className="font-semibold text-gray-800 dark:text-gray-200"
-                  >
-                    {label}
-                  </label>
-                  <div className="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
-                    <span className="capitalize">
-                      {hasValue ? field.status : 'unset'}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span>{field.provenance}</span>
-                    {field.status !== 'confirmed' && hasValue && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStoryBible(key, field.value)}
-                        className="text-blue-600 dark:text-blue-400 font-semibold hover:underline ml-1"
-                      >
-                        Confirm
-                      </button>
-                    )}
-                    {hasValue && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStoryBible(key, '')}
-                        className="text-gray-500 hover:text-red-600 dark:hover:text-red-400 font-medium ml-1"
-                        title={`Clear ${shortLabel}`}
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-                {multiline ? (
-                  <textarea
-                    id={`bible-${key}`}
-                    rows={2}
-                    value={field.value}
-                    onChange={(e) => onUpdateStoryBible(key, e.target.value)}
-                    placeholder={placeholder}
-                    aria-invalid={Boolean(fieldError)}
-                    aria-describedby={fieldError ? inputErrorId : undefined}
-                    className={`w-full text-xs bg-gray-50 dark:bg-gray-800 border rounded-md p-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 ${
-                      fieldError
-                        ? 'border-red-500 focus:ring-red-500'
-                        : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
-                    }`}
-                  />
-                ) : (
-                  <input
-                    id={`bible-${key}`}
-                    type="text"
-                    value={field.value}
-                    onChange={(e) => onUpdateStoryBible(key, e.target.value)}
-                    onBlur={(e) => {
-                      if (e.target.value !== e.target.value.trim()) {
-                        onUpdateStoryBible(key, e.target.value.trim());
-                      }
-                    }}
-                    placeholder={placeholder}
-                    aria-invalid={Boolean(fieldError)}
-                    aria-describedby={fieldError ? inputErrorId : undefined}
-                    className={`w-full text-xs bg-gray-50 dark:bg-gray-800 border rounded-md px-2.5 py-1.5 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 ${
-                      fieldError
-                        ? 'border-red-500 focus:ring-red-500'
-                        : 'border-gray-300 dark:border-gray-700 focus:ring-blue-500'
-                    }`}
-                  />
-                )}
-                {fieldError && (
-                  <p
-                    id={inputErrorId}
-                    role="alert"
-                    className="text-[11px] font-medium text-red-600 dark:text-red-400"
-                  >
-                    {fieldError}
-                  </p>
-                )}
-              </div>
-            );
-          })}
+          {filteredItems.map((config) => (
+            <StoryBibleFieldEditor
+              key={config.key}
+              config={config}
+              field={storyBible[config.key]}
+              fieldError={storyBibleErrors?.[config.key]}
+              variant="list"
+              onUpdateStoryBible={onUpdateStoryBible}
+            />
+          ))}
         </div>
       )}
     </div>

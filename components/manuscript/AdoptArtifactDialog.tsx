@@ -15,11 +15,22 @@ interface Props {
 export default function AdoptArtifactDialog({ project, sectionId, initialArtifactId, busy, onCancel, onApply }: Props) {
   const [base] = useState(() => narrativeBase(project));
   const artifacts = project.artifacts.filter(artifact => artifact.mode === 'story' && artifact.storyText);
+  const [prevInitialArtifactId, setPrevInitialArtifactId] = useState(initialArtifactId);
   const [artifactId, setArtifactId] = useState(initialArtifactId ?? artifacts[0]?.id ?? '');
   const [operation, setOperation] = useState<'append' | 'new-scene' | 'replace'>('new-scene');
   const [preview, setPreview] = useState<{ sections: ManuscriptSection[]; anchor: ArtifactAnchor } | null>(null);
   const [error, setError] = useState('');
   const source = useRef<HTMLTextAreaElement>(null);
+
+  if (initialArtifactId !== prevInitialArtifactId) {
+    setPrevInitialArtifactId(initialArtifactId);
+    if (initialArtifactId) {
+      setArtifactId(initialArtifactId);
+      setPreview(null);
+      setError('');
+    }
+  }
+
   const text = artifacts.find(({ id }) => id === artifactId)?.storyText ?? '';
   const section = manuscriptSections(project).find(({ id }) => id === sectionId);
 
@@ -56,9 +67,9 @@ export default function AdoptArtifactDialog({ project, sectionId, initialArtifac
           </select>
         </label>
         <div className="flex flex-wrap gap-3 underline">
-          <button onClick={() => previewAdoption(false)}>Preview full story</button>
-          <button onClick={() => previewAdoption(true)}>Preview selection</button>
-          <button onClick={onCancel}>Close adoption</button>
+          <button type="button" onClick={() => previewAdoption(false)}>Preview full story</button>
+          <button type="button" onClick={() => previewAdoption(true)}>Preview selection</button>
+          <button type="button" onClick={onCancel}>Close adoption</button>
         </div>
         {error && <p role="alert">{error}</p>}
         {preview && (
@@ -69,7 +80,7 @@ export default function AdoptArtifactDialog({ project, sectionId, initialArtifac
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap">{(operation === 'new-scene'
               ? preview.sections.at(-1)
               : preview.sections.find(({ id }) => id === sectionId))?.text}</pre>
-            <button className="rounded bg-amber-700 px-3 py-1.5 text-white" onClick={() => onApply(preview.sections, preview.anchor, base)}>Apply adoption</button>
+            <button type="button" className="rounded bg-amber-700 px-3 py-1.5 text-white" onClick={() => onApply(preview.sections, preview.anchor, base)}>Apply adoption</button>
           </div>
         )}
       </fieldset>

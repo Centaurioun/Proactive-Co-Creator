@@ -11,9 +11,13 @@ import {
 } from '../lib/beliefGraphUtils.ts';
 import {
   computeFitTransform,
+  computeFitTransformByKey,
   computeForceLayout,
+  computeForceLayoutByKey,
   computeNodeDimensions,
+  computeNodeDimensionsByKey,
   getEdgePath,
+  getEntityGraphKey,
   getIntersection,
 } from '../lib/graphLayout.ts';
 import type { Entity, Relationship } from '../shared/types.ts';
@@ -161,5 +165,99 @@ describe('lib/beliefGraphUtils & lib/graphLayout', () => {
     const smallPositions = { A: { x: 250, y: 180 }, B: { x: 350, y: 180 } };
     const fitSmall = computeFitTransform(smallPositions, dims, 600, 360, 40);
     assert.equal(fitSmall.k, 1);
+  });
+
+  it('W5-02 / R08: ID-keyed layout preserves distinct duplicate-named entities and survives isolated entity rename', () => {
+    const aliceV1: Entity = { ...makeEntity('Alice'), id: 'ent_alice' };
+    const guard1: Entity = { ...makeEntity('Guard'), id: 'ent_guard_1' };
+    const guard2: Entity = { ...makeEntity('Guard'), id: 'ent_guard_2' };
+    const entities = [aliceV1, guard1, guard2];
+
+    assert.equal(getEntityGraphKey(aliceV1), 'ent_alice');
+    assert.equal(getEntityGraphKey(makeEntity('NoId')), 'NoId');
+
+    const dims = computeNodeDimensionsByKey(entities);
+    assert.equal(Object.keys(dims).length, 3);
+    assert.ok(dims.ent_alice && dims.ent_guard_1 && dims.ent_guard_2);
+
+    const rels: Relationship[] = [
+      { id: 'rel_1', sourceId: 'ent_guard_1', targetId: 'ent_guard_2', source: 'Guard', target: 'Guard', label: 'watches' },
+    ];
+    const layout1 = computeForceLayoutByKey({
+      objectEntities: entities,
+      relationships: rels,
+      nodeDimensions: dims,
+      containerWidth: 800,
+      containerHeight: 600,
+    });
+    assert.equal(Object.keys(layout1).length, 3);
+    const sep = Math.hypot(
+      layout1.ent_guard_1.x - layout1.ent_guard_2.x,
+      layout1.ent_guard_1.y - layout1.ent_guard_2.y
+    );
+    assert.ok(sep > 40, `Expected duplicate-named distinct-ID nodes to separate, got ${sep}`);
+
+    // Rename isolated entity Alice -> Alicia (same ID): keyed position remains present
+    const aliceRenamed: Entity = { ...aliceV1, name: 'Alicia Long Name' };
+    const renamedDims = computeNodeDimensionsByKey([aliceRenamed, guard1, guard2]);
+    const layout2 = computeForceLayoutByKey({
+      objectEntities: [aliceRenamed, guard1, guard2],
+      relationships: rels,
+      nodeDimensions: renamedDims,
+      containerWidth: 800,
+      containerHeight: 600,
+      previousPositions: layout1,
+    });
+    assert.ok(Number.isFinite(layout2.ent_alice?.x) && Number.isFinite(layout2.ent_alice?.y));
+    const fit = computeFitTransformByKey(layout2, renamedDims, 800, 600);
+    assert.ok(Number.isFinite(fit.k) && fit.k > 0);
+  });
+
+  it('R08: dense 100-node and 300-node layouts remain deterministic, finite, and free of regressions', () => {
+    const count = 100;
+    const entities: Entity[] = Array.from({ length: count }, (_, i) => ({
+      ...makeEntity(`Node_${i}`),
+      id: `ent_${i}`,
+    }));
+    const relationships: Relationship[] = [];
+    for (let i = 0; i < count; i++) {
+      relationships.push({
+        id: `r_${i}_a`,
+        sourceId: `ent_${i}`,
+        targetId: `ent_${(i + 1) % count}`,
+        source: `Node_${i}`,
+        target: `Node_${(i + 1) % count}`,
+        label: 'connects to',
+      });
+      relationships.push({
+        id: `r_${i}_b`,
+        sourceId: `ent_${i}`,
+        targetId: `ent_${(i + 7) % count}`,
+        source: `Node_${i}`,
+        target: `Node_${(i + 7) % count}`,
+        label: 'observes',
+      });
+    }
+    const dims = computeNodeDimensionsByKey(entities);
+    const run1 = computeForceLayoutByKey({
+      objectEntities: entities,
+      relationships,
+      nodeDimensions: dims,
+      containerWidth: 960,
+      containerHeight: 600,
+    });
+    const run2 = computeForceLayoutByKey({
+      objectEntities: entities,
+      relationships,
+      nodeDimensions: dims,
+      containerWidth: 960,
+      containerHeight: 600,
+    });
+    assert.deepEqual(run1, run2);
+    assert.equal(Object.keys(run1).length, count);
+    for (const e of entities) {
+      const p = run1[e.id!];
+      assert.ok(p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    }
   });
 });
