@@ -11,7 +11,7 @@ import { setSessionGeminiKey } from './geminiClient.ts';
 import type { AiConnectionId, AiReasoningLevel } from './providers/contracts.ts';
 import { getCachedProviderModel, getPreferences, listProviderModels, providerHubStatus, setChatGptModels, setOpenAiApiKey, setPersonalGeminiKey, setPreferences, registerChatGptAdapterFactory } from './providers/runtime.ts';
 import { ChatGptResponsesAdapter } from './providers/chatgptResponses.ts';
-import { assertReasoningSelection } from './providers/policy.ts';
+import { assertReasoningSelection, hasSupportedOperation } from './providers/policy.ts';
 
 const AUTH_ORIGIN = 'https://auth.openai.com';
 const TOKEN_ENDPOINT = `${AUTH_ORIGIN}/api/accounts/oauth/token`;
@@ -205,8 +205,8 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
     }
     if (value.defaultTextModelId) {
       const model = getCachedProviderModel(value.defaultConnectionId, value.defaultTextModelId);
-      if (!model || model.availability.state !== 'supported' || model.textGeneration.state !== 'supported') {
-        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'The default model is not verified for this account. Refresh its catalog and choose a supported text model.' } });
+      if (!model || model.availability.state !== 'supported' || model.textGeneration.state !== 'supported' || !hasSupportedOperation(model)) {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'The default model is not verified for an available PCC operation. Refresh its catalog and choose a model with a supported operation.' } });
         return;
       }
       try { assertReasoningSelection(model, value.defaultReasoningLevel); }

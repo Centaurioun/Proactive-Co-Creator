@@ -99,8 +99,9 @@ test('model listing maps only SDK-reported supported actions and reasoning suppo
   assert.deepEqual(models[0].contextLimit, { state: 'supported', value: 16_000, evidence: models[0].contextLimit.state === 'supported' ? models[0].contextLimit.evidence : [] });
   assert.deepEqual(models[0].outputLimit, { state: 'supported', value: 2_000, evidence: models[0].outputLimit.state === 'supported' ? models[0].outputLimit.evidence : [] });
   assert.equal(models[0].operationCapabilities.story?.state, 'supported');
+  assert.equal(models[0].operationCapabilities.writing?.state, 'unknown');
   assert.equal(models[0].operationCapabilities.analyze?.state, 'unknown');
-  assert.equal(models[0].capabilityPolicyVersion, '2026-11-26.1');
+  assert.equal(models[0].capabilityPolicyVersion, '2026-11-26.2');
   assert.equal(models[1].imageGeneration.state, 'supported');
   assert.equal(models[1].operationCapabilities.image?.state, 'unsupported');
   assert.equal(models[2].textGeneration.state, 'unknown');

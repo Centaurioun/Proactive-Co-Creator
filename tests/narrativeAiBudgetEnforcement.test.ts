@@ -4,6 +4,8 @@ import { AI_OPERATION_POLICIES, maxAttemptsWithinOperationBudget, reserveAggrega
 import { runBudgetedJsonOperation, runWritingAssistant, type NarrativeAiClientLike } from '../server/narrative/narrativeAiService.ts';
 import { extractNarrativeChunk } from '../server/narrative/extractionService.ts';
 import { runWithAiProviderContext } from '../server/providers/requestContext.ts';
+import { createLegacyAiClient } from '../server/providers/runtime.ts';
+import { ChatGptResponsesAdapter } from '../server/providers/chatgptResponses.ts';
 
 const request = {
   projectId: 'synthetic-project', baseRevision: 1, sectionId: 'scene-1', sectionTitle: 'Scene 1',
@@ -110,6 +112,65 @@ describe('narrative AI budget enforcement', () => {
       chunkId: 'chatgpt-plan-estimate', text: 'Synthetic narrative.', scope: 'complete', categories: [], instruction: '',
     }, undefined, client)), /exact count.*Generation was not started/i);
     assert.equal(generated, false);
+  });
+
+  it('keeps Gemini native token counting within its documented config and applies schema at generation', async () => {
+    let countConfig: Record<string, unknown> | undefined;
+    let generationConfig: Record<string, unknown> | undefined;
+    const client = {
+      models: {
+        countTokens: async (params: { config?: Record<string, unknown> }) => {
+          countConfig = params.config;
+          return { totalTokens: 10, source: 'provider-count' as const };
+        },
+        generateContent: async (params: { config?: Record<string, unknown> }) => {
+          generationConfig = params.config;
+          return { text: JSON.stringify({ findings: [], entities: [], relationships: [], ambiguities: [] }) };
+        },
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    await extractNarrativeChunk({
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `f${Date.now().toString(16).padStart(63, '0')}`,
+      chunkId: 'schema-preflight', text: 'Synthetic narrative.', scope: 'complete', categories: [], instruction: '',
+    }, undefined, client);
+    assert.equal(countConfig?.responseSchema, undefined);
+    assert.ok(generationConfig?.responseSchema);
+  });
+
+  it('uses the same OpenAI extraction input and schema constraints for preflight and blocks over-budget inference', async () => {
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    let count = 12;
+    const adapter = new ChatGptResponsesAdapter('synthetic-openai-key', async (input, init) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push({ url, body });
+      if (url.endsWith('/responses/input_tokens')) return Response.json({ object: 'response.input_tokens', input_tokens: count });
+      return new Response([
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: JSON.stringify({ findings: [], entities: [], relationships: [], ambiguities: [] }) })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: {} })}\n\n`,
+      ].join(''), { headers: { 'content-type': 'text/event-stream' } });
+    }, undefined, 'openai-api');
+    const client = createLegacyAiClient(
+      { connectionId: 'openai-api', modelId: 'gpt-6.2-sol' }, 'narrative-import', undefined,
+      () => { throw new Error('managed Gemini must not be used'); },
+      () => adapter,
+    ) as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    const extraction = {
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `a${Date.now().toString(16).padStart(63, '0')}`,
+      chunkId: 'openai-extraction-preflight', text: 'Synthetic narrative.', scope: 'complete' as const, categories: [], instruction: '',
+    };
+    await runWithAiProviderContext({ selection: { connectionId: 'openai-api', modelId: 'gpt-6.2-sol' }, operation: 'narrative-import' }, () => extractNarrativeChunk(extraction, undefined, client));
+    const preflight = requests.find(item => item.url.endsWith('/responses/input_tokens'))?.body;
+    const generation = requests.find(item => item.url.endsWith('/responses'))?.body;
+    assert.deepEqual(preflight?.input, generation?.input);
+    assert.equal(preflight?.instructions, generation?.instructions);
+    assert.ok(typeof preflight?.instructions === 'string' && preflight.instructions.includes('conforms to this response schema'));
+    assert.equal(generation?.max_output_tokens, 2048);
+
+    requests.length = 0;
+    count = 8_001;
+    await assert.rejects(() => runWithAiProviderContext({ selection: { connectionId: 'openai-api', modelId: 'gpt-6.2-sol' }, operation: 'narrative-import' }, () => extractNarrativeChunk({ ...extraction, digest: `b${Date.now().toString(16).padStart(63, '0')}`, chunkId: 'openai-extraction-over-budget' }, undefined, client)), /exceeds the safe 8,000.*input-token budget/i);
+    assert.equal(requests.filter(item => item.url.endsWith('/responses')).length, 0);
   });
 
   it('releases the AI concurrency slot when provider initialization throws', async () => {

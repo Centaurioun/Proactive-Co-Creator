@@ -65,7 +65,9 @@ const TEXT_OPERATIONS: AiOperation[] = [
   'diagnostics', 'sync', 'writing', 'opportunities', 'import-enhance',
 ];
 
-const TEXT_OUTPUT_OPERATIONS: AiOperation[] = ['story', 'writing'];
+// Story output is plain text; PCC writing requires a structured manuscript
+// response contract that generateContent support alone does not establish.
+const TEXT_OUTPUT_OPERATIONS: AiOperation[] = ['story'];
 
 function modelIdFromName(name: string): string {
   return name.startsWith('models/') ? name.slice('models/'.length) : name;

@@ -99,8 +99,17 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
 <SOURCE_DATA_JSON>${sourceData}</SOURCE_DATA_JSON>`;
   try {
     let countTimer: ReturnType<typeof setTimeout> | undefined;
+    const countConfig = {
+      abortSignal: abort.signal,
+      ...(getAiProviderRequestContext()?.selection.connectionId === 'openai-api' ? { responseSchema: extractionResponseSchema } : {}),
+    };
+    // The native Gemini countTokens SDK config does not define responseSchema;
+    // the legacy provider boundary consumes it for OpenAI preflight only.
+    const countTokens = ai.models.countTokens as unknown as (params: {
+      model: string; contents: string; config: { abortSignal: AbortSignal; responseSchema?: unknown };
+    }) => Promise<{ totalTokens?: number }>;
     const tokenCount = await Promise.race([
-      ai.models.countTokens({ model: selectedModel, contents: prompt, config: { abortSignal: abort.signal } }),
+      countTokens({ model: selectedModel, contents: prompt, config: countConfig }),
       new Promise<never>((_, reject) => {
         countTimer = setTimeout(() => {
           abort.abort(new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true));

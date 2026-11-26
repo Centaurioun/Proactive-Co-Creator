@@ -5,7 +5,8 @@ import express from 'express';
 import { createApiRouter } from '../server/routes.ts';
 import { createProviderHubRouter } from '../server/providerHubRoutes.ts';
 import { ChatGptSessionStore } from '../server/auth/chatgpt/sessionStore.ts';
-import { getPreferences, setOpenAiApiKey, setPersonalGeminiKey, setPreferences } from '../server/providers/runtime.ts';
+import { getChatGptModels, getPreferences, setChatGptModels, setOpenAiApiKey, setPersonalGeminiKey, setPreferences } from '../server/providers/runtime.ts';
+import { describeChatGptModel } from '../server/providers/policy.ts';
 import { setSessionGeminiKey } from '../server/geminiClient.ts';
 
 async function withServer<T>(run: (baseUrl: string) => Promise<T>): Promise<T> {
@@ -82,6 +83,25 @@ test('preference routes reject disabled billing and unqualified image overrides'
     });
   } finally {
     setPreferences(previous);
+  }
+});
+
+test('preference routes reject ChatGPT models with no effective PCC operation capability', async () => {
+  const previousPreferences = getPreferences();
+  const previousModels = getChatGptModels();
+  try {
+    setChatGptModels([describeChatGptModel({ id: 'gpt-6.2-sol', displayName: 'Sol' }, 'chatgpt-plan')]);
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: { defaultConnectionId: 'chatgpt-plan', defaultTextModelId: 'gpt-6.2-sol' } }),
+      });
+      assert.equal(response.status, 400);
+      assert.match(await response.text(), /not verified for an available PCC operation/i);
+    });
+  } finally {
+    setChatGptModels(previousModels);
+    setPreferences(previousPreferences);
   }
 });
 

@@ -146,6 +146,54 @@ test('session store serializes refresh, keeps rotated token, and clears in-memor
   assert.equal(new ChatGptSessionStore({ now: () => now }).snapshot().connected, false);
 });
 
+test('successful token rotation preserves the authorized session epoch and active request authority', async () => {
+  const now = fixedNow();
+  const store = new ChatGptSessionStore({ now: () => now, refreshSkewMs: 1000, fetch: async () => jsonResponse({
+    access_token: 'fresh-access', refresh_token: 'fresh-refresh', token_type: 'Bearer', expires_in: 3600,
+  }) });
+  store.install({ accessToken: 'expiring-access', refreshToken: 'old-refresh', expiresAt: now + 500, tokenType: 'Bearer' });
+  const epoch = store.getGeneration();
+  const rotationBefore = store.getTokenRotationVersion();
+  const lease = store.createRequestLease(undefined, epoch);
+  await store.getAccessToken(CLIENT_ID, 'https://auth.openai.com/oauth/token', epoch);
+  assert.equal(store.getGeneration(), epoch);
+  assert.equal(store.getTokenRotationVersion(), rotationBefore + 1);
+  assert.equal(lease.signal.aborted, false);
+  assert.equal(await store.getAccessToken(CLIENT_ID, 'https://auth.openai.com/oauth/token', epoch), 'fresh-access');
+  lease.release();
+});
+
+test('a successful refresh can immediately serve inference and account catalog requests', async () => {
+  const now = fixedNow();
+  const store = new ChatGptSessionStore({ now: () => now, refreshSkewMs: 1000, fetch: async () => jsonResponse({
+    access_token: 'rotated-access', refresh_token: 'rotated-refresh', expires_in: 3600, token_type: 'Bearer',
+  }) });
+  store.install({ accessToken: 'expired-access', refreshToken: 'before-refresh', expiresAt: now - 1, tokenType: 'Bearer' });
+  const epoch = store.getGeneration();
+  let inferenceLeaseWasLive = false;
+  const adapter = new ChatGptResponsesAdapter(
+    () => store.getAccessToken(CLIENT_ID, 'https://auth.openai.com/oauth/token', epoch),
+    async (input, init) => {
+      const url = String(input);
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer rotated-access');
+      if (url.endsWith('/models')) return Response.json({ models: [{ slug: 'gpt-6.2-sol', display_name: 'Sol', visibility: 'list' }] });
+      inferenceLeaseWasLive = init?.signal?.aborted === false;
+      return new Response([
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"safe result"}\n\n',
+        'event: response.completed\ndata: {"type":"response.completed","response":{}}\n\n',
+      ].join(''), { headers: { 'content-type': 'text/event-stream' } });
+    },
+    signal => store.createRequestLease(signal, epoch),
+  );
+  const generated = await adapter.generateText({ operation: 'story', modelId: 'gpt-6.2-sol', input: 'synthetic', maxInputBytes: 100, maxOutputBytes: 100, timeoutMs: 1000 });
+  assert.equal(generated.text, 'safe result');
+  assert.equal(inferenceLeaseWasLive, true);
+  assert.equal(store.getGeneration(), epoch);
+  const models = await adapter.listModels();
+  assert.deepEqual(models.map(model => model.id), ['gpt-6.2-sol']);
+  assert.equal(store.getGeneration(), epoch);
+});
+
 test('clearing a session aborts in-flight provider request leases', () => {
   const store = new ChatGptSessionStore();
   store.install({ accessToken: 'access', refreshToken: 'refresh', expiresAt: fixedNow() + 10_000, tokenType: 'Bearer' });
@@ -169,7 +217,7 @@ test('revocation retries bounded transient failures with documented form fields 
   }, maxRevocationAttempts: 3, revocationRetryBaseDelayMs: 125, wait: async ms => { waits.push(ms); } });
   store.install({ accessToken: 'sensitive-access', refreshToken: 'sensitive-refresh', expiresAt: fixedNow() + 10000, tokenType: 'Bearer' });
   const detached = store.takeForRevocation();
-  assert.deepEqual(detached, { refreshToken: 'sensitive-refresh', generation: 2 });
+  assert.deepEqual(detached, { refreshToken: 'sensitive-refresh', generation: 2, tokenRotationVersion: 1, refreshInProgress: false });
   await store.revoke(CLIENT_ID, 'https://auth.openai.com/oauth/revoke', detached);
   assert.equal(calls, 3);
   assert.deepEqual(waits, [125, 250]);
@@ -229,6 +277,35 @@ test('disconnect immediately aborts an in-flight refresh request', async () => {
   assert.equal(refreshSignal?.aborted, true);
   await assert.rejects(pending, /temporarily unavailable/i);
   assert.equal(store.snapshot().connected, false);
+});
+
+test('disconnect during refresh clears locally and does not claim remote revocation', async () => {
+  let resolveFetch!: (response: Response) => void;
+  let calls = 0;
+  const store = new ChatGptSessionStore({ now: fixedNow, refreshSkewMs: 1000, fetch: async () => {
+    calls += 1;
+    return new Promise<Response>(resolve => { resolveFetch = resolve; });
+  } });
+  store.install({ accessToken: 'old', refreshToken: 'refresh-old', expiresAt: fixedNow() - 1, tokenType: 'Bearer' });
+  const pendingRefresh = store.getAccessToken(CLIENT_ID, 'https://auth.openai.com/oauth/token');
+  const detached = store.takeForRevocation();
+  await assert.rejects(store.revoke(CLIENT_ID, 'https://auth.openai.com/oauth/revoke', detached), /could not be confirmed while token refresh was in flight/i);
+  resolveFetch(jsonResponse({ access_token: 'late', refresh_token: 'rotated', expires_in: 3600, token_type: 'Bearer' }));
+  await assert.rejects(pendingRefresh, /temporarily unavailable/i);
+  assert.equal(calls, 1);
+  assert.equal(store.snapshot().connected, false);
+});
+
+test('reconnect during refresh prevents the old refresh result from replacing the new grant', async () => {
+  let resolveFetch!: (response: Response) => void;
+  const store = new ChatGptSessionStore({ now: fixedNow, refreshSkewMs: 1000, fetch: async () => new Promise<Response>(resolve => { resolveFetch = resolve; }) });
+  store.install({ accessToken: 'old', refreshToken: 'old-refresh', expiresAt: fixedNow() - 1, tokenType: 'Bearer' });
+  const oldRefresh = store.getAccessToken(CLIENT_ID, 'https://auth.openai.com/oauth/token');
+  store.install({ accessToken: 'new-grant-access', refreshToken: 'new-grant-refresh', expiresAt: fixedNow() + 60_000, tokenType: 'Bearer' });
+  resolveFetch(jsonResponse({ access_token: 'late-old-access', refresh_token: 'late-old-refresh', expires_in: 3600, token_type: 'Bearer' }));
+  await assert.rejects(oldRefresh, /temporarily unavailable/i);
+  assert.equal(await store.getAccessToken(CLIENT_ID, 'https://auth.openai.com/oauth/token'), 'new-grant-access');
+  assert.equal(store.snapshot().connected, true);
 });
 
 test('new session aborts an older remote revocation and remains connected', async () => {

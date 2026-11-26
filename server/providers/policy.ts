@@ -14,7 +14,7 @@ const PROVIDER_OPERATIONS: Record<AiConnectionId, AiOperation[]> = {
   'openai-api': TEXT_OPERATIONS,
 };
 
-export const CAPABILITY_POLICY_VERSION = '2026-11-26.1';
+export const CAPABILITY_POLICY_VERSION = '2026-11-26.2';
 export const SIWC_MODELS_DOCUMENTATION = 'https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference';
 export const OPENAI_REASONING_DOCUMENTATION = 'https://developers.openai.com/api/docs/guides/reasoning';
 export const GEMINI_THINKING_DOCUMENTATION = 'https://ai.google.dev/gemini-api/docs/thinking';
@@ -66,12 +66,15 @@ export function describeChatGptModel(model: { id: string; displayName: string },
     contextLimit: { state: 'unknown', reason: 'The account model catalog does not expose a verified context limit.' },
     outputLimit: { state: 'unknown', reason: connectionId === 'chatgpt-plan' ? 'SIWC does not support max_output_tokens; no hard output-token limit is asserted.' : 'No hard output-token limit is asserted for this account model.' },
     reasoning,
-    // SIWC model discovery verifies account availability; official Responses docs
-    // establish text generation. PCC's existing operation schemas and mutation
-    // guards remain the authority for each structured result. The adapter uses a
-    // constrained JSON instruction and callers perform their existing validation.
+    // SIWC documents inference but no exact input-token preflight or hard
+    // max_output_tokens control. PCC operations require both budget controls,
+    // so model availability/text modality cannot qualify an operation here.
     operationCapabilities: Object.fromEntries(TEXT_OPERATIONS.map((operation) => [operation,
-      knownText ? supported(true, textProof) : { state: 'unknown', reason: `This exact model has no verified PCC text-operation compatibility for ${operation}.` },
+      connectionId === 'chatgpt-plan'
+        ? { state: 'unsupported', evidence: catalogProof }
+        : knownText
+          ? supported(true, textProof)
+          : { state: 'unknown', reason: `This exact model has no verified PCC text-operation compatibility for ${operation}.` },
     ])) as AiModelDescriptor['operationCapabilities'],
     capabilityPolicyVersion: CAPABILITY_POLICY_VERSION,
   };
@@ -97,6 +100,10 @@ export function assertModelOperation(model: AiModelDescriptor, operation: AiOper
   if (capability?.state !== 'supported' || capability.value !== true) {
     throw new AppApiError('MODEL_UNSUPPORTED', `The selected model has no verified capability for ${operation}.`, 422, false);
   }
+}
+
+export function hasSupportedOperation(model: AiModelDescriptor): boolean {
+  return Object.values(model.operationCapabilities).some(capability => capability?.state === 'supported' && capability.value === true);
 }
 
 export function assertReasoningSelection(model: AiModelDescriptor, selected?: AiReasoningLevel): void {

@@ -173,15 +173,16 @@ export default function AiConnectionsPanel() {
   async function changeDefaultConnection(connectionId: AiConnectionId) {
     const models = await refreshModels(connectionId);
     if (!preferences) return;
-    const modelId = models.find(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported')?.id;
+    const modelId = models.find(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported' && Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true))?.id;
     if (!modelId) {
-      setError('No verified text model is available for this connection. Refresh its catalog and connect the account before selecting it.');
+      setError('No model has a verified PCC operation for this connection. Refresh its catalog or choose another connection.');
       return;
     }
     await savePreferences({ ...preferences, defaultConnectionId: connectionId, defaultTextModelId: modelId });
   }
 
   const selectedModel = modelOptions.find(model => model.id === (preferences?.defaultTextModelId ?? defaultConnection?.selectedModelId));
+  const eligibleDefaultModels = modelOptions.filter(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported' && Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true));
   const supportedReasoning = selectedModel?.reasoning.state === 'supported'
     ? ['default', ...(selectedModel.reasoning.value ?? [])] as ReasoningLevel[]
     : ['default'] as ReasoningLevel[];
@@ -357,6 +358,7 @@ export default function AiConnectionsPanel() {
 
               {connection.id === 'chatgpt-plan' && <div className="mt-3 space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700">
                 <p className="text-xs text-gray-700 dark:text-gray-200">ChatGPT plan access uses your existing ChatGPT plan and is subject to OpenAI’s plan limits and terms. It is separate from OpenAI API billing; this app does not promise unlimited usage.</p>
+                <p className="text-xs text-amber-800 dark:text-amber-200">Models may be listed, but PCC narrative operations are unavailable through this connection until exact input-token preflight and a hard output-token budget are supported.</p>
                 {connection.state === 'connected'
                   ? <button type="button" className={buttonClass} disabled={busy} onClick={() => void disconnectChatGpt()}>Disconnect ChatGPT</button>
                   : <button type="button" className={buttonClass} disabled={busy || connection.state === 'unsupported-environment'} onClick={() => void authorizeChatGpt()}>Connect ChatGPT</button>}
@@ -381,15 +383,15 @@ export default function AiConnectionsPanel() {
             <div>
               <label htmlFor="default-ai-connection" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Default connection</label>
               <select id="default-ai-connection" className={inputClass} value={preferences.defaultConnectionId} disabled={busy} onChange={event => void changeDefaultConnection(event.target.value as AiConnectionId)}>
-                {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || item.state === 'connected')).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
+                {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true))))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
               </select>
             </div>
             <div>
               <label htmlFor="default-ai-model" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Default text model</label>
-              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : defaultConnection?.selectedModelId ?? '')} disabled={busy || (preferences.defaultConnectionId !== 'gemini-managed' && modelOptions.filter(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported').length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' ? undefined : event.target.value, ...(selectedModel?.reasoning.state === 'supported' && !(selectedModel.reasoning.value ?? []).includes(preferences.defaultReasoningLevel ?? 'default') ? { defaultReasoningLevel: 'default' } : {}) })}>
+              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : defaultConnection?.selectedModelId ?? '')} disabled={busy || (preferences.defaultConnectionId !== 'gemini-managed' && eligibleDefaultModels.length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' ? undefined : event.target.value, ...(selectedModel?.reasoning.state === 'supported' && !(selectedModel.reasoning.value ?? []).includes(preferences.defaultReasoningLevel ?? 'default') ? { defaultReasoningLevel: 'default' } : {}) })}>
                 {preferences.defaultConnectionId === 'gemini-managed' && <option value="__provider_default__">Gemini provider default</option>}
-                {modelOptions.filter(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported').length === 0 && <option value="">No verified text models available</option>}
-                {modelOptions.filter(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported').map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
+                {eligibleDefaultModels.length === 0 && preferences.defaultConnectionId !== 'gemini-managed' && <option value="">No verified PCC operations available</option>}
+                {eligibleDefaultModels.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
               </select>
             </div>
             <div>
@@ -406,7 +408,7 @@ export default function AiConnectionsPanel() {
                   <label htmlFor={`override-${operation}`} className="text-sm text-gray-700 dark:text-gray-200">{label}</label>
                   <select id={`override-${operation}`} className={inputClass} disabled={busy} value={preferences.operationOverrides?.[operation]?.connectionId ?? ''} onChange={event => event.target.value && void changeOverride(operation, event.target.value as AiConnectionId)}>
                     <option value="">Use default</option>
-                    {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || item.state === 'connected')).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
+                    {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true)))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
                   </select>
                   {preferences.operationOverrides?.[operation] && <button type="button" className={buttonClass} disabled={busy} onClick={() => void clearOverride(operation)}>Use default</button>}
                 </div>)}

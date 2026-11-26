@@ -31,6 +31,8 @@ export interface ChatGptSessionStoreOptions {
 export interface ChatGptRevocationSnapshot {
   refreshToken?: string;
   generation: number;
+  tokenRotationVersion: number;
+  refreshInProgress: boolean;
 }
 
 export interface ChatGptRequestLease {
@@ -61,6 +63,7 @@ export class ChatGptSessionStore {
   private readonly revocationRetryBaseDelayMs: number;
   private readonly wait: (milliseconds: number) => Promise<void>;
   private generation = 0;
+  private tokenRotationVersion = 0;
   private readonly activeRequests = new Set<AbortController>();
   private readonly activeRevocations = new Set<AbortController>();
 
@@ -74,12 +77,13 @@ export class ChatGptSessionStore {
     this.wait = options.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
   }
 
-  /** Installs a validated token response in volatile memory; replacing a token set rotates it atomically. */
-  install(tokens: ChatGptTokenSet, preserveActiveRequests = false): void {
-    if (!preserveActiveRequests) this.abortActiveRequests();
+  /** Installs a new authorization grant and invalidates all authority from its predecessor. */
+  install(tokens: ChatGptTokenSet): void {
+    this.abortActiveRequests();
     this.abortActiveRefresh();
     this.abortActiveRevocations();
     this.generation += 1;
+    this.tokenRotationVersion += 1;
     this.tokens = safeTokenSet(tokens);
     this.refreshInFlight = undefined;
   }
@@ -89,12 +93,14 @@ export class ChatGptSessionStore {
   }
 
   getGeneration(): number { return this.generation; }
+  getTokenRotationVersion(): number { return this.tokenRotationVersion; }
 
   clear(): void {
     this.abortActiveRequests();
     this.abortActiveRefresh();
     this.abortActiveRevocations();
     this.generation += 1;
+    this.tokenRotationVersion += 1;
     this.tokens = undefined;
     this.refreshInFlight = undefined;
   }
@@ -139,8 +145,10 @@ export class ChatGptSessionStore {
     const current = this.tokens;
     if (!current) return undefined;
     const refreshToken = current.refreshToken;
+    const tokenRotationVersion = this.tokenRotationVersion;
+    const refreshInProgress = this.refreshInFlight !== undefined;
     this.clear();
-    return { ...(refreshToken ? { refreshToken } : {}), generation: this.generation };
+    return { ...(refreshToken ? { refreshToken } : {}), generation: this.generation, tokenRotationVersion, refreshInProgress };
   }
 
   async getAccessToken(clientId: string, tokenEndpoint: string, expectedGeneration = this.generation): Promise<string> {
@@ -156,12 +164,12 @@ export class ChatGptSessionStore {
       const oldRefreshToken = current.refreshToken;
       const controller = new AbortController();
       this.activeRefresh = controller;
-      this.refreshInFlight = this.refresh(clientId, oldRefreshToken, tokenEndpoint, this.generation, controller.signal);
+      this.refreshInFlight = this.refresh(clientId, oldRefreshToken, tokenEndpoint, this.generation, this.tokenRotationVersion, controller.signal);
     }
     return this.refreshInFlight;
   }
 
-  private async refresh(clientId: string, refreshToken: string, tokenEndpoint: string, generation: number, signal: AbortSignal): Promise<string> {
+  private async refresh(clientId: string, refreshToken: string, tokenEndpoint: string, generation: number, tokenRotationVersion: number, signal: AbortSignal): Promise<string> {
     let terminalFailure = false;
     try {
       const endpoint = trustedEndpoint(tokenEndpoint);
@@ -178,7 +186,7 @@ export class ChatGptSessionStore {
         throw new Error('OAuth token refresh was rejected.');
       }
       const payload = await readTokenResponse(new Response(response.body, { status: response.status, headers: response.headers }));
-      if (this.generation !== generation || !this.tokens || this.tokens.refreshToken !== refreshToken) throw new Error('OAuth session changed during refresh.');
+      if (this.generation !== generation || this.tokenRotationVersion !== tokenRotationVersion || !this.tokens || this.tokens.refreshToken !== refreshToken) throw new Error('OAuth session changed during refresh.');
       if (!payload.refreshToken) throw new Error('OAuth refresh did not return a replacement refresh token.');
       if (payload.scope !== undefined && this.tokens.scope) {
         const refreshedScopes = new Set(payload.scope.split(/\s+/).filter(Boolean));
@@ -193,7 +201,11 @@ export class ChatGptSessionStore {
         ...(payload.scope === undefined && this.tokens.scope ? { scope: this.tokens.scope } : {}),
         ...(payload.idToken === undefined && this.tokens.idToken ? { idToken: this.tokens.idToken } : {}),
       };
-      this.install(refreshed, true);
+      if (this.generation !== generation || this.tokenRotationVersion !== tokenRotationVersion || !this.tokens || this.tokens.refreshToken !== refreshToken) {
+        throw new Error('OAuth session changed during refresh.');
+      }
+      this.tokens = safeTokenSet(refreshed);
+      this.tokenRotationVersion += 1;
       return refreshed.accessToken;
     } catch {
       throw new Error(terminalFailure
@@ -209,6 +221,10 @@ export class ChatGptSessionStore {
   async revoke(clientId: string, revocationEndpoint: string, current: ChatGptRevocationSnapshot | undefined = this.takeForRevocation()): Promise<void> {
     if (!current) return;
     const token = current.refreshToken;
+    if (current.refreshInProgress) {
+      current.refreshToken = undefined;
+      throw new Error('ChatGPT authorization was cleared locally, but remote revocation could not be confirmed while token refresh was in flight. Disconnect the app from ChatGPT Settings to revoke any remaining authorization.');
+    }
     if (!token) {
       current.refreshToken = undefined;
       throw new Error('ChatGPT authorization was cleared locally, but no renewable token was available for remote revocation.');

@@ -37,6 +37,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function constrainedJsonInstruction(responseSchema: unknown): string {
+  return `Return exactly one JSON value that conforms to this response schema. Do not add markdown fences, commentary, or extra fields. Validate internally before answering. Schema: ${JSON.stringify(responseSchema)}`;
+}
+
 function positiveBound(value: number, name: string, hardMaximum: number): number {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new AppApiError('VALIDATION_ERROR', `A positive ${name} limit is required.`, 400, false);
@@ -281,8 +285,7 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
       return { tokens: Math.ceil(new TextEncoder().encode(`${input}${instructions ?? ''}${generation?.responseSchema === undefined ? '' : JSON.stringify(generation.responseSchema)}`).byteLength / 4), source: 'estimate' };
     }
     const token = await this.accessToken();
-    const schemaInstruction = generation?.responseSchema === undefined ? '' :
-      `Return exactly one JSON value that conforms to this response schema. Do not add markdown fences, commentary, or extra fields. Validate internally before answering. Schema: ${JSON.stringify(generation.responseSchema)}`;
+    const schemaInstruction = generation?.responseSchema === undefined ? '' : constrainedJsonInstruction(generation.responseSchema);
     const completeInstructions = [instructions, schemaInstruction].filter(Boolean).join('\n\n');
     let response;
     try {
@@ -308,16 +311,21 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
     const maxOutputBytes = positiveBound(request.maxOutputBytes, 'output byte', HARD_MAX_OUTPUT_BYTES);
     const timeoutMs = positiveBound(request.timeoutMs, 'timeout', HARD_MAX_TIMEOUT_MS);
     if (!request.modelId.trim()) throw new AppApiError('VALIDATION_ERROR', 'A model is required.', 400, false);
-    const constrainedJsonInstruction = request.responseSchema === undefined ? '' :
-      `Return exactly one JSON value that conforms to this response schema. Do not add markdown fences, commentary, or extra fields. Validate internally before answering. Schema: ${JSON.stringify(request.responseSchema)}`;
-    const instructions = [request.instructions, constrainedJsonInstruction].filter(Boolean).join('\n\n');
+    const schemaInstruction = request.responseSchema === undefined ? '' : constrainedJsonInstruction(request.responseSchema);
+    const instructions = [request.instructions, schemaInstruction].filter(Boolean).join('\n\n');
     const inputBytes = new TextEncoder().encode(request.input).byteLength +
       new TextEncoder().encode(instructions).byteLength;
     if (inputBytes > maxInputBytes) {
       throw new AppApiError('VALIDATION_ERROR', 'The request input exceeded the configured input byte limit.', 413, false);
     }
     const model = describeChatGptModel({ id: request.modelId, displayName: request.modelId }, this.connectionId as 'chatgpt-plan' | 'openai-api');
-    assertModelOperation(model, request.operation);
+    // Runtime route admission uses the effective capability descriptor and
+    // budget preflight. The adapter itself still exposes its transport behavior
+    // for isolated qualification, but only exact known text slugs are accepted.
+    if (this.connectionId === 'openai-api') assertModelOperation(model, request.operation);
+    else if (model.textGeneration.state !== 'supported' || model.textGeneration.value !== true) {
+      throw new AppApiError('MODEL_UNSUPPORTED', 'The selected account model has no verified capability for text generation.', 422, false);
+    }
     assertReasoningSelection(model, request.reasoningLevel);
     if (this.connectionId === 'openai-api' && (!Number.isSafeInteger(request.maxOutputTokens) || (request.maxOutputTokens ?? 0) <= 0)) {
       throw new AppApiError('VALIDATION_ERROR', 'OpenAI API generation requires an explicit provider-enforced output-token limit.', 503, false);
