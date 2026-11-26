@@ -39,7 +39,9 @@ export async function executeIssueAiFixRequest({
       onError(cause instanceof Error ? cause.message : 'Could not fetch AI fix alternatives.');
     }
   } finally {
-    setIssueLoading(issueId, false);
+    if (!controller.signal.aborted && isActive()) {
+      setIssueLoading(issueId, false);
+    }
   }
 }
 

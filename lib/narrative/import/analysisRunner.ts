@@ -233,15 +233,23 @@ export async function runImportAnalysisSession(params: AnalysisSessionParams): P
   } = params;
 
   if (!providerPlanContext || !providerPlanContext.operationEligible || providerPlanContext.connectionId === 'chatgpt-plan') {
-    callbacks.setRequestError(
-      'Narrative import requires a currently verified eligible non-ChatGPT provider selection. Refresh provider status and review the plan before retrying.',
-    );
+    try {
+      callbacks.setRequestError(
+        'Narrative import requires a currently verified eligible non-ChatGPT provider selection. Refresh provider status and review the plan before retrying.',
+      );
+    } finally {
+      callbacks.onCompleteSession();
+    }
     return;
   }
   if (callsUsed >= MAX_EXTRACTION_CALLS) {
-    callbacks.setRequestError(
-      `This import reached its ${MAX_EXTRACTION_CALLS}-call safety budget. Create an explicitly incomplete project or start a new scoped import.`,
-    );
+    try {
+      callbacks.setRequestError(
+        `This import reached its ${MAX_EXTRACTION_CALLS}-call safety budget. Create an explicitly incomplete project or start a new scoped import.`,
+      );
+    } finally {
+      callbacks.onCompleteSession();
+    }
     return;
   }
 
@@ -252,7 +260,7 @@ export async function runImportAnalysisSession(params: AnalysisSessionParams): P
   if (!retry || !hasExistingConfiguration) callbacks.setAnalysisConfiguration(configuration);
 
   const failures: SourceChunk[] = [];
-  let totalRejected = retry ? params.rejectedEvidenceCount : params.rejectedEvidenceCount;
+  let totalRejected = params.rejectedEvidenceCount;
   let leaseLostDuringRun = false;
   let hasPreparedPlan = false;
   let plannedChunks: SourceChunk[] = [];

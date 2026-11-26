@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createSampleProject } from '../lib/canonicalModel.ts';
+import { createUndoRedoStateFromProject } from '../lib/historyEngine.ts';
+import {
+  applyDiagnosticFixAlternative,
+  collectLocalDiagnosticFindings,
+  syncDiagnosticFindingsIntoProject,
+} from '../lib/narrative/diagnostics/engine.ts';
 import { diagnosticFingerprint, reconcileDiagnosticFindings } from '../lib/narrative/diagnostics/findings.ts';
+import { narrativeBase, prepareManuscriptChange } from '../lib/narrative/manuscriptModel.ts';
 import type { NarrativeRecords } from '../shared/narrativeTypes.ts';
+import type { CreativeProject } from '../shared/types.ts';
 
 const anchor = (digest: string) => ({ sourceId: 'source-1', version: 'v1', digest, start: 4, end: 10, excerpt: 'evidence' });
 
@@ -121,4 +130,149 @@ test('dismissed recurrence stays dismissed; resolved recurrence proposes an audi
 
 test('mixed finding scopes are rejected instead of resolving issues outside the run scope', () => {
   assert.throws(() => reconcileDiagnosticFindings(records(), run(), [finding(), finding({ detectorId: 'timeline' })]), /scope|fingerprint/i);
+});
+
+test('W6-D05a: complete scan reopens resolved issue even when finding fields are unchanged', () => {
+  const unchangedFinding = finding({ anchors: [] });
+  const resolvedUnchanged = issue({
+    disposition: 'resolved',
+    dispositionReason: 'Fixed in revision 4',
+    anchors: [],
+    reason: unchangedFinding.reason,
+    history: [{ disposition: 'resolved', time: 15, reason: 'Fixed in revision 4', projectRevision: 4 }],
+  });
+  const completeReopened = reconcileDiagnosticFindings(records([resolvedUnchanged]), run(), [unchangedFinding]);
+  assert.equal(completeReopened.actions.length, 1);
+  assert.equal(completeReopened.actions[0].kind, 'reopen');
+  assert.equal(completeReopened.actions[0].issue.disposition, 'open');
+  assert.equal(completeReopened.actions[0].issue.history.length, 2);
+});
+
+test('W6-D05b: partial scan reopen records dispositionReason and reopen history entry', () => {
+  const base = createSampleProject(100);
+  const partialFp = diagnosticFingerprint('semantic-ai', 'semantic:continuity:gap', ['scene-1'], 'semantic');
+  const projectWithResolved: CreativeProject = {
+    ...base,
+    schemaVersion: 4,
+    narrative: records([
+      issue({
+        id: `issue:${partialFp}`,
+        fingerprint: partialFp,
+        title: 'Timeline gap',
+        reason: 'Missing transition',
+        disposition: 'resolved',
+        dispositionReason: 'Marked resolved earlier',
+        anchors: [],
+        affectedTargetIds: ['scene-1'],
+        severity: 'medium',
+        certainty: 'likely',
+        source: 'semantic-ai',
+        history: [{ disposition: 'resolved', time: 50, reason: 'Marked resolved earlier', projectRevision: 1 }],
+      }),
+    ]),
+  };
+  const synced = syncDiagnosticFindingsIntoProject(
+    projectWithResolved,
+    [{
+      detectorId: 'semantic-ai',
+      scopeKey: 'semantic',
+      type: 'semantic:continuity:gap',
+      targetIds: ['scene-1'],
+      title: 'Timeline gap',
+      reason: 'Missing transition',
+      anchors: [],
+      severity: 'medium',
+      certainty: 'likely',
+    }],
+    { source: 'semantic-ai', scopeLabel: 'Semantic scan', fullScan: false, now: 200 }
+  );
+  const reopenedPartial = synced.narrative!.issues.find((i) => i.fingerprint === partialFp)!;
+  assert.equal(reopenedPartial.disposition, 'open');
+  assert.ok(reopenedPartial.dispositionReason, 'reopened issue must record dispositionReason');
+  assert.equal(reopenedPartial.history.length, 2);
+  assert.equal(reopenedPartial.history[1].disposition, 'open');
+});
+
+test('W6-D06a: Unicode/Turkish word boundaries for excluded entities in manuscript sections', () => {
+  const base = createSampleProject(100);
+  const projectWithUnicodeEntities: CreativeProject = {
+    ...base,
+    snapshot: {
+      ...base.snapshot,
+      entities: [
+        ...base.snapshot.entities,
+        { id: 'ent_ipek', name: 'İpek', category: 'character', description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+        { id: 'ent_omer', name: 'Ömer', category: 'character', description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+        { id: 'ent_sahin', name: 'Şahin', category: 'character', description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+      ],
+    },
+  };
+  const prepared = prepareManuscriptChange(
+    projectWithUnicodeEntities,
+    createUndoRedoStateFromProject(projectWithUnicodeEntities),
+    narrativeBase(projectWithUnicodeEntities),
+    [{ id: 'sec_tr', kind: 'scene', title: 'Bölüm 1', text: 'İpek ve Ömer kapıda bekledi; Şahinler ise uzaktaydı.' }]
+  )!;
+  const findings = collectLocalDiagnosticFindings(prepared.project);
+  assert.equal(findings.some((f) => f.type === 'manuscript_excluded_mention' && f.title.includes('İpek')), true);
+  assert.equal(findings.some((f) => f.type === 'manuscript_excluded_mention' && f.title.includes('Ömer')), true);
+  assert.equal(findings.some((f) => f.type === 'manuscript_excluded_mention' && f.title.includes('Şahin')), false);
+});
+
+test('W6-D06b: applyDiagnosticFixAlternative rejects missing entityId on entity_exclude and entity_attribute', () => {
+  const base = createSampleProject(100);
+  const idLessProject: CreativeProject = {
+    ...base,
+    snapshot: {
+      ...base.snapshot,
+      entities: [
+        { name: 'Ghost A', category: 'character', description: 'Original A', presence_in_prompt: false, alternatives: null, attributes: [] },
+        { name: 'Ghost B', category: 'character', description: 'Original B', presence_in_prompt: false, alternatives: null, attributes: [] },
+      ],
+    },
+  };
+  const undo = createUndoRedoStateFromProject(idLessProject);
+  assert.throws(
+    () =>
+      applyDiagnosticFixAlternative(
+        idLessProject,
+        undo,
+        'issue-1',
+        {
+          id: 'alt_missing_attr',
+          title: 'Overwrite without entityId',
+          reason: 'Malformed AI fix',
+          assumptions: [],
+          evidenceSummary: '',
+          affectedScope: 'Entity',
+          kind: 'entity_attribute',
+          attributeName: 'description',
+          beforeText: 'Original A',
+          afterText: 'Corrupted',
+        },
+        idLessProject.revision
+      ),
+    /entity ID|target entity/i
+  );
+  assert.throws(
+    () =>
+      applyDiagnosticFixAlternative(
+        idLessProject,
+        undo,
+        'issue-2',
+        {
+          id: 'alt_missing_excl',
+          title: 'Exclude without entityId',
+          reason: 'Malformed AI fix',
+          assumptions: [],
+          evidenceSummary: '',
+          affectedScope: 'Entity',
+          kind: 'entity_exclude',
+          beforeText: 'Present',
+          afterText: 'Excluded',
+        },
+        idLessProject.revision
+      ),
+    /entity ID|target entity/i
+  );
 });

@@ -113,6 +113,7 @@ function makeSource(text: string): ParsedNarrativeSource {
 function makeHarness(overrides: {
   source?: ParsedNarrativeSource;
   providerPlanContext?: ImportProviderPlanContext | null;
+  callsUsed?: number;
   idbFactory?: IDBFactory;
   getIdbFactory?: () => IDBFactory;
   extractChunk?: (req: { chunkId: string; text: string }, signal?: AbortSignal) => Promise<unknown>;
@@ -124,7 +125,7 @@ function makeHarness(overrides: {
   let busy = false;
   let cancelled = false;
   let requestError = '';
-  let callsUsed = 0;
+  let callsUsed = overrides.callsUsed ?? 0;
   let completedSessionCount = 0;
   const results: unknown[] = [];
   const completedChunkIds = new Set<string>();
@@ -395,4 +396,27 @@ test('providerPlan resolves W1 ProviderHubStatus DTOs cleanly and flags incomple
     /incomplete/i,
   );
   void saveImportCheckpoint;
+});
+
+test('W6-D08: early return on ineligible provider or budget cap invokes onCompleteSession and avoids inProgress deadlock', async () => {
+  const ineligible = makeHarness({
+    providerPlanContext: { ...sampleProviderContext, operationEligible: false },
+  });
+  await ineligible.run();
+  assert.equal(ineligible.state().completedSessionCount, 1, 'onCompleteSession must run on ineligible provider early return');
+  assert.equal(ineligible.state().busy, false);
+  assert.match(ineligible.state().requestError, /eligible non-ChatGPT provider/i);
+
+  const chatgptBlocked = makeHarness({
+    providerPlanContext: { ...sampleProviderContext, connectionId: 'chatgpt-plan' as unknown as ImportProviderPlanContext['connectionId'] },
+  });
+  await chatgptBlocked.run();
+  assert.equal(chatgptBlocked.state().completedSessionCount, 1, 'onCompleteSession must run on chatgpt-plan early return');
+  assert.equal(chatgptBlocked.state().busy, false);
+
+  const budgetCapped = makeHarness({ callsUsed: 12 });
+  await budgetCapped.run();
+  assert.equal(budgetCapped.state().completedSessionCount, 1, 'onCompleteSession must run on budget-cap early return');
+  assert.equal(budgetCapped.state().busy, false);
+  assert.match(budgetCapped.state().requestError, /12-call safety budget/i);
 });

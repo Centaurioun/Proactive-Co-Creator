@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${E2E_BASE_URL:-http://localhost:3000}"
+BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:3000}"
 SESSION="pcc-checkpoints-$$"
 
 if ! command -v playwright-cli >/dev/null 2>&1; then
   echo "playwright-cli not found on PATH" >&2
   exit 1
 fi
-if ! curl -sf "$BASE_URL/api/health" >/dev/null; then
+HEALTH_JSON="$(curl -sf "$BASE_URL/api/health" || true)"
+if [ -z "$HEALTH_JSON" ]; then
   echo "Checkpoint browser test server is not healthy at $BASE_URL" >&2
+  exit 1
+fi
+if ! printf '%s' "$HEALTH_JSON" | grep -q '"configured":false'; then
+  echo "Checkpoint browser test server must report configured:false at $BASE_URL" >&2
   exit 1
 fi
 trap 'playwright-cli -s="$SESSION" close >/dev/null 2>&1 || true' EXIT

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as apiClient from '../services/apiClient.ts';
-import { generateClarifications, generateImagesFromPrompt, generateStoryFromPrompt, invalidateAiProviderRequests, invalidateAiProviderRequestsForPreferenceChange, refinePromptWithAllUpdates } from '../services/apiClient.ts';
+import { ClientApiError, generateClarifications, generateImagesFromPrompt, generateStoryFromPrompt, invalidateAiProviderRequests, invalidateAiProviderRequestsForPreferenceChange, refinePromptWithAllUpdates } from '../services/apiClient.ts';
 
 function installPreferences(raw: string | null) {
   Object.defineProperty(globalThis, 'window', {
@@ -309,6 +309,48 @@ test('W1-D04 (R03): tryGetEffectiveStoryProviderSelection returns structured err
     assert.equal(blocked.ok, false);
     if (!blocked.ok) assert.equal(blocked.error.code, 'UPSTREAM_ERROR');
   } finally {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('W6-D01: caller abort while awaiting response.json() surfaces CANCELLED instead of returning stale data or INVALID_RESPONSE', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  installPreferences(JSON.stringify({ defaultConnectionId: 'gemini-managed' }));
+
+  const callerAbortOnResolve = new AbortController();
+  const callerAbortOnReject = new AbortController();
+  let mode: 'resolve' | 'reject' = 'resolve';
+
+  globalThis.fetch = async () => {
+    const controller = mode === 'resolve' ? callerAbortOnResolve : callerAbortOnReject;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => {
+        controller.abort();
+        if (mode === 'reject') {
+          throw new DOMException('Body stream aborted', 'AbortError');
+        }
+        return { clarifications: [] };
+      },
+    } as unknown as Response;
+  };
+
+  try {
+    mode = 'resolve';
+    await assert.rejects(
+      generateClarifications('A safe question prompt.', [], 'story', callerAbortOnResolve.signal),
+      (error: unknown) => error instanceof ClientApiError && error.code === 'CANCELLED',
+    );
+
+    mode = 'reject';
+    await assert.rejects(
+      generateClarifications('A safe question prompt.', [], 'story', callerAbortOnReject.signal),
+      (error: unknown) => error instanceof ClientApiError && error.code === 'CANCELLED',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
   }
 });

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 import type { PendingProposalReview } from '../../components/workspace/review/proposalReviewContext';
 import type { StorageConflictAlert } from '../../components/workspace/StorageAlertBanner';
 import type { ArchiveRestoreSequenceResult } from '../narrative/recovery/allProjectsArchive';
@@ -226,6 +226,10 @@ export function useDurableWorkspaceActions(deps: UseDurableWorkspaceActionsDeps)
   const saveQueueRef = useRef(createSerializedProjectSaveQueue(persistProjectDurably));
   const saveEpochsRef = useRef(createSaveEpochRegistry());
   const pendingSaveCountsRef = useRef(new Map<string, number>());
+  const storageAlertRef = useRef(deps.storageAlert);
+  useLayoutEffect(() => {
+    storageAlertRef.current = deps.storageAlert;
+  }, [deps.storageAlert]);
 
   const {
     activeProjectRef,
@@ -653,6 +657,9 @@ export function useDurableWorkspaceActions(deps: UseDurableWorkspaceActionsDeps)
         });
         setStatusNotification(errMsg);
       } else {
+        if (storageAlertRef.current?.projectId === projectId) {
+          setStorageAlert(null);
+        }
         setStatusNotification('Deleted project from localStorage and IndexedDB.');
       }
     },

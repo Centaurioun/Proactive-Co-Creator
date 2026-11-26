@@ -426,8 +426,32 @@ describe('W4 App Orchestration & Workspace Regressions', () => {
 
     c2.abort();
     assert.equal(signals[1].aborted, true);
+    // Simulate a superseding request for iss-2 starting before the aborted request settles
+    let resolveSuperseding!: (v: { alternatives: [] }) => void;
+    const p2Superseding = mod.executeIssueAiFixRequest({
+      issueId: 'iss-2',
+      setIssueLoading: (id: string, loading: boolean) => {
+        const next = new Set(loadingIds);
+        if (loading) next.add(id);
+        else next.delete(id);
+        loadingIds = next;
+      },
+      registerController: () => new AbortController(),
+      isActive: () => true,
+      requestFixes: (signal: AbortSignal) => {
+        signals.push(signal);
+        return new Promise((res) => {
+          resolveSuperseding = res;
+        });
+      },
+      onSuccess: () => {},
+      onError: () => {},
+    });
     resolveIssue2({ alternatives: [] });
     await p2;
+    assert.equal(loadingIds.has('iss-2'), true, 'Aborted p2 finally must not clear superseding iss-2 loading');
+    resolveSuperseding({ alternatives: [] });
+    await p2Superseding;
     assert.equal(loadingIds.has('iss-2'), false);
   });
 

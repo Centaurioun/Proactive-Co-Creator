@@ -425,8 +425,24 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
       ...(ctx.storyLimits ? { maxEvents: ctx.storyLimits.maxStreamEvents } : {}),
     };
     for await (const event of readSseEvents(ctx.response, sseLimits, ctx.storyLimits ? streamStats : undefined)) {
-      if (ctx.signal.aborted) throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+      if (ctx.signal.aborted) {
+        if (!ctx.storyLimits) {
+          throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+        }
+        if (event.type === 'response.failed') {
+          const failedError = formatFailedSseEventError(event, this.connectionId, this.providerLabel);
+          if (failedError.code === 'RATE_LIMITED') throw failedError;
+          throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+        }
+        if (event.type === 'response.completed' || event.type === 'response.incomplete') {
+          throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+        }
+        continue;
+      }
       this.processStreamEvent(event, acc);
+    }
+    if (ctx.signal.aborted) {
+      throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
     }
     if (!acc.completedEvent) {
       throw new AppApiError('INVALID_RESPONSE', 'The Responses stream ended without response.completed.', 502, false);

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { RightPanelTab } from '../../components/ContextualInspector';
 import {
   addEntity,
@@ -424,9 +424,92 @@ export function createCanonicalPlanHandlers(deps: CanonicalPlanHandlersDeps) {
   };
 }
 
+function useStableRefDeps(deps: CanonicalPlanHandlersDeps): CanonicalPlanHandlersDeps {
+  const depsRef = useRef(deps);
+  useLayoutEffect(() => {
+    depsRef.current = deps;
+  });
+  const getActiveProject = useCallback(() => depsRef.current.getActiveProject(), []);
+  const getUndoState = useCallback(() => depsRef.current.getUndoState(), []);
+  const publishCurrentProject = useCallback(
+    (project: CreativeProject, undoState: UndoRedoState) =>
+      depsRef.current.publishCurrentProject(project, undoState),
+    []
+  );
+  const markLocalEdits = useCallback(() => depsRef.current.markLocalEdits(), []);
+  const setStoryBibleErrors = useCallback<CanonicalPlanHandlersDeps['setStoryBibleErrors']>(
+    (updater) => depsRef.current.setStoryBibleErrors(updater),
+    []
+  );
+  const setStatusNotification = useCallback(
+    (msg: string | null) => depsRef.current.setStatusNotification(msg),
+    []
+  );
+  const allowNavigation = useCallback(() => depsRef.current.allowNavigation(), []);
+  const navigateToPlan = useCallback(() => depsRef.current.navigateToPlan(), []);
+  const navigateToWriteSection = useCallback(
+    (sectionId: string) => depsRef.current.navigateToWriteSection(sectionId),
+    []
+  );
+  const setSelectedEntityId = useCallback(
+    (id: string | null) => depsRef.current.setSelectedEntityId(id),
+    []
+  );
+  const setSelectedRelationshipId = useCallback(
+    (id: string | null) => depsRef.current.setSelectedRelationshipId(id),
+    []
+  );
+  const setRightPanelTab = useCallback(
+    (tab: RightPanelTab) => depsRef.current.setRightPanelTab(tab),
+    []
+  );
+  const setMobileTab = useCallback(
+    (tab: 'decisions' | 'graph' | 'inspector' | 'output') => depsRef.current.setMobileTab(tab),
+    []
+  );
+  const setFocusedStoryBibleField = useCallback<
+    CanonicalPlanHandlersDeps['setFocusedStoryBibleField']
+  >((updater) => depsRef.current.setFocusedStoryBibleField(updater), []);
+
+  return useMemo(
+    () => ({
+      getActiveProject,
+      getUndoState,
+      publishCurrentProject,
+      markLocalEdits,
+      setStoryBibleErrors,
+      setStatusNotification,
+      allowNavigation,
+      navigateToPlan,
+      navigateToWriteSection,
+      setSelectedEntityId,
+      setSelectedRelationshipId,
+      setRightPanelTab,
+      setMobileTab,
+      setFocusedStoryBibleField,
+    }),
+    [
+      getActiveProject,
+      getUndoState,
+      publishCurrentProject,
+      markLocalEdits,
+      setStoryBibleErrors,
+      setStatusNotification,
+      allowNavigation,
+      navigateToPlan,
+      navigateToWriteSection,
+      setSelectedEntityId,
+      setSelectedRelationshipId,
+      setRightPanelTab,
+      setMobileTab,
+      setFocusedStoryBibleField,
+    ]
+  );
+}
+
 export function useCanonicalPlanHandlers(deps: CanonicalPlanHandlersDeps) {
-  const depsCallback = useCallback(() => deps, [deps]);
-  return useMemo(() => createCanonicalPlanHandlers(depsCallback()), [depsCallback]);
+  const stableDeps = useStableRefDeps(deps);
+  return useMemo(() => createCanonicalPlanHandlers(stableDeps), [stableDeps]);
 }
 
 function isEditableKeyboardTarget(target: HTMLElement | null): boolean {

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -20,14 +19,24 @@ assert.match(session, /^pcc-import-cancel-[a-z0-9]+$/);
 
 const port = Number(process.env.PCC_QA_PORT || 4337);
 const baseUrl = `http://127.0.0.1:${port}`;
-const evidenceDir = path.join(repoRoot, 'docs/qa/evidence/browser/final-qualification-2026-11-25');
+const evidenceDir = path.resolve(
+  repoRoot,
+  process.env.PCC_QA_EVIDENCE_DIR || '.playwright-cli/q06-import-cancellation',
+);
 mkdirSync(evidenceDir, { recursive: true });
 
-const serverLogPath = path.join(tmpdir(), `pcc-import-cancel-${process.pid}.log`);
+const logDir = path.join(repoRoot, '.playwright-cli');
+mkdirSync(logDir, { recursive: true });
+const serverLogPath = path.join(logDir, `pcc-import-cancel-${process.pid}.log`);
 const serverLog = createWriteStream(serverLogPath);
+const serverEnv = { ...process.env, PORT: String(port) };
+delete serverEnv.GEMINI_API_KEY;
+delete serverEnv.API_KEY;
+delete serverEnv.OPENAI_API_KEY;
 const server = spawn('npm', ['run', 'dev'], {
   cwd: repoRoot,
-  env: { ...process.env, PORT: String(port) },
+  env: serverEnv,
+  detached: true,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 server.stdout.pipe(serverLog);
@@ -203,7 +212,23 @@ try {
     const closeResult = spawnSync('agent-browser', ['--session', session, 'close'], { cwd: repoRoot, encoding: 'utf8' });
     if (closeResult.status !== 0) serverLog.write(closeResult.stderr || closeResult.stdout);
   }
-  server.kill('SIGTERM');
+  if (server.pid && server.exitCode === null && server.signalCode === null) {
+    const killGroup = (sig) => {
+      try {
+        process.kill(-server.pid, sig);
+      } catch {
+        try { server.kill(sig); } catch { /* already exited */ }
+      }
+    };
+    killGroup('SIGTERM');
+    await Promise.race([
+      new Promise((resolve) => server.once('exit', resolve)),
+      sleep(1500),
+    ]);
+    if (server.exitCode === null && server.signalCode === null) {
+      killGroup('SIGKILL');
+    }
+  }
   serverLog.end();
   process.stdout.write(`${JSON.stringify({ ...runResult, evidenceJson: outputPath, serverLog: serverLogPath }, null, 2)}\n`);
 }

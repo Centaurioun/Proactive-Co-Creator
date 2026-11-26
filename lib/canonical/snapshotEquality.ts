@@ -96,9 +96,8 @@ function areStoryBiblesEqual(
   const keysA = Object.keys(a);
   const keysB = Object.keys(b);
   if (keysA.length !== keysB.length) return false;
-  for (let i = 0; i < keysA.length; i++) {
-    const key = keysA[i];
-    if (key !== keysB[i]) return false;
+  for (const key of keysA) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
     if (!areStoryBibleFieldEqual(a[key], b[key])) return false;
   }
   return true;

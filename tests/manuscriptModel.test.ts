@@ -4,6 +4,7 @@ import { createSampleProject } from '../lib/canonicalModel.ts';
 import { createUndoRedoStateFromProject } from '../lib/historyEngine.ts';
 import { commitUndoTransaction, commitRedoTransaction } from '../lib/projectController.ts';
 import { applyManuscriptOperation, manuscriptSections, prepareManuscriptChange } from '../lib/narrative/manuscriptModel.ts';
+import { createStyleProfile } from '../lib/narrative/context/styleProfile.ts';
 import type { ManuscriptSection } from '../shared/narrativeTypes.ts';
 
 const prose = 'İpek 🦉\n\ne\u0301';
@@ -73,4 +74,62 @@ test('adoption verifies UTF-16 boundaries and project ownership and keeps proven
   const undone = commitUndoTransaction(prepared.project, prepared.undoState);
   assert.deepEqual(undone.project.narrative?.audit[0].artifact, anchor);
   assert.equal(undone.project.artifacts[0].storyText, prose);
+});
+
+test('W6-D07: explicit clearing of styleProfile.observations does not restore previousVersion.styleProfile', () => {
+  const baseProject = createSampleProject(100);
+  const project = {
+    ...baseProject,
+    narrative: {
+      versions: [],
+      sectionVersions: [],
+      sources: [{ id: 'src_1', version: 'v1', digest: 'd1', text: prose, retention: 'extracted-only' as const, blocks: [] }],
+      claims: [],
+      issues: [],
+      audit: [],
+    },
+  };
+  const initialStyle = {
+    projectId: project.id,
+    observations: [{
+      id: 'obs_1',
+      trait: 'voice' as const,
+      value: 'Dry wit',
+      interpretation: 'observation' as const,
+      scope: { kind: 'manuscript' as const },
+      evidence: { kind: 'source' as const, recordId: 'src_1', version: 'v1', digest: 'd1', start: 0, end: 4, excerpt: 'İpek' },
+      status: 'confirmed' as const,
+    }],
+  };
+  const withStyle = prepareManuscriptChange(
+    project,
+    createUndoRedoStateFromProject(project),
+    { projectId: project.id, revision: project.revision },
+    [scene],
+    undefined,
+    initialStyle
+  );
+  assert.ok(withStyle);
+  const currentVersion = withStyle.project.narrative!.versions.find(
+    (v) => v.id === withStyle.project.snapshot.manuscriptVersionId
+  )!;
+  assert.equal(currentVersion.styleProfile?.observations.length, 1);
+
+  const cleared = prepareManuscriptChange(
+    withStyle.project,
+    withStyle.undoState,
+    {
+      projectId: project.id,
+      revision: withStyle.project.revision,
+      manuscriptVersionId: withStyle.project.snapshot.manuscriptVersionId,
+    },
+    [scene],
+    undefined,
+    createStyleProfile(project.id)
+  );
+  assert.ok(cleared);
+  const clearedVersion = cleared.project.narrative!.versions.find(
+    (v) => v.id === cleared.project.snapshot.manuscriptVersionId
+  )!;
+  assert.equal(clearedVersion.styleProfile, undefined);
 });

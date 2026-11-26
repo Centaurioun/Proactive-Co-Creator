@@ -6,6 +6,7 @@ import {
   ClarifyRequestSchema,
   GenerateMediaRequestSchema,
   GenerationModeSchema,
+  RawBatchEditResponseSchema,
   RefineRequestSchema,
   parseAndValidateBatchEditResponse,
   parseAndValidateBeliefGraph,
@@ -143,8 +144,8 @@ describe('shared/schemas', () => {
           {
             type: 'update_story_bible',
             summary: 'Set tone to mysterious',
-            storyBibleField: 'tone',
-            proposedValue: 'mysterious',
+            storyField: 'tone',
+            nextValue: 'mysterious',
           },
         ],
       }),
@@ -152,6 +153,34 @@ describe('shared/schemas', () => {
     );
     assert.equal(batchParsed.operations.length, 1);
     assert.equal(batchParsed.operations[0].type, 'update_story_bible');
+    assert.equal(batchParsed.operations[0].storyField, 'tone');
+    assert.equal(batchParsed.operations[0].nextValue, 'mysterious');
+
+    // Invalid / legacy keys (e.g. storyBibleField / proposedValue) are stripped by RawBatchEditResponseSchema
+    // and never silently mapped into storyField / nextValue; invalid operation types are rejected.
+    const legacyKeyParse = RawBatchEditResponseSchema.safeParse({
+      operations: [
+        {
+          type: 'update_story_bible',
+          summary: 'Set tone to mysterious',
+          storyBibleField: 'tone',
+          proposedValue: 'mysterious',
+        },
+      ],
+    });
+    assert.equal(legacyKeyParse.success, true);
+    if (legacyKeyParse.success) {
+      assert.equal(legacyKeyParse.data.operations[0].storyField, undefined);
+      assert.equal(legacyKeyParse.data.operations[0].nextValue, undefined);
+      assert.equal('storyBibleField' in legacyKeyParse.data.operations[0], false);
+      assert.equal('proposedValue' in legacyKeyParse.data.operations[0], false);
+    }
+    assert.equal(
+      RawBatchEditResponseSchema.safeParse({
+        operations: [{ type: 'invalid_operation', summary: 'Bad op' }],
+      }).success,
+      false
+    );
 
     assert.throws(
       () => parseAndValidateClarifications('[]'),

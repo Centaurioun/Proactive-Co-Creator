@@ -7,7 +7,8 @@ import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo
 import ManuscriptEditor from './components/manuscript/ManuscriptEditor';
 import type { PendingProposalReview } from './components/workspace/review/proposalReviewContext';
 import AdaptivePlanWorkspace, { type PlanInspectorDestination } from './components/workspace/AdaptivePlanWorkspace';
-import ChunkErrorBoundary from './components/workspace/ChunkErrorBoundary';
+import ChunkErrorBoundary, { createRetryableLazy } from './components/workspace/ChunkErrorBoundary';
+import HistoryPanel from './components/inspector/HistoryPanel';
 import AiSettingsModal from './components/workspace/AiSettingsModal';
 import CreateProjectDialog from './components/projects/CreateProjectDialog';
 import StorageAlertBanner, { type StorageConflictAlert } from './components/workspace/StorageAlertBanner';
@@ -74,11 +75,18 @@ import type {
   StoryBibleFields,
 } from './shared/types';
 
-const HistoryPanel = lazy(() => import('./components/inspector/HistoryPanel'));
-const ImportWorkflow = lazy(() => import('./components/narrativeImport/ImportWorkflow'));
-const NarrativeReview = lazy(() => import('./components/workspace/NarrativeReview'));
-const ProjectHub = lazy(() => import('./components/workspace/ProjectHub'));
-const AiConnectionsPanel = lazy(() => import('./components/settings/AiConnectionsPanel'));
+const { Component: ImportWorkflow, retry: retryImportWorkflow } = createRetryableLazy(() =>
+  lazy(() => import('./components/narrativeImport/ImportWorkflow'))
+);
+const { Component: NarrativeReview, retry: retryNarrativeReview } = createRetryableLazy(() =>
+  lazy(() => import('./components/workspace/NarrativeReview'))
+);
+const { Component: ProjectHub, retry: retryProjectHub } = createRetryableLazy(() =>
+  lazy(() => import('./components/workspace/ProjectHub'))
+);
+const { Component: AiConnectionsPanel, retry: retryAiConnectionsPanel } = createRetryableLazy(() =>
+  lazy(() => import('./components/settings/AiConnectionsPanel'))
+);
 
 type MobileTab = 'decisions' | 'graph' | 'inspector' | 'output';
 
@@ -130,8 +138,8 @@ function App() {
   const [workspaceMode, setWorkspaceMode] = useState<
     'write' | 'plan' | 'review' | 'projects' | 'import'
   >(readBrowserWorkspacePreference);
-  const lastStableWorkspaceModeRef = useRef<'write' | 'plan' | 'review'>(
-    workspaceMode === 'projects' || workspaceMode === 'import' ? 'write' : workspaceMode
+  const lastStableWorkspaceModeRef = useRef<'write' | 'plan'>(
+    workspaceMode === 'write' || workspaceMode === 'plan' ? workspaceMode : 'write'
   );
   const [autoAnalysisCallsUsed, setAutoAnalysisCallsUsed] = useState<number>(0);
   const [autoBackupEnabled, setAutoBackupEnabled] = useState<boolean>(readInitialAutoBackupPref);
@@ -158,7 +166,9 @@ function App() {
 
   useEffect(() => {
     if (workspaceMode === 'projects' || workspaceMode === 'import') return;
-    lastStableWorkspaceModeRef.current = workspaceMode;
+    if (workspaceMode === 'write' || workspaceMode === 'plan') {
+      lastStableWorkspaceModeRef.current = workspaceMode;
+    }
     writeBrowserWorkspacePreference(workspaceMode);
   }, [workspaceMode]);
 
@@ -863,6 +873,7 @@ function App() {
         <ChunkErrorBoundary
           resetKey={`review:${activeProject.id}`}
           viewLabel="Review & Diagnostics"
+          onRetry={retryNarrativeReview}
           onReturnToWorkspace={() => setWorkspaceMode(lastStableWorkspaceModeRef.current)}
         >
           <Suspense fallback={<LazyViewFallback label="Review & Diagnostics" />}>
@@ -916,6 +927,7 @@ function App() {
         <ChunkErrorBoundary
           resetKey={`import:${activeProject.id}`}
           viewLabel="Import Story"
+          onRetry={retryImportWorkflow}
           onReturnToWorkspace={() => setWorkspaceMode(lastStableWorkspaceModeRef.current)}
         >
           <Suspense fallback={<LazyViewFallback label="Import Story" />}>
@@ -935,6 +947,7 @@ function App() {
         <ChunkErrorBoundary
           resetKey={`projects:${activeProject.id}`}
           viewLabel="Projects"
+          onRetry={retryProjectHub}
           onReturnToWorkspace={() => setWorkspaceMode(lastStableWorkspaceModeRef.current)}
         >
           <Suspense fallback={<LazyViewFallback label="Projects" />}>
@@ -952,34 +965,32 @@ function App() {
               }}
               onCreateNewProject={handleCreateNewProject}
               historyContent={
-                <Suspense fallback={<LazyViewFallback label="Revision History" />}>
-                  <HistoryPanel
-                    project={activeProject}
-                    savedProjects={savedProjects}
-                    historyTarget={historyTarget}
-                    contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
-                    onExportJson={() =>
-                      triggerProjectBackupDownload(activeProject, `r${activeProject.revision}-backup`)
-                    }
-                    onExportStoryBibleMarkdown={() => triggerStoryBibleMarkdownDownload(activeProject)}
-                    onExportPromptText={() => triggerRefinedPromptDownload(activeProject)}
-                    onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
-                    onExportManuscriptDocx={
-                      manuscriptSections(activeProject).length > 0 ? exportManuscriptDocx : undefined
-                    }
-                    onExportManuscriptText={
-                      manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined
-                    }
-                    onExportContent={exportContent}
-                    onExportContentBundle={exportContentBundle}
-                    onPreviewProjectJson={parseProjectBackup}
-                    onImportProjectJson={handleImportProjectJson}
-                    onSwitchProject={handleSwitchProject}
-                    onCreateNewProject={handleCreateNewProject}
-                    onDeleteProject={handleDeleteProject}
-                    onRestoreRevision={planHandlers.handleRestoreRevision}
-                  />
-                </Suspense>
+                <HistoryPanel
+                  project={activeProject}
+                  savedProjects={savedProjects}
+                  historyTarget={historyTarget}
+                  contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
+                  onExportJson={() =>
+                    triggerProjectBackupDownload(activeProject, `r${activeProject.revision}-backup`)
+                  }
+                  onExportStoryBibleMarkdown={() => triggerStoryBibleMarkdownDownload(activeProject)}
+                  onExportPromptText={() => triggerRefinedPromptDownload(activeProject)}
+                  onExportManuscript={snapshot.manuscriptVersionId ? exportManuscript : undefined}
+                  onExportManuscriptDocx={
+                    manuscriptSections(activeProject).length > 0 ? exportManuscriptDocx : undefined
+                  }
+                  onExportManuscriptText={
+                    manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined
+                  }
+                  onExportContent={exportContent}
+                  onExportContentBundle={exportContentBundle}
+                  onPreviewProjectJson={parseProjectBackup}
+                  onImportProjectJson={handleImportProjectJson}
+                  onSwitchProject={handleSwitchProject}
+                  onCreateNewProject={handleCreateNewProject}
+                  onDeleteProject={handleDeleteProject}
+                  onRestoreRevision={planHandlers.handleRestoreRevision}
+                />
               }
               openProjects={() => openPlan('history', 'project-management')}
               openExport={() => openPlan('history', 'export-content')}
@@ -1291,6 +1302,7 @@ function App() {
         <ChunkErrorBoundary
           resetKey={`ai-settings:${showAiSettings ? 'open' : 'closed'}`}
           viewLabel="AI settings"
+          onRetry={retryAiConnectionsPanel}
           onReturnToWorkspace={() => setShowAiSettings(false)}
           returnLabel="Close"
         >

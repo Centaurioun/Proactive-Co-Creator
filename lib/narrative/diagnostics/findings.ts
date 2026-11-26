@@ -122,7 +122,7 @@ export function reconcileDiagnosticFindings(
     const changedEvidence = !sameJson(existing.anchors, anchors);
     const changedFinding = changedEvidence || existing.title !== finding.title || existing.reason !== finding.reason ||
       existing.severity !== finding.severity || existing.certainty !== finding.certainty;
-    if (existing.disposition === 'resolved' && changedFinding) {
+    if (existing.disposition === 'resolved') {
       const reason = 'Finding recurred in a verified diagnostic scan.';
       actions.push({ kind: 'reopen', issue: {
         ...existing, disposition: 'open', dispositionReason: reason, freshness: 'current', title: finding.title,

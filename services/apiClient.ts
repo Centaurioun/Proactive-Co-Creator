@@ -328,11 +328,14 @@ function resolveProviderHeaders(
 async function parseJsonResponse<TResponse>(
   response: Response,
   requestGeneration: number,
-  aborted: boolean,
+  signal?: AbortSignal,
 ): Promise<TResponse> {
   const payload = (await response.json().catch(() => null)) as { error?: ApiErrorPayload } | TResponse | null;
-  if (requestGeneration !== providerRequestGeneration || aborted) {
+  if (requestGeneration !== providerRequestGeneration) {
     throw new ClientApiError('CANCELLED', 'The AI response was discarded because its provider selection changed.', false, 499);
+  }
+  if (signal?.aborted) {
+    throw new ClientApiError('CANCELLED', 'The AI request was cancelled.', false, 499);
   }
   if (!response.ok) {
     const errPayload = payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;
@@ -374,7 +377,7 @@ async function postJson<TResponse>(url: string, body: unknown, options: PostJson
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    return await parseJsonResponse<TResponse>(response, requestGeneration, controller.signal.aborted);
+    return await parseJsonResponse<TResponse>(response, requestGeneration, controller.signal);
   } finally {
     activeProviderRequests.delete(controller);
     options.signal?.removeEventListener('abort', abortFromCaller);

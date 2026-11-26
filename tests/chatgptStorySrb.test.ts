@@ -320,3 +320,204 @@ test('R12: story SRB enforces the 4,096 request-binding ledger cap', () => {
     requestId: 'cap-story-request-4096',
   }), /identity ledger is full/);
 });
+
+test('W6-D02: late SSE response.failed SIWC quota event arriving after caller abort still triggers SRB quotaBlock', async () => {
+  let resolveFetch!: (response: Response) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const adapter = new ChatGptResponsesAdapter('local-token', async () => {
+    markStarted();
+    return new Promise<Response>(resolve => { resolveFetch = resolve; });
+  });
+  const authority = createChatGptStorySrbAuthority({ enabled: true });
+  const plan = authority.prepare(nextPlanInput());
+  const controller = new AbortController();
+  const pending = authority.run({
+    plan,
+    currentGrantGeneration: () => 7,
+    signal: controller.signal,
+    transport: (args, signal) => adapter.generateStoryText({
+      operation: 'story',
+      modelId: plan.modelId,
+      input: plan.sourceText,
+      reasoningLevel: 'default',
+      maxInputBytes: args.limits.maxRequestBodyBytes,
+      maxOutputBytes: args.limits.maxAcceptedOutputBytes,
+      timeoutMs: args.limits.timeoutMs,
+      signal,
+    }, args.body, {
+      maxStreamBytes: args.limits.maxStreamBytes,
+      maxAcceptedOutputBytes: args.limits.maxAcceptedOutputBytes,
+      maxStreamEvents: args.limits.maxStreamEvents,
+    }),
+  });
+  await started;
+  controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  resolveFetch(new Response([
+    'event: response.failed',
+    'data: {"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","request_id":"req_late_sse_quota_01"}}}',
+    '', '',
+  ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.throws(() => authority.prepare(nextPlanInput()), /explicit recovery decision/);
+});
+
+test('W6-D02: late non-quota SSE response.failed after caller abort preserves cancellation and does not trigger quotaBlock', async () => {
+  let resolveFetch!: (response: Response) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const adapter = new ChatGptResponsesAdapter('local-token', async () => {
+    markStarted();
+    return new Promise<Response>(resolve => { resolveFetch = resolve; });
+  });
+  const authority = createChatGptStorySrbAuthority({ enabled: true });
+  const plan = authority.prepare(nextPlanInput());
+  const controller = new AbortController();
+  let transportPromise: Promise<ChatGptStoryTransportResult> | undefined;
+  const pending = authority.run({
+    plan,
+    currentGrantGeneration: () => 7,
+    signal: controller.signal,
+    transport: (args, signal) => {
+      transportPromise = adapter.generateStoryText({
+        operation: 'story',
+        modelId: plan.modelId,
+        input: plan.sourceText,
+        reasoningLevel: 'default',
+        maxInputBytes: args.limits.maxRequestBodyBytes,
+        maxOutputBytes: args.limits.maxAcceptedOutputBytes,
+        timeoutMs: args.limits.timeoutMs,
+        signal,
+      }, args.body, {
+        maxStreamBytes: args.limits.maxStreamBytes,
+        maxAcceptedOutputBytes: args.limits.maxAcceptedOutputBytes,
+        maxStreamEvents: args.limits.maxStreamEvents,
+      });
+      return transportPromise;
+    },
+  });
+  await started;
+  controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  resolveFetch(new Response([
+    'event: response.failed',
+    'data: {"type":"response.failed","response":{"error":{"code":"server_error","request_id":"req_late_non_quota_01"}}}',
+    '', '',
+  ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  await assert.rejects(transportPromise!, /cancelled/);
+  assert.doesNotThrow(() => authority.prepare(nextPlanInput()));
+});
+
+test('W6-D02: late multi-event SSE stream with response.created before response.failed quota after caller abort still triggers RATE_LIMITED and SRB quotaBlock', async () => {
+  let resolveFetch!: (response: Response) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const adapter = new ChatGptResponsesAdapter('local-token', async () => {
+    markStarted();
+    return new Promise<Response>(resolve => { resolveFetch = resolve; });
+  });
+  const authority = createChatGptStorySrbAuthority({ enabled: true });
+  const plan = authority.prepare(nextPlanInput());
+  const controller = new AbortController();
+  let transportPromise: Promise<ChatGptStoryTransportResult> | undefined;
+  const pending = authority.run({
+    plan,
+    currentGrantGeneration: () => 7,
+    signal: controller.signal,
+    transport: (args, signal) => {
+      transportPromise = adapter.generateStoryText({
+        operation: 'story',
+        modelId: plan.modelId,
+        input: plan.sourceText,
+        reasoningLevel: 'default',
+        maxInputBytes: args.limits.maxRequestBodyBytes,
+        maxOutputBytes: args.limits.maxAcceptedOutputBytes,
+        timeoutMs: args.limits.timeoutMs,
+        signal,
+      }, args.body, {
+        maxStreamBytes: args.limits.maxStreamBytes,
+        maxAcceptedOutputBytes: args.limits.maxAcceptedOutputBytes,
+        maxStreamEvents: args.limits.maxStreamEvents,
+      });
+      return transportPromise;
+    },
+  });
+  await started;
+  controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  resolveFetch(new Response([
+    'event: response.created',
+    'data: {"type":"response.created","response":{"id":"resp_multi_1"}}',
+    '',
+    'event: response.output_text.delta',
+    'data: {"type":"response.output_text.delta","delta":"discarded partial text"}',
+    '',
+    'event: response.failed',
+    'data: {"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","request_id":"req_late_multi_quota_01"}}}',
+    '', '',
+  ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  await assert.rejects(transportPromise!, (error: unknown) => {
+    assert.ok(error instanceof AppApiError);
+    assert.equal(error.code, 'RATE_LIMITED');
+    assert.match(error.message, /req_late_multi_quota_01/);
+    return true;
+  });
+  assert.throws(() => authority.prepare(nextPlanInput()), /explicit recovery decision/);
+});
+
+test('W6-D02: late multi-event SSE stream without quota failure after caller abort discards text and preserves cancellation without quotaBlock', async () => {
+  let resolveFetch!: (response: Response) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const adapter = new ChatGptResponsesAdapter('local-token', async () => {
+    markStarted();
+    return new Promise<Response>(resolve => { resolveFetch = resolve; });
+  });
+  const authority = createChatGptStorySrbAuthority({ enabled: true });
+  const plan = authority.prepare(nextPlanInput());
+  const controller = new AbortController();
+  let transportPromise: Promise<ChatGptStoryTransportResult> | undefined;
+  const pending = authority.run({
+    plan,
+    currentGrantGeneration: () => 7,
+    signal: controller.signal,
+    transport: (args, signal) => {
+      transportPromise = adapter.generateStoryText({
+        operation: 'story',
+        modelId: plan.modelId,
+        input: plan.sourceText,
+        reasoningLevel: 'default',
+        maxInputBytes: args.limits.maxRequestBodyBytes,
+        maxOutputBytes: args.limits.maxAcceptedOutputBytes,
+        timeoutMs: args.limits.timeoutMs,
+        signal,
+      }, args.body, {
+        maxStreamBytes: args.limits.maxStreamBytes,
+        maxAcceptedOutputBytes: args.limits.maxAcceptedOutputBytes,
+        maxStreamEvents: args.limits.maxStreamEvents,
+      });
+      return transportPromise;
+    },
+  });
+  await started;
+  controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  resolveFetch(new Response([
+    'event: response.created',
+    'data: {"type":"response.created","response":{"id":"resp_multi_2"}}',
+    '',
+    'event: response.output_text.delta',
+    'data: {"type":"response.output_text.delta","delta":"discarded text"}',
+    '',
+    'event: response.completed',
+    'data: {"type":"response.completed","response":{}}',
+    '', '',
+  ].join('\n'), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  await assert.rejects(transportPromise!, (error: unknown) => {
+    assert.ok(error instanceof AppApiError);
+    assert.equal(error.code, 'CANCELLED');
+    return true;
+  });
+  assert.doesNotThrow(() => authority.prepare(nextPlanInput()));
+});

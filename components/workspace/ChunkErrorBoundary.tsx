@@ -5,9 +5,21 @@
 
 import React, { Component, type ErrorInfo, type ReactNode } from 'react';
 
+export function createRetryableLazy<TProps extends object>(
+  createLazy: () => React.LazyExoticComponent<React.ComponentType<TProps>>
+) {
+  let LazyComponent = createLazy();
+  const retry = () => {
+    LazyComponent = createLazy();
+  };
+  const ComponentWrapper: React.FC<TProps> = (props) => <LazyComponent {...props} />;
+  return { Component: ComponentWrapper, retry };
+}
+
 interface ChunkErrorBoundaryProps {
   resetKey: string | number;
   viewLabel: string;
+  onRetry?: () => void;
   onReturnToWorkspace?: () => void;
   returnLabel?: string;
   children: ReactNode;
@@ -38,7 +50,14 @@ export default class ChunkErrorBoundary extends Component<
 
   componentDidUpdate(prevProps: ChunkErrorBoundaryProps): void {
     if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.props.onRetry?.();
       this.setState({ hasError: false, errorMessage: '' });
+    }
+  }
+
+  componentWillUnmount(): void {
+    if (this.state.hasError) {
+      this.props.onRetry?.();
     }
   }
 
@@ -47,6 +66,7 @@ export default class ChunkErrorBoundary extends Component<
   }
 
   private handleRetry = () => {
+    this.props.onRetry?.();
     this.setState((prev) => ({
       hasError: false,
       errorMessage: '',

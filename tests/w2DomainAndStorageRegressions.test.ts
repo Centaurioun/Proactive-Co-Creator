@@ -5,6 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
+import { areSnapshotsSemanticallyEqual } from '../lib/canonical/snapshotEquality.ts';
 import {
   addEntity,
   createSampleProject,
@@ -566,5 +567,122 @@ describe('W2 Domain, History & Storage Defect Reproductions and Characterization
     assert.equal(roundTripped.snapshot.relationships[0].sourceBacked, true);
     assert.equal(roundTripped.snapshot.relationships[0].presence_in_prompt, true);
     assert.equal(roundTripped.snapshot.relationships[0].evidenceExcerpt, 'Cat welcomed Rabbit');
+  });
+
+  it('W6-D03: validateProposedOperations catches set_attribute -> rename_entity -> exclude_entity conflict on ID-less entities', () => {
+    const snap = createSampleProject(FIXED_TS).snapshot;
+    snap.entities.push({
+      name: 'Stray',
+      category: 'character',
+      description: 'An entity without an id',
+      presence_in_prompt: false,
+      alternatives: null,
+      attributes: [],
+      status: 'confirmed',
+    });
+
+    const ops: ProposedOperation[] = [
+      { id: 'op_attr', type: 'set_attribute', summary: 'Set trait', entityName: 'Stray', attributeName: 'mood', nextValue: 'Calm', selected: true },
+      { id: 'op_ren', type: 'rename_entity', summary: 'Rename Stray', entityName: 'Stray', newEntityName: 'Wanderer', selected: true },
+      { id: 'op_excl', type: 'exclude_entity', summary: 'Exclude Wanderer', entityName: 'Wanderer', selected: true },
+    ];
+    const issues = validateProposedOperations(snap, ops);
+    assert.equal(issues.some((i) => i.code === 'CONFLICT'), true);
+  });
+
+  it('W6-D04: areSnapshotsSemanticallyEqual is independent of storyBible key insertion order', () => {
+    const base = createSampleProject(FIXED_TS).snapshot;
+    const snapA = structuredClone(base);
+    const entries = Object.entries(base.storyBible);
+    const reversedBible = Object.fromEntries([...entries].reverse()) as typeof base.storyBible;
+    const snapB = { ...structuredClone(base), storyBible: reversedBible };
+
+    assert.equal(areSnapshotsSemanticallyEqual(snapA, snapB), true);
+    assert.equal(isSnapshotSemanticallyEqual(snapA, snapB), true);
+  });
+
+  it('W6-D03a: renaming an ID-less entity does not corrupt unrelated ID-less relationships', () => {
+    const base = createSampleProject(FIXED_TS).snapshot;
+    const snap = {
+      ...structuredClone(base),
+      entities: [
+        {
+          name: 'Elena',
+          category: 'character' as const,
+          description: 'ID-less traveler',
+          presence_in_prompt: true,
+          alternatives: null,
+          attributes: [],
+          status: 'confirmed' as const,
+        },
+        {
+          name: 'Viktor',
+          category: 'character' as const,
+          description: 'ID-less guard',
+          presence_in_prompt: true,
+          alternatives: null,
+          attributes: [],
+          status: 'confirmed' as const,
+        },
+        {
+          name: 'Harbor',
+          category: 'location' as const,
+          description: 'ID-less port',
+          presence_in_prompt: true,
+          alternatives: null,
+          attributes: [],
+          status: 'confirmed' as const,
+        },
+      ],
+      relationships: [
+        { source: 'Viktor', target: 'Harbor', label: 'guards', status: 'confirmed' as const },
+        { source: 'Elena', target: 'Harbor', label: 'visits', status: 'confirmed' as const },
+      ],
+    };
+
+    const issues = validateProposedOperations(snap, [
+      { id: 'op1', type: 'rename_entity', summary: 'Rename Elena', entityName: 'Elena', newEntityName: 'Helena', selected: true },
+      { id: 'op2', type: 'remove_relationship', summary: 'Remove Viktor->Harbor', sourceEntityName: 'Viktor', targetEntityName: 'Harbor', selected: true },
+      { id: 'op3', type: 'remove_relationship', summary: 'Remove Helena->Harbor', sourceEntityName: 'Helena', targetEntityName: 'Harbor', selected: true },
+    ]);
+    assert.deepEqual(issues, []);
+  });
+
+  it('W6-D03b: reverse order exclude_entity -> set_attribute emits CONFLICT while pre-excluded snapshot entity emits MISSING_TARGET', () => {
+    const snap = createSampleProject(FIXED_TS).snapshot;
+    snap.entities.push({
+      name: 'Elena',
+      category: 'character',
+      description: 'Active ID-less character',
+      presence_in_prompt: true,
+      alternatives: null,
+      attributes: [],
+      status: 'confirmed',
+    });
+    snap.entities.push({
+      name: 'Ghost',
+      category: 'character',
+      description: 'Already excluded character',
+      presence_in_prompt: false,
+      alternatives: null,
+      attributes: [],
+      excluded: true,
+      status: 'confirmed',
+    });
+
+    const reverseIssues = validateProposedOperations(snap, [
+      { id: 'op1', type: 'exclude_entity', summary: 'Exclude Elena', entityName: 'Elena', selected: true },
+      { id: 'op2', type: 'set_attribute', summary: 'Set Elena mood', entityName: 'Elena', attributeName: 'mood', nextValue: 'tense', selected: true },
+    ]);
+    assert.equal(reverseIssues.length, 1);
+    assert.equal(reverseIssues[0].operationId, 'op2');
+    assert.equal(reverseIssues[0].code, 'CONFLICT');
+
+    const preExcludedIssues = validateProposedOperations(snap, [
+      { id: 'op3', type: 'set_attribute', summary: 'Set Ghost mood', entityName: 'Ghost', attributeName: 'mood', nextValue: 'calm', selected: true },
+    ]);
+    assert.equal(preExcludedIssues.length, 1);
+    assert.equal(preExcludedIssues[0].operationId, 'op3');
+    assert.equal(preExcludedIssues[0].code, 'MISSING_TARGET');
   });
 });

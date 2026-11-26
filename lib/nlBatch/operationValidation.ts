@@ -10,6 +10,7 @@ import type {
 } from '../../shared/types.ts';
 
 interface SimEntity {
+  batchKey: string;
   id: string | undefined;
   name: string;
   aliases: string[];
@@ -35,7 +36,7 @@ interface ValidationState {
 }
 
 function getEntityBatchKey(ent: SimEntity): string {
-  return ent.id || ent.name.trim().toLowerCase();
+  return ent.batchKey;
 }
 
 function findSimulatedEntity(simulatedEntities: SimEntity[], ref?: string): SimEntity | undefined {
@@ -73,8 +74,10 @@ function validateAddEntityOp(op: ProposedOperation, state: ValidationState): voi
     return;
   }
 
+  const simId = op.entityId ?? `sim_${op.id}`;
   state.simulatedEntities.push({
-    id: op.entityId ?? `sim_${op.id}`,
+    batchKey: simId,
+    id: simId,
     name: trimmed,
     aliases: [],
     excluded: false,
@@ -85,7 +88,7 @@ function validateAddEntityOp(op: ProposedOperation, state: ValidationState): voi
 function validateAttributeOp(op: ProposedOperation, state: ValidationState): void {
   const targetRef = op.entityId ?? op.entityName;
   const ent = findSimulatedEntity(state.simulatedEntities, targetRef);
-  if (!ent || ent.excluded || ent.rejected) {
+  if (!ent || ent.rejected || (ent.excluded && !state.excludedEntityKeys.has(getEntityBatchKey(ent)))) {
     pushIssue(
       state,
       op.id,
@@ -161,11 +164,11 @@ function validateRenameEntityOp(op: ProposedOperation, state: ValidationState): 
   ent.name = newName;
 
   for (const rel of state.simulatedRelationships) {
-    if (rel.sourceId === ent.id || rel.source.toLowerCase() === oldLower) {
+    if ((Boolean(ent.id) && rel.sourceId === ent.id) || rel.source.toLowerCase() === oldLower) {
       rel.sourceId = ent.id;
       rel.source = newName;
     }
-    if (rel.targetId === ent.id || rel.target.toLowerCase() === oldLower) {
+    if ((Boolean(ent.id) && rel.targetId === ent.id) || rel.target.toLowerCase() === oldLower) {
       rel.targetId = ent.id;
       rel.target = newName;
     }
@@ -370,7 +373,8 @@ export function validateProposedOperations(
 ): BatchValidationIssue[] {
   const state: ValidationState = {
     issues: checkBatchHeaderIssues(options),
-    simulatedEntities: snapshot.entities.map((e) => ({
+    simulatedEntities: snapshot.entities.map((e, idx) => ({
+      batchKey: e.id || `__idx_${idx}`,
       id: e.id,
       name: e.name,
       aliases: [...(e.aliases ?? [])],

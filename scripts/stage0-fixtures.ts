@@ -388,7 +388,7 @@ export function emitStage0FixtureBundle(outPath: string): void {
 
 const invokedDirectly =
   process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+  path.resolve(process.argv[1]) === path.resolve(decodeURIComponent(new URL(import.meta.url).pathname));
 if (invokedDirectly) {
   const target = process.argv[2] || path.resolve(process.cwd(), '.playwright-cli/stage0-fixtures.json');
   emitStage0FixtureBundle(target);
