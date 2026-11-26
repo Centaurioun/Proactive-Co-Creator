@@ -1,13 +1,16 @@
 import type { VerifiedExtraction } from './proposalValidator.ts';
+import { NarrativeExtractionSchema } from '../../../shared/importSchemas.ts';
 import { IDB_NAME, IDB_STORE } from '../../storage/constants.ts';
 
 export const IMPORT_CHECKPOINT_STORE = 'analysis-checkpoints';
-export const IMPORT_CHECKPOINT_SCHEMA = 1;
+export const IMPORT_CHECKPOINT_SCHEMA = 2;
 export const MAX_IMPORT_CHECKPOINTS = 8;
 
 export interface ImportCheckpoint {
   id: string;
-  schemaVersion: 1;
+  schemaVersion: 2;
+  /** Separates a deleted/recreated checkpoint with the same deterministic plan ID. */
+  incarnationId: string;
   identityDigest: string;
   source: { digest: string; filename: string; mediaType: string; byteLength: number };
   plan: {
@@ -16,11 +19,11 @@ export interface ImportCheckpoint {
     maxCalls: number; maxInputTokens: number; envelopeReserveTokens: number; payloadTokenBudgetTokens: number;
     contextLimitTokens?: number;
   };
-  provider: { connectionId: string; modelId?: string; reasoningLevel: string; capabilityPolicyVersion?: string };
+  provider: { connectionId: string; modelId?: string; reasoningLevel: string; capabilityPolicyVersion?: string; credentialAuthorityId?: string };
   segments: Array<{
     id: string; index: number; start: number; end: number;
     status: 'pending' | 'in-flight' | 'complete' | 'failed' | 'uncertain';
-    attempts: number; result?: VerifiedExtraction;
+    attempts: number; attemptId?: string; ownerId?: string; leaseExpiresAt?: number; result?: VerifiedExtraction;
   }>;
   budget: { maxCalls: number; callsUsed: number };
   coverage: { complete: boolean; processedCharacters: number; totalCharacters: number };
@@ -32,6 +35,54 @@ export async function sha256Text(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+// SHA-256's small synchronous form lets the IDB transaction validate that the
+// immutable fields still match their digest before reserving or committing.
+function sha256HexSync(value: string): string {
+  const constants = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+  ];
+  const hash = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const bytes = [...new TextEncoder().encode(value), 0x80];
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  const bitLength = new TextEncoder().encode(value).length * 8;
+  const high = Math.floor(bitLength / 0x100000000), low = bitLength >>> 0;
+  for (let i = 3; i >= 0; i -= 1) bytes.push((high >>> (i * 8)) & 255);
+  for (let i = 3; i >= 0; i -= 1) bytes.push((low >>> (i * 8)) & 255);
+  const rotate = (n: number, amount: number) => (n >>> amount) | (n << (32 - amount));
+  for (let offset = 0; offset < bytes.length; offset += 64) {
+    const words = new Array<number>(64);
+    for (let i = 0; i < 16; i += 1) {
+      const at = offset + i * 4;
+      words[i] = ((bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]) >>> 0;
+    }
+    for (let i = 16; i < 64; i += 1) {
+      const x = words[i - 15], y = words[i - 2];
+      const s0 = rotate(x, 7) ^ rotate(x, 18) ^ (x >>> 3);
+      const s1 = rotate(y, 17) ^ rotate(y, 19) ^ (y >>> 10);
+      words[i] = (words[i - 16] + s0 + words[i - 7] + s1) >>> 0;
+    }
+    let [a,b,c,d,e,f,g,h] = hash;
+    for (let i = 0; i < 64; i += 1) {
+      const s1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25);
+      const choice = (e & f) ^ (~e & g);
+      const t1 = (h + s1 + choice + constants[i] + words[i]) >>> 0;
+      const s0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22);
+      const majority = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (s0 + majority) >>> 0;
+      h=g; g=f; f=e; e=(d+t1)>>>0; d=c; c=b; b=a; a=(t1+t2)>>>0;
+    }
+    [a,b,c,d,e,f,g,h].forEach((part, index) => { hash[index] = (hash[index] + part) >>> 0; });
+  }
+  return hash.map(part => part.toString(16).padStart(8, '0')).join('');
 }
 
 export interface ImportCheckpointIdentityInput {
@@ -82,6 +133,7 @@ export async function createImportCheckpoint(input: ImportCheckpointIdentityInpu
       ...(input.contextLimitTokens ? { contextLimitTokens: input.contextLimitTokens } : {}),
     },
     provider: input.provider,
+    incarnationId: crypto.randomUUID(),
     segments: input.chunks.map(chunk => ({ ...chunk, status: 'pending', attempts: 0 })),
     budget: { maxCalls: input.maxCalls, callsUsed: 0 },
     coverage: { complete: false, processedCharacters: 0, totalCharacters: input.totalCharacters },
@@ -95,14 +147,34 @@ export async function matchesImportCheckpointIdentity(
   input: ImportCheckpointIdentityInput,
 ): Promise<boolean> {
   const candidate = await createImportCheckpoint(input);
-  return checkpoint.schemaVersion === IMPORT_CHECKPOINT_SCHEMA && checkpoint.id === candidate.id &&
-    checkpoint.identityDigest === candidate.identityDigest;
+  return validateCheckpoint(checkpoint) && checkpoint.id === candidate.id &&
+    checkpoint.identityDigest === candidate.identityDigest &&
+    checkpoint.identityDigest === sha256HexSync(JSON.stringify(identityForCheckpoint(checkpoint)));
+}
+
+function identityForCheckpoint(checkpoint: ImportCheckpoint) {
+  return {
+    source: checkpoint.source,
+    operation: 'narrative-import',
+    scope: checkpoint.plan.scope,
+    categories: checkpoint.plan.categories,
+    instructionDigest: checkpoint.plan.instructionDigest,
+    segmentationPolicyVersion: checkpoint.plan.segmentationPolicyVersion,
+    complete: checkpoint.plan.complete,
+    maxCalls: checkpoint.plan.maxCalls,
+    maxInputTokens: checkpoint.plan.maxInputTokens,
+    envelopeReserveTokens: checkpoint.plan.envelopeReserveTokens,
+    contextLimitTokens: checkpoint.plan.contextLimitTokens,
+    provider: checkpoint.provider,
+    chunks: checkpoint.segments.map(({ id, index, start, end }) => ({ id, index, start, end })),
+  };
 }
 
 export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<ImportCheckpoint>;
   if (item.schemaVersion !== IMPORT_CHECKPOINT_SCHEMA || typeof item.id !== 'string' ||
+      typeof item.incarnationId !== 'string' || item.incarnationId.length < 8 ||
       typeof item.identityDigest !== 'string' || !item.source || !item.plan || !item.provider ||
       !Array.isArray(item.segments) || !item.budget || !item.coverage ||
       typeof item.source.digest !== 'string' || typeof item.source.filename !== 'string' ||
@@ -110,8 +182,8 @@ export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
       item.plan.operation !== 'narrative-import' || !['complete', 'selective'].includes(item.plan.scope) ||
       !Array.isArray(item.plan.categories) || typeof item.plan.instructionDigest !== 'string' ||
       typeof item.plan.segmentationPolicyVersion !== 'string' || typeof item.plan.complete !== 'boolean' ||
-      !Number.isSafeInteger(item.plan.maxCalls) || !Number.isSafeInteger(item.plan.maxInputTokens) ||
-      !Number.isSafeInteger(item.plan.envelopeReserveTokens) || !Number.isSafeInteger(item.plan.payloadTokenBudgetTokens) ||
+      !Number.isSafeInteger(item.plan.maxCalls) || item.plan.maxCalls < 1 || !Number.isSafeInteger(item.plan.maxInputTokens) || item.plan.maxInputTokens < 1 ||
+      !Number.isSafeInteger(item.plan.envelopeReserveTokens) || item.plan.envelopeReserveTokens < 0 || !Number.isSafeInteger(item.plan.payloadTokenBudgetTokens) ||
       item.plan.payloadTokenBudgetTokens !== item.plan.maxInputTokens - item.plan.envelopeReserveTokens ||
       typeof item.provider.connectionId !== 'string' || typeof item.provider.reasoningLevel !== 'string' ||
       !Number.isSafeInteger(item.budget.callsUsed) || !Number.isSafeInteger(item.budget.maxCalls) ||
@@ -127,29 +199,93 @@ export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
         typeof itemEvidence.digest === 'string' && Number.isSafeInteger(itemEvidence.start) &&
         Number.isSafeInteger(itemEvidence.end) && typeof itemEvidence.excerpt === 'string';
     };
-    return Array.isArray(candidate.findings) && candidate.findings.every(item => validEvidence(item?.evidence)) &&
-      Array.isArray(candidate.entities) && candidate.entities.every(item => validEvidence(item?.evidence) &&
+    if (!Array.isArray(candidate.findings) || !Array.isArray(candidate.entities) ||
+        !Array.isArray(candidate.relationships) || !Array.isArray(candidate.ambiguities) ||
+        typeof candidate.rejectedEvidenceCount !== 'number' || !Number.isSafeInteger(candidate.rejectedEvidenceCount) || candidate.rejectedEvidenceCount < 0) return false;
+    const fieldsValid = candidate.findings.every(item => validEvidence(item?.evidence)) &&
+      candidate.entities.every(item => validEvidence(item?.evidence) &&
         Array.isArray(item.attributes) && item.attributes.every(attribute => validEvidence(attribute?.evidence))) &&
-      Array.isArray(candidate.relationships) && candidate.relationships.every(item => validEvidence(item?.evidence)) &&
-      Array.isArray(candidate.ambiguities) && candidate.ambiguities.every(item => validEvidence(item?.evidence)) &&
-      typeof candidate.rejectedEvidenceCount === 'number' && Number.isSafeInteger(candidate.rejectedEvidenceCount) && candidate.rejectedEvidenceCount >= 0;
+      candidate.relationships.every(item => validEvidence(item?.evidence)) &&
+      candidate.ambiguities.every(item => validEvidence(item?.evidence));
+    if (!fieldsValid) return false;
+    const toRaw = <T extends { evidence: VerifiedExtraction['findings'][number]['evidence'] }>(item: T) => {
+      const { evidence, ...proposal } = item;
+      return { ...proposal, evidence: { start: evidence.start, end: evidence.end, quote: evidence.excerpt } };
+    };
+    try {
+      return NarrativeExtractionSchema.safeParse({
+        findings: candidate.findings.map(toRaw),
+        entities: candidate.entities.map(entity => ({ ...toRaw(entity), attributes: entity.attributes.map(toRaw) })),
+        relationships: candidate.relationships.map(toRaw),
+        ambiguities: candidate.ambiguities.map(toRaw),
+      }).success;
+    } catch { return false; }
   };
-  if (item.segments.some(segment => !segment || typeof segment.id !== 'string' ||
+  if (!item.plan.categories.every(category => typeof category === 'string') ||
+      new Set(item.plan.categories).size !== item.plan.categories.length ||
+      (item.plan.contextLimitTokens !== undefined && (!Number.isSafeInteger(item.plan.contextLimitTokens) || item.plan.contextLimitTokens < 1)) ||
+      (item.provider.modelId !== undefined && (typeof item.provider.modelId !== 'string' || !item.provider.modelId)) ||
+      (item.provider.capabilityPolicyVersion !== undefined && typeof item.provider.capabilityPolicyVersion !== 'string') ||
+      (item.provider.credentialAuthorityId !== undefined && (typeof item.provider.credentialAuthorityId !== 'string' || !item.provider.credentialAuthorityId)) ||
+      !item.segments.length || item.segments.length > item.plan.maxCalls ||
+      item.segments.some((segment, index) => !segment || typeof segment.id !== 'string' ||
+      segment.id !== `chunk-${index + 1}` || segment.index !== index ||
       !Number.isSafeInteger(segment.index) || !Number.isSafeInteger(segment.start) ||
       !Number.isSafeInteger(segment.end) || segment.start < 0 || segment.end <= segment.start ||
       !['pending', 'in-flight', 'complete', 'failed', 'uncertain'].includes(segment.status) ||
       !Number.isSafeInteger(segment.attempts) || segment.attempts < 0 ||
-      (segment.status === 'in-flight' && segment.attempts < 1) ||
+      (segment.status === 'in-flight' && (segment.attempts < 1 || typeof segment.attemptId !== 'string' ||
+        typeof segment.ownerId !== 'string' || !Number.isSafeInteger(segment.leaseExpiresAt))) ||
+      (segment.attempts > 0 && typeof segment.attemptId !== 'string') ||
+      (segment.status !== 'in-flight' && (segment.ownerId !== undefined || segment.leaseExpiresAt !== undefined)) ||
+      (segment.status !== 'pending' && segment.attempts < 1) ||
       (segment.status === 'complete' && !validResult(segment.result)) ||
       (segment.status !== 'complete' && segment.result !== undefined))) return false;
-  if (new Set(item.segments.map(segment => segment.id)).size !== item.segments.length ||
-      item.segments.some(segment => segment.end > item.coverage!.totalCharacters) ||
+  const segments = item.segments!;
+  const completed = segments.filter(segment => segment.status === 'complete')
+    .map(({ start, end }) => ({ start, end })).sort((a, b) => a.start - b.start);
+  let expectedProcessedCharacters = 0;
+  let coverageEnd = -1;
+  for (const span of completed) {
+    if (coverageEnd < 0 || span.start > coverageEnd) expectedProcessedCharacters += span.end - span.start;
+    else if (span.end > coverageEnd) expectedProcessedCharacters += span.end - coverageEnd;
+    coverageEnd = Math.max(coverageEnd, span.end);
+  }
+  if (new Set(segments.map(segment => segment.id)).size !== segments.length ||
+      segments[0].start !== 0 ||
+      segments.some((segment, index) => index > 0 && (segment.start > segments[index - 1].end || segment.end <= segments[index - 1].end)) ||
+      segments.some(segment => segment.end > item.coverage!.totalCharacters) ||
+      item.plan.complete !== (segments[segments.length - 1].end === item.coverage!.totalCharacters) ||
       !Number.isSafeInteger(item.createdAt) || !Number.isSafeInteger(item.updatedAt)) return false;
   // Runtime schema checks guard corrupt and incompatible durable records.
   return item.source.digest.length > 0 && item.provider.connectionId.length > 0 &&
     Number.isSafeInteger(item.coverage.totalCharacters) && item.coverage.totalCharacters >= 0 &&
     Number.isSafeInteger(item.coverage.processedCharacters) && item.coverage.processedCharacters >= 0 &&
-    typeof item.coverage.complete === 'boolean';
+    item.coverage.processedCharacters === expectedProcessedCharacters &&
+    item.coverage.totalCharacters >= 1 && typeof item.coverage.complete === 'boolean' &&
+    item.budget.callsUsed === item.segments.reduce((sum, segment) => sum + segment.attempts, 0) &&
+    item.coverage.complete === (item.plan.complete && item.segments.every(segment => segment.status === 'complete')) &&
+    item.identityDigest === sha256HexSync(JSON.stringify(identityForCheckpoint(item as ImportCheckpoint))) &&
+    item.id === `import-${item.identityDigest.slice(0, 32)}`;
+}
+
+/** Upgrade durable v1 checkpoints without refunding their already reserved attempts. */
+function migrateLegacyCheckpoint(value: unknown): ImportCheckpoint | undefined {
+  if (!value || typeof value !== 'object' || (value as { schemaVersion?: unknown }).schemaVersion !== 1) return undefined;
+  const legacy = value as Omit<ImportCheckpoint, 'schemaVersion' | 'incarnationId'> & { schemaVersion: 1 };
+  if (!Array.isArray(legacy.segments) || !legacy.budget || !Number.isSafeInteger(legacy.budget.callsUsed)) return undefined;
+  const now = Date.now();
+  const migrated: ImportCheckpoint = {
+    ...legacy,
+    schemaVersion: IMPORT_CHECKPOINT_SCHEMA,
+    incarnationId: crypto.randomUUID(),
+    segments: legacy.segments.map(segment => ({
+      ...segment,
+      ...(segment.attempts > 0 ? { attemptId: crypto.randomUUID() } : {}),
+      ...(segment.status === 'in-flight' ? { ownerId: 'legacy-owner', leaseExpiresAt: now + 120_000 } : {}),
+    })),
+  };
+  return validateCheckpoint(migrated) ? migrated : undefined;
 }
 
 export function validateCheckpointEvidence(checkpoint: ImportCheckpoint, sourceText: string, digest: string): boolean {
@@ -163,10 +299,12 @@ export function validateCheckpointEvidence(checkpoint: ImportCheckpoint, sourceT
     if (segment.status !== 'complete') return true;
     const result = segment.result;
     if (!result) return false;
-    return result.findings.every(item => evidenceIsValid(item.evidence)) &&
-      result.entities.every(item => evidenceIsValid(item.evidence) && item.attributes.every(attribute => evidenceIsValid(attribute.evidence))) &&
-      result.relationships.every(item => evidenceIsValid(item.evidence)) &&
-      result.ambiguities.every(item => evidenceIsValid(item.evidence));
+    const anchored = (evidence: Parameters<typeof evidenceIsValid>[0]) => evidenceIsValid(evidence) &&
+      evidence.start >= segment.start && evidence.end <= segment.end;
+    return result.findings.every(item => anchored(item.evidence)) &&
+      result.entities.every(item => anchored(item.evidence) && item.attributes.every(attribute => anchored(attribute.evidence))) &&
+      result.relationships.every(item => anchored(item.evidence)) &&
+      result.ambiguities.every(item => anchored(item.evidence));
   });
 }
 
@@ -216,9 +354,29 @@ function runCheckpointRequest<T>(
 }
 
 export function listImportCheckpoints(factory: IDBFactory): Promise<CheckpointResult<ImportCheckpoint[]>> {
-  return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readonly', (tx, done) => {
-    const request = tx.objectStore(IMPORT_CHECKPOINT_STORE).getAll();
-    request.onsuccess = () => done(request.result.filter(validateCheckpoint).sort((a, b) => b.updatedAt - a.updatedAt));
+  return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
+    const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
+    const request = store.getAll();
+    request.onsuccess = () => {
+      const records = request.result.map(value => {
+        const migrated = migrateLegacyCheckpoint(value);
+        if (migrated) { store.put(migrated); return migrated; }
+        return value;
+      });
+      done(records.filter(validateCheckpoint).sort((a, b) => b.updatedAt - a.updatedAt));
+    };
+  });
+}
+
+export function getImportCheckpoint(factory: IDBFactory, checkpointId: string): Promise<CheckpointResult<ImportCheckpoint | undefined>> {
+  return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
+    const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
+    const request = store.get(checkpointId);
+    request.onsuccess = () => {
+      const migrated = migrateLegacyCheckpoint(request.result);
+      if (migrated) { store.put(migrated); done(migrated); return; }
+      done(validateCheckpoint(request.result) ? request.result : undefined);
+    };
   });
 }
 
@@ -228,7 +386,11 @@ export function saveImportCheckpoint(factory: IDBFactory, checkpoint: ImportChec
     const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
     const existingCheckpoint = store.get(checkpoint.id);
     existingCheckpoint.onsuccess = () => {
-      if (existingCheckpoint.result) { done('exists'); return; }
+      if (existingCheckpoint.result) {
+        const migrated = migrateLegacyCheckpoint(existingCheckpoint.result);
+        if (migrated) store.put(migrated);
+        done('exists'); return;
+      }
       const all = store.getAll();
       all.onsuccess = () => {
         const existing = all.result as ImportCheckpoint[];
@@ -256,20 +418,30 @@ export function reserveImportSegmentAttempt(
   factory: IDBFactory,
   checkpointId: string,
   segmentId: string,
+  ownerOrAllowRetry: string | boolean = false,
   allowUncertainRetry = false,
+  leaseMs = 120_000,
 ): Promise<CheckpointResult<ImportCheckpoint>> {
+  const ownerId = typeof ownerOrAllowRetry === 'string' ? ownerOrAllowRetry : 'legacy-owner';
+  const allowRetry = typeof ownerOrAllowRetry === 'boolean' ? ownerOrAllowRetry : allowUncertainRetry;
   return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
     const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
     const request = store.get(checkpointId);
     request.onsuccess = () => {
-      const checkpoint = request.result;
+      const migrated = migrateLegacyCheckpoint(request.result);
+      const checkpoint = migrated ?? request.result;
       if (!validateCheckpoint(checkpoint)) { tx.abort(); return; }
+      if (migrated) store.put(migrated);
       const segment = checkpoint.segments.find(candidate => candidate.id === segmentId);
+      const expiredInFlight = segment?.status === 'in-flight' && (segment.leaseExpiresAt ?? Infinity) <= Date.now();
       const retryable = segment?.status === 'pending' || segment?.status === 'failed' ||
-        (allowUncertainRetry && segment?.status === 'uncertain');
+        (allowRetry && segment?.status === 'uncertain') || (allowRetry && expiredInFlight);
       if (!segment || !retryable || checkpoint.budget.callsUsed >= checkpoint.budget.maxCalls) { tx.abort(); return; }
       segment.status = 'in-flight';
       segment.attempts += 1;
+      segment.attemptId = crypto.randomUUID();
+      segment.ownerId = ownerId;
+      segment.leaseExpiresAt = Date.now() + leaseMs;
       checkpoint.budget.callsUsed += 1;
       checkpoint.updatedAt = Date.now();
       store.put(checkpoint);
@@ -278,19 +450,85 @@ export function reserveImportSegmentAttempt(
   });
 }
 
-export function updateImportCheckpoint(
+export interface ImportAttemptFence {
+  checkpointId: string;
+  incarnationId: string;
+  segmentId: string;
+  attemptId: string;
+  ownerId: string;
+}
+
+/** Extends the live attempt lease only while this exact attempt still owns the segment. */
+export function renewImportSegmentAttempt(
+  factory: IDBFactory,
+  fence: ImportAttemptFence,
+  leaseMs = 120_000,
+): Promise<CheckpointResult<boolean>> {
+  return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
+    const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
+    const request = store.get(fence.checkpointId);
+    request.onsuccess = () => {
+      const checkpoint = request.result;
+      const segment = validateCheckpoint(checkpoint) && checkpoint.incarnationId === fence.incarnationId
+        ? checkpoint.segments.find(item => item.id === fence.segmentId) : undefined;
+      if (!segment || segment.status !== 'in-flight' || segment.attemptId !== fence.attemptId || segment.ownerId !== fence.ownerId) {
+        done(false); return;
+      }
+      segment.leaseExpiresAt = Date.now() + leaseMs;
+      checkpoint.updatedAt = Date.now();
+      store.put(checkpoint);
+      done(true);
+    };
+  });
+}
+
+/** Applies a result only if the checkpoint incarnation and current attempt still match. */
+export function commitImportSegmentAttempt(
+  factory: IDBFactory,
+  fence: ImportAttemptFence,
+  update: (segment: ImportCheckpoint['segments'][number], checkpoint: ImportCheckpoint) => void,
+): Promise<CheckpointResult<boolean>> {
+  return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
+    const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
+    const request = store.get(fence.checkpointId);
+    request.onsuccess = () => {
+      const checkpoint = request.result;
+      const segment = validateCheckpoint(checkpoint) && checkpoint.incarnationId === fence.incarnationId
+        ? checkpoint.segments.find(item => item.id === fence.segmentId) : undefined;
+      if (!segment || segment.status !== 'in-flight' || segment.attemptId !== fence.attemptId || segment.ownerId !== fence.ownerId) {
+        done(false); return;
+      }
+      update(segment, checkpoint);
+      delete segment.ownerId;
+      delete segment.leaseExpiresAt;
+      checkpoint.updatedAt = Date.now();
+      if (!validateCheckpoint(checkpoint)) { tx.abort(); return; }
+      store.put(checkpoint);
+      done(true);
+    };
+  });
+}
+
+export function markExpiredImportAttemptsUncertain(
   factory: IDBFactory,
   checkpointId: string,
-  update: (checkpoint: ImportCheckpoint) => void,
+  now = Date.now(),
 ): Promise<CheckpointResult<ImportCheckpoint>> {
   return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
     const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
     const request = store.get(checkpointId);
     request.onsuccess = () => {
-      const checkpoint = request.result;
+      const migrated = migrateLegacyCheckpoint(request.result);
+      const checkpoint = migrated ?? request.result;
       if (!validateCheckpoint(checkpoint)) { tx.abort(); return; }
-      update(checkpoint);
-      checkpoint.updatedAt = Date.now();
+      for (const segment of checkpoint.segments) {
+        if (segment.status === 'in-flight' && (segment.leaseExpiresAt ?? Infinity) <= now) {
+          segment.status = 'uncertain';
+          delete segment.ownerId;
+          delete segment.leaseExpiresAt;
+        }
+      }
+      checkpoint.updatedAt = now;
       if (!validateCheckpoint(checkpoint)) { tx.abort(); return; }
       store.put(checkpoint);
       done(checkpoint);
@@ -303,12 +541,4 @@ export function deleteImportCheckpoint(factory: IDBFactory, checkpointId: string
     tx.objectStore(IMPORT_CHECKPOINT_STORE).delete(checkpointId);
     done(undefined);
   });
-}
-
-/** An in-flight request at process exit is uncertain and is never replayed implicitly. */
-export function markInterruptedSegmentsUncertain(checkpoint: ImportCheckpoint): ImportCheckpoint {
-  return {
-    ...checkpoint,
-    segments: checkpoint.segments.map(segment => segment.status === 'in-flight' ? { ...segment, status: 'uncertain' } : segment),
-  };
 }

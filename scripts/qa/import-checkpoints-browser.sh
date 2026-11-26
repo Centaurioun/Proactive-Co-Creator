@@ -28,8 +28,8 @@ async (page) => {
     });
     const saved = await m.saveImportCheckpoint(indexedDB, cp);
     if (!saved.ok) throw Error(saved.error);
-    const reserved = await m.reserveImportSegmentAttempt(indexedDB, cp.id, 'chunk-1');
-    const duplicate = await m.reserveImportSegmentAttempt(indexedDB, cp.id, 'chunk-1');
+    const reserved = await m.reserveImportSegmentAttempt(indexedDB, cp.id, 'chunk-1', 'tab-a');
+    const duplicate = await m.reserveImportSegmentAttempt(indexedDB, cp.id, 'chunk-1', 'tab-b');
     const resetBudget = await m.saveImportCheckpoint(indexedDB, await m.createImportCheckpoint({
       source: { digest: 'reload-digest', filename: 'reload.txt', mediaType: 'text/plain', byteLength: 5 },
       scope: 'complete', categories: ['characters'], instruction: '',
@@ -38,24 +38,55 @@ async (page) => {
       totalCharacters: 5, chunks: [{ id: 'chunk-1', index: 0, start: 0, end: 5 }],
     }));
     if (!reserved.ok || duplicate.ok || resetBudget.ok || reserved.value.budget.callsUsed !== 1) throw Error('Atomic reservation, duplicate attempt, or budget reset protection failed.');
-    return cp.id;
+    return { id: cp.id, incarnationId: cp.incarnationId, attemptId: reserved.value.segments[0].attemptId };
   });
   await page.reload();
-  const reloadResult = await page.evaluate(async (id) => {
+  const reloadResult = await page.evaluate(async ({ id, incarnationId, attemptId }) => {
     const m = await import('/lib/narrative/import/analysisCheckpoints.ts');
-    const listed = await m.listImportCheckpoints(indexedDB);
-    const checkpoint = listed.ok && listed.value.find(item => item.id === id);
+    let listed = await m.listImportCheckpoints(indexedDB);
+    let checkpoint = listed.ok && listed.value.find(item => item.id === id);
     if (!checkpoint || checkpoint.segments[0].status !== 'in-flight' || checkpoint.budget.callsUsed !== 1) throw Error('Reload did not preserve in-flight uncertainty and charged budget.');
-    const normalized = await m.updateImportCheckpoint(indexedDB, id, current => {
-      current.segments = m.markInterruptedSegmentsUncertain(current).segments;
+    const blocked = await m.reserveImportSegmentAttempt(indexedDB, id, 'chunk-1', 'tab-b', true);
+    if (blocked.ok) throw Error('A second tab took over a live attempt.');
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('proactive_co_creator_db_v2', 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
     });
-    if (!normalized.ok || normalized.value.segments[0].status !== 'uncertain') throw Error('Interrupted request was not marked uncertain.');
-    const implicitReplay = await m.reserveImportSegmentAttempt(indexedDB, id, 'chunk-1');
-    const explicitRetry = await m.reserveImportSegmentAttempt(indexedDB, id, 'chunk-1', true);
-    if (implicitReplay.ok || !explicitRetry.ok || explicitRetry.value.budget.callsUsed !== 2) throw Error('Retry was not explicit or budget was reset.');
+    await new Promise((resolve, reject) => {
+      const tx = database.transaction('analysis-checkpoints', 'readwrite');
+      const store = tx.objectStore('analysis-checkpoints');
+      const request = store.get(id);
+      request.onsuccess = () => { request.result.segments[0].leaseExpiresAt = Date.now() - 1; store.put(request.result); };
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+    });
+    const expired = await m.markExpiredImportAttemptsUncertain(indexedDB, id);
+    if (!expired.ok || expired.value.segments[0].status !== 'uncertain') throw Error('Expired attempt was not marked uncertain.');
+    const explicitRetry = await m.reserveImportSegmentAttempt(indexedDB, id, 'chunk-1', 'tab-b', true);
+    if (!explicitRetry.ok || explicitRetry.value.budget.callsUsed !== 2) throw Error('Retry was not explicit or budget was reset.');
+    const staleCommit = await m.commitImportSegmentAttempt(indexedDB, {
+      checkpointId: id, incarnationId, segmentId: 'chunk-1', attemptId, ownerId: 'tab-a',
+    }, segment => { segment.status = 'complete'; });
+    if (!staleCommit.ok || staleCommit.value) throw Error('An expired owner committed after a newer attempt was reserved.');
     const deleted = await m.deleteImportCheckpoint(indexedDB, id);
     if (!deleted.ok) throw Error(deleted.error);
-    return { reload: true, duplicateBlocked: true, implicitReplayBlocked: true, explicitRetryCharged: true, deleted: true };
+    const recreated = await m.createImportCheckpoint({
+      source: { digest: 'reload-digest', filename: 'reload.txt', mediaType: 'text/plain', byteLength: 5 },
+      scope: 'complete', categories: ['characters'], instruction: '',
+      provider: { connectionId: 'gemini-managed', modelId: 'synthetic-model', reasoningLevel: 'default' },
+      complete: true, maxCalls: 12, maxInputTokens: 8000, envelopeReserveTokens: 1500,
+      totalCharacters: 5, chunks: [{ id: 'chunk-1', index: 0, start: 0, end: 5 }],
+    });
+    const savedAgain = await m.saveImportCheckpoint(indexedDB, recreated);
+    if (!savedAgain.ok || recreated.id !== id || recreated.incarnationId === incarnationId) throw Error('Delete/recreate did not issue a new checkpoint incarnation.');
+    const staleAfterRecreate = await m.commitImportSegmentAttempt(indexedDB, {
+      checkpointId: id, incarnationId: explicitRetry.value.incarnationId, segmentId: 'chunk-1',
+      attemptId: explicitRetry.value.segments[0].attemptId, ownerId: 'tab-b',
+    }, segment => { segment.status = 'complete'; });
+    if (!staleAfterRecreate.ok || staleAfterRecreate.value) throw Error('A prior incarnation committed to a recreated checkpoint.');
+    await m.deleteImportCheckpoint(indexedDB, id);
+    database.close();
+    return { reload: true, liveOwnerProtected: true, explicitRetryCharged: true, staleAttemptsFenced: true, recreatedIncarnationFenced: true };
   }, firstId);
 
   const retention = await page.evaluate(async () => {
@@ -92,4 +123,4 @@ async (page) => {
 EOF
 
 playwright-cli -s="$SESSION" run-code "$PLAYWRIGHT_FN"
-echo "IMPORT_CHECKPOINT_BROWSER_PASS: reload, single-flight reservation, explicit retry budget, retention, deletion and storage failure"
+echo "IMPORT_CHECKPOINT_BROWSER_PASS: cross-tab ownership, stale-attempt fencing, retry budget, retention and storage failure"
