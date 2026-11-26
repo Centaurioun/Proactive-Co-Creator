@@ -113,3 +113,37 @@ test('checkpoint evidence must stay inside the segment that asserted it', async 
   assert.equal(validateCheckpoint(checkpoint), true);
   assert.equal(validateCheckpointEvidence(checkpoint, 'abc', 'small-source'), false);
 });
+
+test('checkpoint persists a bounded 12-segment schedule and binds omitted suggestions for resume', async () => {
+  const chunks = Array.from({ length: 20 }, (_, index) => ({
+    id: `chunk-${index + 1}`, index, start: index * 9, end: index * 9 + 10,
+  }));
+  const input: ImportCheckpointIdentityInput = {
+    ...identity,
+    source: { digest: 'long-source', filename: 'long.txt', mediaType: 'text/plain', byteLength: 200 },
+    complete: false, maxCalls: 12, totalCharacters: 200, chunks,
+  };
+  const checkpoint = await createImportCheckpoint(input);
+  assert.equal(checkpoint.plan.suggestedSegments.length, 20);
+  assert.equal(checkpoint.plan.suggestedSegmentCount, 20);
+  assert.equal(checkpoint.plan.scheduledSegmentCount, 12);
+  assert.equal(checkpoint.plan.scheduledEnd, checkpoint.segments.at(-1)!.end);
+  assert.equal(checkpoint.plan.omittedCharacters, input.totalCharacters - checkpoint.plan.scheduledEnd);
+  assert.equal(checkpoint.segments.length, 12);
+  assert.equal(checkpoint.budget.maxCalls, 12);
+  assert.equal(checkpoint.plan.complete, false);
+  assert.equal(validateCheckpoint(checkpoint), true);
+  assert.equal(validateCheckpoint({ ...checkpoint, plan: { ...checkpoint.plan, scheduledSegmentCount: 13 } }), false);
+  assert.equal(await matchesImportCheckpointIdentity(checkpoint, input), true);
+  assert.equal(await matchesImportCheckpointIdentity(checkpoint, { ...input, chunks: chunks.slice(0, 19) }), false);
+
+  const attempted = structuredClone(checkpoint);
+  attempted.budget.callsUsed = 1;
+  attempted.segments[0].attempts = 1;
+  attempted.segments[0].attemptId = 'failed-attempt-1';
+  attempted.segments[0].status = 'failed';
+  assert.equal(validateCheckpoint(attempted), true);
+  assert.equal(await matchesImportCheckpointIdentity(attempted, input), true, 'failed attempts restore under the same immutable plan identity');
+  assert.equal(attempted.budget.callsUsed, 1);
+  assert.equal(attempted.segments[0].attempts, 1);
+});

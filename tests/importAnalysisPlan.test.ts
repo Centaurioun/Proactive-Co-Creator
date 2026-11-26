@@ -183,3 +183,17 @@ test('adaptive planning remains partial at the configured chunk ceiling', () => 
   assert.ok(plan.unplannedChars > 0);
   assert.ok(plan.chunks.every(chunk => chunk.end > chunk.start));
 });
+
+test('adaptive plans distinguish suggested segments from the fixed request schedule', () => {
+  const source = 'x'.repeat(20_000);
+  for (const suggestedCount of [12, 13, 20]) {
+    const plan = segmentation.planAdaptiveNarrativeSourceAnalysis(source, [], 12, {
+      maxInputTokens: 110, envelopeReserveTokens: 10, maxChunks: suggestedCount,
+    });
+    assert.equal(plan.chunks.length, suggestedCount);
+    assert.equal(plan.scheduledRequests, 12);
+    assert.equal(plan.unplannedChars, source.length - segmentation.calculateProcessedCoverage(plan.chunks.slice(0, 12))
+      .reduce((sum, span) => sum + span.end - span.start, 0));
+    assert.ok(plan.unplannedChars > 0);
+  }
+});

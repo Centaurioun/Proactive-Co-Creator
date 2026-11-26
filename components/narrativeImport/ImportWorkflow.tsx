@@ -401,6 +401,7 @@ export default function ImportWorkflow({
           setCheckpointCandidates(checkpoints.value.filter(item => item.source.digest === parsed.digest &&
             item.source.filename === parsed.filename && item.source.mediaType === parsed.mediaType &&
             item.source.byteLength === parsed.byteLength));
+          if (checkpoints.warning) setCheckpointMessage(checkpoints.warning);
         } else {
           setCheckpointMessage(`Saved analysis checkpoints are unavailable: ${checkpoints.error}`);
         }
@@ -455,7 +456,7 @@ export default function ImportWorkflow({
         ...(providerPlanContext.capabilityPolicyVersion ? { capabilityPolicyVersion: providerPlanContext.capabilityPolicyVersion } : {}),
         credentialAuthorityId: providerPlanContext.credentialAuthorityId,
       },
-      complete: plan.complete,
+      complete: plan.completeWithinCallBudget,
       maxCalls: MAX_EXTRACTION_CALLS,
       maxInputTokens: plan.limits.maxInputTokens,
       envelopeReserveTokens: plan.limits.envelopeReserveTokens,
@@ -553,7 +554,7 @@ export default function ImportWorkflow({
           ...(providerPlanContext?.capabilityPolicyVersion ? { capabilityPolicyVersion: providerPlanContext.capabilityPolicyVersion } : {}),
           credentialAuthorityId: providerPlanContext.credentialAuthorityId,
         },
-        complete: currentPlan.complete, maxCalls: MAX_EXTRACTION_CALLS,
+        complete: currentPlan.completeWithinCallBudget, maxCalls: MAX_EXTRACTION_CALLS,
         maxInputTokens: currentPlan.limits.maxInputTokens, envelopeReserveTokens: currentPlan.limits.envelopeReserveTokens,
         ...(providerPlanContext.contextLimitTokens ? { contextLimitTokens: providerPlanContext.contextLimitTokens } : {}),
         totalCharacters: source.text.length,
@@ -588,7 +589,7 @@ export default function ImportWorkflow({
           ...(providerPlanContext?.capabilityPolicyVersion ? { capabilityPolicyVersion: providerPlanContext.capabilityPolicyVersion } : {}),
           credentialAuthorityId: providerPlanContext.credentialAuthorityId,
         },
-        complete: segmented.complete, maxCalls: callBudget, totalCharacters: source.text.length,
+        complete: segmented.completeWithinCallBudget, maxCalls: callBudget, totalCharacters: source.text.length,
         maxInputTokens: segmented.limits.maxInputTokens,
         envelopeReserveTokens: segmented.limits.envelopeReserveTokens,
         ...(providerPlanContext?.contextLimitTokens ? { contextLimitTokens: providerPlanContext.contextLimitTokens } : {}),
@@ -603,8 +604,8 @@ export default function ImportWorkflow({
       }
       checkpoint = created; checkpointRef.current = created;
       setActiveCheckpointId(created.id);
-      planned = segmented.chunks;
-      setChunks(segmented.chunks); setSegmentationComplete(segmented.complete);
+      planned = checkpoint.segments.map(segment => ({ ...segment, text: source.text.slice(segment.start, segment.end) }));
+      setChunks(planned); setSegmentationComplete(checkpoint.plan.complete);
       setCompletedChunkIds(new Set()); setResults([]); setFailedChunks([]); setRejectedEvidenceCount(0); setCallsUsed(0);
     }
     const failures: SourceChunk[] = [];
@@ -1016,12 +1017,12 @@ export default function ImportWorkflow({
           {initialAnalysisPlan && (
             <div className="space-y-1 rounded border border-gray-200 p-3 text-sm dark:border-gray-700" aria-label="Local analysis plan">
               <p className="font-medium">Automatic analysis plan</p>
-              <p>{initialAnalysisPlan.chunks.length} planned source segment(s) · up to {initialAnalysisPlan.scheduledRequests} extraction request(s) in this pass.</p>
+              <p>{initialAnalysisPlan.chunks.length} suggested source segment(s) · {initialAnalysisPlan.scheduledRequests} scheduled request(s) covering {source.text.length - initialAnalysisPlan.unplannedChars} character units in this pass, within the {MAX_EXTRACTION_CALLS}-call total ceiling.</p>
               <p>Adaptive plan for narrative import · {providerPlanContext?.connectionId ?? 'provider status unavailable'}{providerPlanContext?.modelId ? ` · ${providerPlanContext.modelId}` : ' · provider default'} · reasoning {providerPlanContext?.reasoningLevel ?? 'Default'}.</p>
               {providerPlanContext?.connectionId === 'chatgpt-plan' && <p role="status" className="text-amber-800 dark:text-amber-200">ChatGPT narrative import remains blocked. The approved ChatGPT SRB pilot is mock-only for the separate story operation; no import inference or billing fallback is available.</p>}
               {providerPlanContext === null && <p role="status" className="text-amber-800 dark:text-amber-200">Provider selection could not be verified. Refresh provider status before starting analysis.</p>}
               <p>Adaptive local estimate: up to {initialAnalysisPlan.limits.payloadTokenBudget.toLocaleString()} source tokens per segment, with {initialAnalysisPlan.limits.envelopeReserveTokens.toLocaleString()} reserved for instructions and schema. A supported model context limit is used when the account catalog provides one; otherwise the conservative narrative-import limit applies. The server remains authoritative and blocks transports that cannot meet operation preflight.</p>
-              {!initialAnalysisPlan.completeWithinCallBudget && <p className="text-amber-800 dark:text-amber-200">The current limits permit only partial source coverage: {initialAnalysisPlan.unplannedChars.toLocaleString()} source character units remain outside this pass. The original manuscript is preserved.</p>}
+              {!initialAnalysisPlan.completeWithinCallBudget && <p className="text-amber-800 dark:text-amber-200">The current limits permit only partial source coverage: {initialAnalysisPlan.unplannedChars.toLocaleString()} source character units remain outside the scheduled segments. The original manuscript is preserved.</p>}
               <p className="text-xs text-gray-600 dark:text-gray-300">The plan is pinned to this source digest, narrative-import task, current provider preference snapshot, and the displayed policy limits when analysis starts. A provider change stops remaining segments. Estimates do not guarantee quota, cost, or semantic completeness.</p>
             </div>
           )}

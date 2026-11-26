@@ -3,12 +3,14 @@ import { NarrativeExtractionSchema } from '../../../shared/importSchemas.ts';
 import { IDB_NAME, IDB_STORE } from '../../storage/constants.ts';
 
 export const IMPORT_CHECKPOINT_STORE = 'analysis-checkpoints';
-export const IMPORT_CHECKPOINT_SCHEMA = 2;
+export const IMPORT_CHECKPOINT_SCHEMA = 3;
 export const MAX_IMPORT_CHECKPOINTS = 8;
+const MAX_IMPORT_CHECKPOINT_SEGMENTS = 20;
+const MAX_IMPORT_CHECKPOINT_CALLS = 12;
 
 export interface ImportCheckpoint {
   id: string;
-  schemaVersion: 2;
+  schemaVersion: 3;
   /** Separates a deleted/recreated checkpoint with the same deterministic plan ID. */
   incarnationId: string;
   identityDigest: string;
@@ -17,6 +19,8 @@ export interface ImportCheckpoint {
     operation: 'narrative-import'; scope: 'complete' | 'selective'; categories: string[];
     instructionDigest: string; segmentationPolicyVersion: string; complete: boolean;
     maxCalls: number; maxInputTokens: number; envelopeReserveTokens: number; payloadTokenBudgetTokens: number;
+    suggestedSegments: Array<{ id: string; index: number; start: number; end: number }>;
+    suggestedSegmentCount: number; scheduledSegmentCount: number; scheduledEnd: number; omittedCharacters: number;
     contextLimitTokens?: number;
   };
   provider: { connectionId: string; modelId?: string; reasoningLevel: string; capabilityPolicyVersion?: string; credentialAuthorityId?: string };
@@ -101,6 +105,7 @@ export interface ImportCheckpointIdentityInput {
 }
 
 export async function createImportCheckpoint(input: ImportCheckpointIdentityInput): Promise<ImportCheckpoint> {
+  if (input.maxCalls > MAX_IMPORT_CHECKPOINT_CALLS) throw new RangeError('Narrative import checkpoints cannot exceed the 12-call safety ceiling.');
   const instructionDigest = await sha256Text(input.instruction);
   const identity = {
     source: input.source,
@@ -130,11 +135,16 @@ export async function createImportCheckpoint(input: ImportCheckpointIdentityInpu
       maxCalls: input.maxCalls, maxInputTokens: input.maxInputTokens,
       envelopeReserveTokens: input.envelopeReserveTokens,
       payloadTokenBudgetTokens: input.maxInputTokens - input.envelopeReserveTokens,
+      suggestedSegments: input.chunks.map(chunk => ({ ...chunk })),
+      suggestedSegmentCount: input.chunks.length,
+      scheduledSegmentCount: Math.min(input.chunks.length, input.maxCalls),
+      scheduledEnd: input.chunks[Math.min(input.chunks.length, input.maxCalls) - 1]?.end ?? 0,
+      omittedCharacters: input.totalCharacters - (input.chunks[Math.min(input.chunks.length, input.maxCalls) - 1]?.end ?? 0),
       ...(input.contextLimitTokens ? { contextLimitTokens: input.contextLimitTokens } : {}),
     },
     provider: input.provider,
     incarnationId: crypto.randomUUID(),
-    segments: input.chunks.map(chunk => ({ ...chunk, status: 'pending', attempts: 0 })),
+    segments: input.chunks.slice(0, input.maxCalls).map(chunk => ({ ...chunk, status: 'pending', attempts: 0 })),
     budget: { maxCalls: input.maxCalls, callsUsed: 0 },
     coverage: { complete: false, processedCharacters: 0, totalCharacters: input.totalCharacters },
     createdAt: now,
@@ -166,7 +176,7 @@ function identityForCheckpoint(checkpoint: ImportCheckpoint) {
     envelopeReserveTokens: checkpoint.plan.envelopeReserveTokens,
     contextLimitTokens: checkpoint.plan.contextLimitTokens,
     provider: checkpoint.provider,
-    chunks: checkpoint.segments.map(({ id, index, start, end }) => ({ id, index, start, end })),
+    chunks: checkpoint.plan.suggestedSegments,
   };
 }
 
@@ -182,8 +192,11 @@ export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
       item.plan.operation !== 'narrative-import' || !['complete', 'selective'].includes(item.plan.scope) ||
       !Array.isArray(item.plan.categories) || typeof item.plan.instructionDigest !== 'string' ||
       typeof item.plan.segmentationPolicyVersion !== 'string' || typeof item.plan.complete !== 'boolean' ||
-      !Number.isSafeInteger(item.plan.maxCalls) || item.plan.maxCalls < 1 || !Number.isSafeInteger(item.plan.maxInputTokens) || item.plan.maxInputTokens < 1 ||
+      !Number.isSafeInteger(item.plan.maxCalls) || item.plan.maxCalls < 1 || item.plan.maxCalls > MAX_IMPORT_CHECKPOINT_CALLS || !Number.isSafeInteger(item.plan.maxInputTokens) || item.plan.maxInputTokens < 1 ||
       !Number.isSafeInteger(item.plan.envelopeReserveTokens) || item.plan.envelopeReserveTokens < 0 || !Number.isSafeInteger(item.plan.payloadTokenBudgetTokens) ||
+      !Array.isArray(item.plan.suggestedSegments) || !item.plan.suggestedSegments.length ||
+      !Number.isSafeInteger(item.plan.suggestedSegmentCount) || !Number.isSafeInteger(item.plan.scheduledSegmentCount) ||
+      !Number.isSafeInteger(item.plan.scheduledEnd) || !Number.isSafeInteger(item.plan.omittedCharacters) ||
       item.plan.payloadTokenBudgetTokens !== item.plan.maxInputTokens - item.plan.envelopeReserveTokens ||
       typeof item.provider.connectionId !== 'string' || typeof item.provider.reasoningLevel !== 'string' ||
       !Number.isSafeInteger(item.budget.callsUsed) || !Number.isSafeInteger(item.budget.maxCalls) ||
@@ -227,7 +240,7 @@ export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
       (item.provider.modelId !== undefined && (typeof item.provider.modelId !== 'string' || !item.provider.modelId)) ||
       (item.provider.capabilityPolicyVersion !== undefined && typeof item.provider.capabilityPolicyVersion !== 'string') ||
       (item.provider.credentialAuthorityId !== undefined && (typeof item.provider.credentialAuthorityId !== 'string' || !item.provider.credentialAuthorityId)) ||
-      !item.segments.length || item.segments.length > item.plan.maxCalls ||
+      !item.segments.length || item.segments.length !== Math.min(item.plan.suggestedSegments.length, item.plan.maxCalls) ||
       item.segments.some((segment, index) => !segment || typeof segment.id !== 'string' ||
       segment.id !== `chunk-${index + 1}` || segment.index !== index ||
       !Number.isSafeInteger(segment.index) || !Number.isSafeInteger(segment.start) ||
@@ -242,6 +255,7 @@ export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
       (segment.status === 'complete' && !validResult(segment.result)) ||
       (segment.status !== 'complete' && segment.result !== undefined))) return false;
   const segments = item.segments!;
+  const suggestedSegments = item.plan.suggestedSegments!;
   const completed = segments.filter(segment => segment.status === 'complete')
     .map(({ start, end }) => ({ start, end })).sort((a, b) => a.start - b.start);
   let expectedProcessedCharacters = 0;
@@ -251,11 +265,21 @@ export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
     else if (span.end > coverageEnd) expectedProcessedCharacters += span.end - coverageEnd;
     coverageEnd = Math.max(coverageEnd, span.end);
   }
-  if (new Set(segments.map(segment => segment.id)).size !== segments.length ||
+  if (suggestedSegments.length > MAX_IMPORT_CHECKPOINT_SEGMENTS || item.plan.suggestedSegmentCount !== suggestedSegments.length ||
+      item.plan.scheduledSegmentCount !== segments.length || item.plan.scheduledEnd !== segments.at(-1)!.end ||
+      item.plan.omittedCharacters !== item.coverage!.totalCharacters - item.plan.scheduledEnd ||
+      suggestedSegments.some((segment, index) => !segment || segment.id !== `chunk-${index + 1}` || segment.index !== index ||
+        !Number.isSafeInteger(segment.start) || !Number.isSafeInteger(segment.end) || segment.start < 0 || segment.end <= segment.start || segment.end > item.coverage!.totalCharacters ||
+        (index === 0 ? segment.start !== 0 : segment.start > suggestedSegments[index - 1].end || segment.end <= suggestedSegments[index - 1].end)) ||
+      segments.some((segment, index) => {
+        const suggested = suggestedSegments[index];
+        return !suggested || segment.id !== suggested.id || segment.index !== suggested.index || segment.start !== suggested.start || segment.end !== suggested.end;
+      }) ||
+      new Set(segments.map(segment => segment.id)).size !== segments.length ||
       segments[0].start !== 0 ||
       segments.some((segment, index) => index > 0 && (segment.start > segments[index - 1].end || segment.end <= segments[index - 1].end)) ||
       segments.some(segment => segment.end > item.coverage!.totalCharacters) ||
-      item.plan.complete !== (segments[segments.length - 1].end === item.coverage!.totalCharacters) ||
+      item.plan.complete !== (segments.length === suggestedSegments.length && suggestedSegments.at(-1)!.end === item.coverage!.totalCharacters) ||
       !Number.isSafeInteger(item.createdAt) || !Number.isSafeInteger(item.updatedAt)) return false;
   // Runtime schema checks guard corrupt and incompatible durable records.
   return item.source.digest.length > 0 && item.provider.connectionId.length > 0 &&
@@ -269,16 +293,29 @@ export function validateCheckpoint(value: unknown): value is ImportCheckpoint {
     item.id === `import-${item.identityDigest.slice(0, 32)}`;
 }
 
-/** Upgrade durable v1 checkpoints without refunding their already reserved attempts. */
+/** Upgrade durable checkpoints without refunding their already reserved attempts. */
 function migrateLegacyCheckpoint(value: unknown): ImportCheckpoint | undefined {
-  if (!value || typeof value !== 'object' || (value as { schemaVersion?: unknown }).schemaVersion !== 1) return undefined;
-  const legacy = value as Omit<ImportCheckpoint, 'schemaVersion' | 'incarnationId'> & { schemaVersion: 1 };
+  if (!value || typeof value !== 'object' || ![1, 2].includes((value as { schemaVersion?: number }).schemaVersion ?? -1)) return undefined;
+  const legacy = value as Omit<ImportCheckpoint, 'schemaVersion' | 'incarnationId'> & { schemaVersion: 1 | 2 };
   if (!Array.isArray(legacy.segments) || !legacy.budget || !Number.isSafeInteger(legacy.budget.callsUsed)) return undefined;
+  // Older oversized budgets cannot be reconciled with the fixed 12-call policy
+  // without changing their immutable identity or refunding attempts. Leave the
+  // durable record untouched and fail closed instead of presenting it as resumable.
+  if (legacy.plan.maxCalls > MAX_IMPORT_CHECKPOINT_CALLS || legacy.budget.callsUsed > MAX_IMPORT_CHECKPOINT_CALLS ||
+      legacy.segments.length > MAX_IMPORT_CHECKPOINT_CALLS) return undefined;
   const now = Date.now();
   const migrated: ImportCheckpoint = {
     ...legacy,
     schemaVersion: IMPORT_CHECKPOINT_SCHEMA,
     incarnationId: crypto.randomUUID(),
+    plan: {
+      ...legacy.plan,
+      suggestedSegments: legacy.segments.map(({ id, index, start, end }) => ({ id, index, start, end })),
+      suggestedSegmentCount: legacy.segments.length,
+      scheduledSegmentCount: legacy.segments.length,
+      scheduledEnd: legacy.segments.at(-1)?.end ?? 0,
+      omittedCharacters: legacy.coverage.totalCharacters - (legacy.segments.at(-1)?.end ?? 0),
+    },
     segments: legacy.segments.map(segment => ({
       ...segment,
       ...(segment.attempts > 0 ? { attemptId: crypto.randomUUID() } : {}),
@@ -286,6 +323,16 @@ function migrateLegacyCheckpoint(value: unknown): ImportCheckpoint | undefined {
     })),
   };
   return validateCheckpoint(migrated) ? migrated : undefined;
+}
+
+function hasUnresumableLegacyBudget(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const legacy = value as { schemaVersion?: number; plan?: { maxCalls?: number }; budget?: { callsUsed?: number }; segments?: unknown[] };
+  return [1, 2].includes(legacy.schemaVersion ?? -1) && (
+    (Number.isSafeInteger(legacy.plan?.maxCalls) && legacy.plan!.maxCalls! > MAX_IMPORT_CHECKPOINT_CALLS) ||
+    (Number.isSafeInteger(legacy.budget?.callsUsed) && legacy.budget!.callsUsed! > MAX_IMPORT_CHECKPOINT_CALLS) ||
+    (Array.isArray(legacy.segments) && legacy.segments.length > MAX_IMPORT_CHECKPOINT_CALLS)
+  );
 }
 
 export function validateCheckpointEvidence(checkpoint: ImportCheckpoint, sourceText: string, digest: string): boolean {
@@ -308,7 +355,7 @@ export function validateCheckpointEvidence(checkpoint: ImportCheckpoint, sourceT
   });
 }
 
-type CheckpointResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type CheckpointResult<T> = { ok: true; value: T; warning?: string } | { ok: false; error: string };
 
 function runCheckpointRequest<T>(
   factory: IDBFactory,
@@ -354,18 +401,22 @@ function runCheckpointRequest<T>(
 }
 
 export function listImportCheckpoints(factory: IDBFactory): Promise<CheckpointResult<ImportCheckpoint[]>> {
-  return runCheckpointRequest(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
+  let unsupportedOversizedLegacy = false;
+  return runCheckpointRequest<ImportCheckpoint[]>(factory, [IMPORT_CHECKPOINT_STORE], 'readwrite', (tx, done) => {
     const store = tx.objectStore(IMPORT_CHECKPOINT_STORE);
     const request = store.getAll();
     request.onsuccess = () => {
       const records = request.result.map(value => {
         const migrated = migrateLegacyCheckpoint(value);
         if (migrated) { store.put(migrated); return migrated; }
+        if (hasUnresumableLegacyBudget(value)) unsupportedOversizedLegacy = true;
         return value;
       });
       done(records.filter(validateCheckpoint).sort((a, b) => b.updatedAt - a.updatedAt));
     };
-  });
+  }).then(result => result.ok && unsupportedOversizedLegacy
+    ? { ...result, warning: 'An older analysis checkpoint exceeds the 12-call safety ceiling. It remains stored with its attempts intact and cannot be resumed under the current plan.' }
+    : result);
 }
 
 export function getImportCheckpoint(factory: IDBFactory, checkpointId: string): Promise<CheckpointResult<ImportCheckpoint | undefined>> {
