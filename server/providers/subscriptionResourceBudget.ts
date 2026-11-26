@@ -21,6 +21,8 @@ export const CHATGPT_STORY_SRB_V1 = Object.freeze({
 });
 
 export const CHATGPT_STORY_SRB_ENABLED_BY_DEFAULT = false;
+const MAX_STORED_STORY_PLANS = 64;
+const STORY_PLAN_LIFETIME_MS = 60_000;
 
 export interface ChatGptStoryPlanInput {
   modelId: string;
@@ -38,10 +40,12 @@ export interface ChatGptStoryPlan {
   sourceDigest: string;
   policyVersion: string;
   sourceText: string;
+  instructions?: string;
   requestBody: string;
   requestBodyBytes: number;
   estimatedInputTokens: number;
   createdAt: number;
+  expiresAt: number;
 }
 
 export interface ChatGptStoryTransportResult {
@@ -50,7 +54,20 @@ export interface ChatGptStoryTransportResult {
   refusal: boolean;
   streamBytes: number;
   eventCount: number;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; source?: 'provider-observed' | 'estimate' | 'unknown' };
+}
+
+export interface ChatGptStorySrbAuthority {
+  prepare(input: ChatGptStoryPlanInput): ChatGptStoryPlan;
+  run(input: {
+    plan: ChatGptStoryPlan;
+    currentGrantGeneration: () => number;
+    signal?: AbortSignal;
+    transport: (
+      request: { body: string; limits: typeof CHATGPT_STORY_SRB_V1 },
+      signal: AbortSignal,
+    ) => Promise<ChatGptStoryTransportResult>;
+  }): Promise<ChatGptStoryTransportResult>;
 }
 
 interface StoredPlan {
@@ -80,12 +97,23 @@ export function createChatGptStorySrbAuthority(options: {
   const attempts: Array<{ at: number; estimatedInputTokens: number }> = [];
   let activePlanId: string | undefined;
 
+  const prunePlans = (timestamp: number) => {
+    for (const [id, stored] of plans) {
+      if (stored.value.expiresAt <= timestamp && id !== activePlanId) plans.delete(id);
+    }
+  };
+
   const assertEnabled = () => {
     if (!enabled) throw fail('MODEL_UNSUPPORTED', 'ChatGPT story generation is not activated for production admission.', 422);
   };
 
   function prepare(input: ChatGptStoryPlanInput): ChatGptStoryPlan {
     assertEnabled();
+    const timestamp = now();
+    prunePlans(timestamp);
+    if (plans.size >= MAX_STORED_STORY_PLANS) {
+      throw fail('RATE_LIMITED', 'The ChatGPT story pilot has no available bounded plan capacity.', 429);
+    }
     if (!input.modelId.trim() || !input.sourceDigest.trim() || !Number.isSafeInteger(input.grantGeneration) || input.grantGeneration < 0) {
       throw fail('VALIDATION_ERROR', 'The ChatGPT story plan identity is invalid.', 400);
     }
@@ -111,7 +139,9 @@ export function createChatGptStorySrbAuthority(options: {
       id: makeId(), operation: 'story', modelId: input.modelId,
       grantGeneration: input.grantGeneration, sourceDigest: input.sourceDigest,
       policyVersion: CHATGPT_STORY_SRB_V1.version, sourceText: input.sourceText,
-      requestBody, requestBodyBytes, estimatedInputTokens, createdAt: now(),
+      ...(input.instructions ? { instructions: input.instructions } : {}),
+      requestBody, requestBodyBytes, estimatedInputTokens, createdAt: timestamp,
+      expiresAt: timestamp + STORY_PLAN_LIFETIME_MS,
     });
     plans.set(value.id, { value, attempted: false });
     return value;
@@ -124,8 +154,11 @@ export function createChatGptStorySrbAuthority(options: {
     transport: (request: { body: string; limits: typeof CHATGPT_STORY_SRB_V1 }, signal: AbortSignal) => Promise<ChatGptStoryTransportResult>;
   }): Promise<ChatGptStoryTransportResult> {
     assertEnabled();
+    prunePlans(now());
     const stored = plans.get(input.plan.id);
-    if (!stored || stored.value !== input.plan || stored.value.policyVersion !== CHATGPT_STORY_SRB_V1.version) {
+    if (!stored || stored.value !== input.plan || stored.value.policyVersion !== CHATGPT_STORY_SRB_V1.version ||
+      stored.value.expiresAt <= now()) {
+      if (stored && stored.value.expiresAt <= now()) plans.delete(input.plan.id);
       throw fail('VALIDATION_ERROR', 'The ChatGPT story plan is missing, stale, or was not issued by this server.', 409);
     }
     if (input.currentGrantGeneration() !== stored.value.grantGeneration) {
@@ -161,9 +194,18 @@ export function createChatGptStorySrbAuthority(options: {
       if (controller.signal.aborted) rejectAbort();
       else controller.signal.addEventListener('abort', rejectAbort, { once: true });
     });
+    const transportPromise = Promise.resolve().then(() => input.transport(
+      { body: stored.value.requestBody, limits: CHATGPT_STORY_SRB_V1 }, controller.signal,
+    ));
+    // A caller timeout/cancel revokes result authority immediately, but the
+    // single-flight slot stays held until this local transport really settles.
+    void transportPromise.then(
+      () => { if (activePlanId === stored.value.id) activePlanId = undefined; },
+      () => { if (activePlanId === stored.value.id) activePlanId = undefined; },
+    );
     try {
       const result = await Promise.race([
-        input.transport({ body: stored.value.requestBody, limits: CHATGPT_STORY_SRB_V1 }, controller.signal),
+        transportPromise,
         aborted,
       ]);
       if (input.currentGrantGeneration() !== stored.value.grantGeneration || controller.signal.aborted) {
@@ -183,9 +225,8 @@ export function createChatGptStorySrbAuthority(options: {
       clearTimeout(timeout);
       input.signal?.removeEventListener('abort', abort);
       controller.abort();
-      if (activePlanId === stored.value.id) activePlanId = undefined;
     }
   }
 
-  return { prepare, run };
+  return { prepare, run } satisfies ChatGptStorySrbAuthority;
 }

@@ -7,6 +7,7 @@ import {
   type ChatGptStoryPlanInput,
   type ChatGptStoryTransportResult,
 } from '../server/providers/subscriptionResourceBudget.ts';
+import { ChatGptResponsesAdapter } from '../server/providers/chatgptResponses.ts';
 
 const goodResult: ChatGptStoryTransportResult = {
   text: 'A reviewed draft.', terminalEvent: 'response.completed', refusal: false, streamBytes: 1024, eventCount: 4,
@@ -90,7 +91,84 @@ test('story SRB aborts authority even if transport ignores abort and discards a 
   });
   controller.abort();
   await assert.rejects(pending, /cancelled/);
+  await assert.rejects(authority.run({
+    plan: authority.prepare(planInput), currentGrantGeneration: () => 7,
+    transport: async () => goodResult,
+  }), /already in progress/);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const afterTermination = authority.prepare(planInput);
+  await authority.run({ plan: afterTermination, currentGrantGeneration: () => 7, transport: async () => goodResult });
 
   const stale = authority.prepare(planInput);
   await assert.rejects(authority.run({ plan: stale, currentGrantGeneration: () => 8, transport: async () => goodResult }), /session changed/);
+});
+
+test('story plans expire and the retained plan set is bounded', async () => {
+  let now = 0;
+  const authority = createChatGptStorySrbAuthority({ enabled: true, now: () => now, makeId: (() => {
+    let id = 0;
+    return () => `bounded-${++id}`;
+  })() });
+  const expired = authority.prepare(planInput);
+  now += 60_000;
+  await assert.rejects(authority.run({ plan: expired, currentGrantGeneration: () => 7, transport: async () => goodResult }), /missing, stale/);
+  for (let index = 0; index < 64; index += 1) authority.prepare(planInput);
+  assert.throws(() => authority.prepare(planInput), /bounded plan capacity/);
+  now += 60_000;
+  assert.doesNotThrow(() => authority.prepare(planInput));
+});
+
+test('story SRB keeps its slot while the actual adapter has an abort-ignoring fetch in flight', async () => {
+  let finishFetch!: (response: Response) => void;
+  let markFetchStarted!: () => void;
+  const started = new Promise<void>(resolve => { markFetchStarted = resolve; });
+  let fetchCalls = 0;
+  const adapter = new ChatGptResponsesAdapter('local-token', async () => {
+    fetchCalls += 1;
+    if (fetchCalls > 1) return new Response('event: response.completed\ndata: {"type":"response.completed","response":{}}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    markFetchStarted();
+    return new Promise<Response>(resolve => { finishFetch = resolve; });
+  });
+  const authority = createChatGptStorySrbAuthority({ enabled: true });
+  const makePlan = () => authority.prepare(planInput);
+  const makeTransport = (plan: ReturnType<typeof makePlan>) => (args: { body: string; limits: typeof CHATGPT_STORY_SRB_V1 }, signal: AbortSignal) =>
+    adapter.generateStoryText({
+      operation: 'story', modelId: plan.modelId, input: plan.sourceText, reasoningLevel: 'default',
+      maxInputBytes: args.limits.maxRequestBodyBytes,
+      maxOutputBytes: args.limits.maxAcceptedOutputBytes,
+      timeoutMs: args.limits.timeoutMs, signal,
+    }, args.body, {
+      maxStreamBytes: args.limits.maxStreamBytes,
+      maxAcceptedOutputBytes: args.limits.maxAcceptedOutputBytes,
+      maxStreamEvents: args.limits.maxStreamEvents,
+    });
+  const firstPlan = makePlan();
+  const controller = new AbortController();
+  let transportPromise: Promise<ChatGptStoryTransportResult> | undefined;
+  const firstRun = authority.run({
+    plan: firstPlan, currentGrantGeneration: () => 7, signal: controller.signal,
+    transport: (args, signal) => {
+      const pendingTransport = makeTransport(firstPlan)(args, signal);
+      transportPromise = pendingTransport;
+      return pendingTransport;
+    },
+  });
+  await started;
+  controller.abort();
+  await assert.rejects(firstRun, /cancelled/);
+  // Run through the authority and verify that cancelling the first operation
+  // did not release its slot while the adapter's underlying fetch remains live.
+  const secondController = new AbortController();
+  const secondPlan = makePlan();
+  const run = authority.run({ plan: secondPlan, currentGrantGeneration: () => 7, signal: secondController.signal, transport: makeTransport(secondPlan) });
+  await assert.rejects(run, /already in progress/);
+  let adapterSettled = false;
+  void transportPromise!.then(
+    () => { adapterSettled = true; },
+    () => { adapterSettled = true; },
+  );
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(adapterSettled, false);
+  finishFetch!(new Response('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{}}\n\n', { headers: { 'content-type': 'text/event-stream' } }));
+  await assert.rejects(transportPromise!, /cancelled/);
 });
