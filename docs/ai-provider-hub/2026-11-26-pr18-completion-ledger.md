@@ -30,7 +30,7 @@ All four workers were spawned as GPT-6 Luna / Medium from the exact verified bas
 | Capability registry | CAT-F01 | `/Users/yusuf/.codex/worktrees/pcc-pr18-completion-002/cat-f01` / `codex/pcc-pr18-capability-20261126` | `cca19ccb19ca36a5f64f3a8c0852d2bde295f69c` → integration `0d4c5ac` | Evidence registry, catalog state handling and 13 focused tests reported pass; integrated |
 | Adaptive planner | ACE-F02 | `/Users/yusuf/.codex/worktrees/pcc-pr18-completion-002/ace-f02` / `codex/pcc-pr18-adaptive-context-20261126` | `98edb96156106e17abcece5bd80d893c7427b776` → integration `6d9488e` | Grapheme-safe bounded planner and 19 focused tests reported pass; integrated |
 | Checkpoint fencing | ACE-F01, ACE-F03 | `/Users/yusuf/.codex/worktrees/pcc-pr18-completion-002/ace-f01-f03` / `codex/pcc-pr18-ace-checkpoint-20261126` | `64e190d8e6a570d81e80ee3a0bd849f9583791e4` → integration `d40e388` | Transactional leases, attempt/incarnation fencing and six unit tests plus browser concurrency qualification reported pass; integrated with lead request contract |
-| Story SRB | SRB-F01 | `/Users/yusuf/.codex/worktrees/pcc-pr18-completion-002/srb-f01` / `codex/pcc-pr18-srb-20261126` | `f59a6ad961ae16e09227a9476d3123d5ba9cb7bd` → lead route integration pending | Local transport commit; 29 focused tests and local checks reported pass |
+| Story SRB | SRB-F01 | `/Users/yusuf/.codex/worktrees/pcc-pr18-completion-002/srb-f01` / `codex/pcc-pr18-srb-20261126` | `f59a6ad961ae16e09227a9476d3123d5ba9cb7bd` → integration `1debdcc` | Local transport commit; 29 focused tests and local checks reported pass; integrated |
 
 ## Lead-owned shared work
 
@@ -38,10 +38,16 @@ All four workers were spawned as GPT-6 Luna / Medium from the exact verified bas
 - Added `providerPlanBinding` to the narrative extraction request contract. Server middleware checks the connection/model/reasoning/policy/credential identity against the request headers and current server authority before handler dispatch.
 - Added route regressions for successful binding, missing binding, stale authority rejection, and handler suppression. Targeted routes/provider authority tests passed (18/18); targeted typecheck and lint passed after this shared work.
 - Integrated `/generate/story` with the process-wide disabled SRB authority and bounded Responses story adapter. Only trusted router-option injection activates the deterministic qualification path; the normal route remains blocked by exact-model operation policy and disabled SRB. The route test exercises request parsing, provider admission, SRB prepare/run, the story transport adapter seam and response validation; it confirms no Gemini fallback. The integrated focused set passed 76/76 tests, typecheck and changed-file lint.
-- Integrated story route, independent review, integrated QA, final hosted evidence and PR update remain pending.
+- Integrated the real story transport chain behind a disabled-by-default production authority. Mock injection works only through trusted router options; ordinary HTTP requests remain blocked and never fall back to Gemini.
+- Independent security review found and the lead fixed a checkpoint race: renewal and commit now reject an attempt after its lease expires, even before another owner reclaims it. The checkpoint browser harness was rerun and passed the expiry-before-reclaim, live owner, explicit retry budget, stale attempt, incarnation, retention and storage failure checks.
+- A stale Gemini adapter test expected capability policy `.2` after the branch advanced the policy to `.3`; the assertion was updated. Final local checks passed: typecheck, lint, full unit suite 423/423, production build, and `git diff --check`. Build still reports the known large chunk warning (>500 KiB).
+- Browser checks on an isolated Chromium session and keyless local server: E2E-A through E2E-I passed; Stage0 J01–J12 and audit/performance phases passed; narrative mutations passed. These are synthetic local checks, not hosted or provider qualification.
+- Additional browser harnesses remain inconclusive: import cancellation timed out waiting for its Inspect-source flow to enable Analyze (no checks recorded); AI ownership and project lifecycle scripts failed on legacy/missing UI selectors. No product defect was established by those selector failures. The checkpoint harness did not exercise a true two-browser-context race.
+- Independent review reported no other material issue in the inspected source paths. It was a technical review, not formal acceptance.
+- Hosted CI and PR body update remain pending.
 
 ## Current limitations
 
 - No provider, account, credential, paid-use, merge, or deployment action has occurred.
-- No hosted check has yet been run against the final candidate SHA.
-- Final finding closure, final HEAD/tree, integrated tests, independent review, integrated QA, and operation eligibility matrix are pending.
+- No provider/account qualification, credential action, paid use, merge, or deployment has occurred.
+- The final branch SHA, tree, hosted CI result, and updated PR body will be recorded after publication.

@@ -471,7 +471,8 @@ export function renewImportSegmentAttempt(
       const checkpoint = request.result;
       const segment = validateCheckpoint(checkpoint) && checkpoint.incarnationId === fence.incarnationId
         ? checkpoint.segments.find(item => item.id === fence.segmentId) : undefined;
-      if (!segment || segment.status !== 'in-flight' || segment.attemptId !== fence.attemptId || segment.ownerId !== fence.ownerId) {
+      if (!segment || segment.status !== 'in-flight' || segment.attemptId !== fence.attemptId || segment.ownerId !== fence.ownerId ||
+          typeof segment.leaseExpiresAt !== 'number' || segment.leaseExpiresAt <= Date.now()) {
         done(false); return;
       }
       segment.leaseExpiresAt = Date.now() + leaseMs;
@@ -495,7 +496,8 @@ export function commitImportSegmentAttempt(
       const checkpoint = request.result;
       const segment = validateCheckpoint(checkpoint) && checkpoint.incarnationId === fence.incarnationId
         ? checkpoint.segments.find(item => item.id === fence.segmentId) : undefined;
-      if (!segment || segment.status !== 'in-flight' || segment.attemptId !== fence.attemptId || segment.ownerId !== fence.ownerId) {
+      if (!segment || segment.status !== 'in-flight' || segment.attemptId !== fence.attemptId || segment.ownerId !== fence.ownerId ||
+          typeof segment.leaseExpiresAt !== 'number' || segment.leaseExpiresAt <= Date.now()) {
         done(false); return;
       }
       update(segment, checkpoint);

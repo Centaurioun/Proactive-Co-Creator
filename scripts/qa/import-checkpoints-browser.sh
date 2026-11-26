@@ -60,6 +60,10 @@ async (page) => {
       request.onsuccess = () => { request.result.segments[0].leaseExpiresAt = Date.now() - 1; store.put(request.result); };
       tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
     });
+    const expiredOwner = await m.commitImportSegmentAttempt(indexedDB, {
+      checkpointId: id, incarnationId, segmentId: 'chunk-1', attemptId, ownerId: 'tab-a',
+    }, segment => { segment.status = 'complete'; });
+    if (!expiredOwner.ok || expiredOwner.value) throw Error('An owner committed after lease expiry before reclamation.');
     const expired = await m.markExpiredImportAttemptsUncertain(indexedDB, id);
     if (!expired.ok || expired.value.segments[0].status !== 'uncertain') throw Error('Expired attempt was not marked uncertain.');
     const explicitRetry = await m.reserveImportSegmentAttempt(indexedDB, id, 'chunk-1', 'tab-b', true);
