@@ -1,8 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { invalidateAiProviderRequests } from '../../services/apiClient';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invalidateAiProviderRequests, invalidateAiProviderRequestsForPreferenceChange } from '../../services/apiClient';
+import { catalogStateLabel, isCatalogSelectable, isEligibleTextModel, isSelectableTextPreferenceModel, modelsForConnection, type CatalogRefreshPhase } from '../../lib/providerCatalogView';
+import type { AiReasoningLevel as ReasoningLevel } from '../../server/providers/contracts';
 
 type AiConnectionId = 'gemini-managed' | 'gemini-personal' | 'chatgpt-plan' | 'openai-api';
-type ReasoningLevel = 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'extra-high';
+interface AiCapabilityEvidence {
+  source: string;
+  reference: string;
+  checkedAt: string;
+  transport: string;
+  modelSlug: string;
+}
+interface AiCapabilitySummary {
+  state: 'supported' | 'unsupported' | 'unknown';
+  value?: boolean | number | readonly ReasoningLevel[];
+  reason?: string;
+  evidence?: AiCapabilityEvidence[];
+}
 type ConnectionState =
   | 'available' | 'unconfigured' | 'connecting' | 'connected' | 'authorization-required'
   | 'expired' | 'unsupported-environment' | 'rate-limited' | 'quota-exhausted' | 'failed';
@@ -10,12 +24,21 @@ type ConnectionState =
 interface AiModelDescriptor {
   id: string;
   displayName: string;
-  availability: { state: 'supported' | 'unsupported' | 'unknown' };
-  textGeneration: { state: 'supported' | 'unsupported' | 'unknown' };
-  imageGeneration: { state: 'supported' | 'unsupported' | 'unknown' };
-  reasoning: { state: 'supported' | 'unsupported' | 'unknown'; value?: readonly ReasoningLevel[]; reason?: string };
-  structuredOutput: { state: 'supported' | 'unsupported' | 'unknown' };
-  operationCapabilities: Record<string, { state: 'supported' | 'unsupported' | 'unknown'; value?: boolean }>;
+  availability: AiCapabilitySummary;
+  textGeneration: AiCapabilitySummary;
+  imageGeneration: AiCapabilitySummary;
+  reasoning: AiCapabilitySummary;
+  structuredOutput: AiCapabilitySummary;
+  contextLimit: AiCapabilitySummary;
+  outputLimit: AiCapabilitySummary;
+  operationCapabilities: Record<string, AiCapabilitySummary>;
+  capabilityPolicyVersion: string;
+}
+
+function supportedReasoningLevels(capability?: AiCapabilitySummary): ReasoningLevel[] {
+  return capability?.state === 'supported' && Array.isArray(capability.value)
+    ? ['default', ...capability.value.filter((level): level is ReasoningLevel => typeof level === 'string')]
+    : ['default'];
 }
 
 interface AiConnectionDescriptor {
@@ -33,6 +56,8 @@ interface ProviderPreferences {
   defaultConnectionId: AiConnectionId;
   defaultTextModelId?: string;
   defaultReasoningLevel?: ReasoningLevel;
+  preferredTextModelsByConnection?: Partial<Record<AiConnectionId, string>>;
+  preferredReasoningLevelsByConnection?: Partial<Record<AiConnectionId, ReasoningLevel>>;
   operationOverrides?: Record<string, {
     connectionId: AiConnectionId;
     modelId?: string;
@@ -96,14 +121,38 @@ export default function AiConnectionsPanel() {
   const [apiKey, setApiKey] = useState('');
   const [openAiApiKey, setOpenAiApiKeyInput] = useState('');
   const [preferences, setPreferences] = useState<ProviderPreferences | null>(null);
-  const [modelOptions, setModelOptions] = useState<AiModelDescriptor[]>([]);
+  const [catalogPhases, setCatalogPhases] = useState<Partial<Record<AiConnectionId, CatalogRefreshPhase>>>({});
+  const statusRef = useRef<ProviderHubStatus | null>(null);
+  const statusEpoch = useRef(0);
+  const catalogEpochs = useRef(new Map<AiConnectionId, number>());
+
+  const publishStatus = useCallback((next: ProviderHubStatus) => {
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
 
   const refresh = useCallback(async () => {
+    const requestEpoch = ++statusEpoch.current;
+    for (const id of catalogEpochs.current.keys()) catalogEpochs.current.set(id, (catalogEpochs.current.get(id) ?? 0) + 1);
+    const cachedStatus = statusRef.current;
+    if (cachedStatus) {
+      const stalePhases: Partial<Record<AiConnectionId, CatalogRefreshPhase>> = {};
+      for (const connection of cachedStatus.connections) stalePhases[connection.id] = 'stale';
+      setCatalogPhases(stalePhases);
+    }
     setLoading(true);
     setError('');
     try {
       const next = await requestJson<ProviderHubStatus>('/status');
-      setStatus(next);
+      if (requestEpoch !== statusEpoch.current) return;
+      publishStatus(next);
+      if (!cachedStatus) {
+        const initialPhases: Partial<Record<AiConnectionId, CatalogRefreshPhase>> = {};
+        for (const connection of next.connections) {
+          if (connection.models.length > 0) initialPhases[connection.id] = 'stale';
+        }
+        setCatalogPhases(initialPhases);
+      }
       let saved = next.preferences;
       const raw = window.localStorage.getItem(PREFS_KEY);
       if (raw) {
@@ -116,30 +165,44 @@ export default function AiConnectionsPanel() {
         }
       }
       setPreferences(saved);
-      const selected = next.connections.find(item => item.id === saved.defaultConnectionId);
-      setModelOptions(selected?.models ?? []);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not load AI connection status.');
+      if (requestEpoch === statusEpoch.current) setError(cause instanceof Error ? cause.message : 'Could not load AI connection status.');
     } finally {
-      setLoading(false);
+      if (requestEpoch === statusEpoch.current) setLoading(false);
     }
-  }, []);
+  }, [publishStatus]);
 
   useEffect(() => { void Promise.resolve().then(refresh); }, [refresh]);
 
   const connections = useMemo(() => status?.connections ?? [], [status?.connections]);
   const defaultConnection = connections.find(item => item.id === preferences?.defaultConnectionId);
+  const modelOptions = modelsForConnection(connections, preferences?.defaultConnectionId);
 
   async function refreshModels(connectionId: AiConnectionId) {
+    const requestStatusEpoch = statusEpoch.current;
+    const requestEpoch = (catalogEpochs.current.get(connectionId) ?? 0) + 1;
+    catalogEpochs.current.set(connectionId, requestEpoch);
+    setCatalogPhases(current => ({ ...current, [connectionId]: 'loading' }));
+    setBusy(true);
+    setError('');
     try {
       const result = await requestJson<{ models: AiModelDescriptor[] }>(`/models?connectionId=${encodeURIComponent(connectionId)}`);
-      invalidateAiProviderRequests();
-      setModelOptions(result.models);
-      setStatus(current => current ? ({ ...current, connections: current.connections.map(item => item.id === connectionId ? { ...item, models: result.models, state: 'connected' } : item) }) : current);
+      if (requestStatusEpoch !== statusEpoch.current || catalogEpochs.current.get(connectionId) !== requestEpoch) return [];
+      const currentStatus = statusRef.current;
+      const target = currentStatus?.connections.find(item => item.id === connectionId);
+      if (!currentStatus || !target || !['available', 'connected'].includes(target.state)) return [];
+      publishStatus({ ...currentStatus, connections: currentStatus.connections.map(item => item.id === connectionId
+        ? { ...item, models: result.models, state: 'connected' }
+        : item) });
+      setCatalogPhases(current => ({ ...current, [connectionId]: 'fresh' }));
       return result.models;
     } catch (cause) {
+      if (requestStatusEpoch !== statusEpoch.current || catalogEpochs.current.get(connectionId) !== requestEpoch) return [];
+      setCatalogPhases(current => ({ ...current, [connectionId]: 'failed' }));
       setError(cause instanceof Error ? cause.message : 'Could not load models.');
       return [];
+    } finally {
+      if (catalogEpochs.current.get(connectionId) === requestEpoch) setBusy(false);
     }
   }
 
@@ -151,10 +214,12 @@ export default function AiConnectionsPanel() {
     let previousRaw: string | null = null;
     try {
       previousRaw = window.localStorage.getItem(PREFS_KEY);
-      window.localStorage.setItem(PREFS_KEY, JSON.stringify(next));
-      invalidateAiProviderRequests();
+      const nextRaw = JSON.stringify(next);
+      window.localStorage.setItem(PREFS_KEY, nextRaw);
+      invalidateAiProviderRequestsForPreferenceChange(previousRaw, nextRaw);
       await requestJson('/preferences', { method: 'PUT', body: JSON.stringify({ preferences: next }) });
       setPreferences(next);
+      window.dispatchEvent(new Event('pcc:ai-preferences-changed'));
       setMessage('AI preferences saved.');
       await refresh();
     } catch (cause) {
@@ -173,19 +238,61 @@ export default function AiConnectionsPanel() {
   async function changeDefaultConnection(connectionId: AiConnectionId) {
     const models = await refreshModels(connectionId);
     if (!preferences) return;
-    const modelId = models.find(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported' && Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true))?.id;
+    if (connectionId === 'chatgpt-plan') {
+      const preferredModelId = preferences.preferredTextModelsByConnection?.['chatgpt-plan'];
+      const preferredModel = models.find(model => model.id === preferredModelId && isSelectableTextPreferenceModel(model));
+      const preferredReasoning = preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'];
+      const reasoningIsValid = preferredModel && preferredReasoning &&
+        supportedReasoningLevels(preferredModel.reasoning).includes(preferredReasoning);
+      await savePreferences({
+        ...preferences,
+        defaultConnectionId: connectionId,
+        defaultTextModelId: preferredModel && reasoningIsValid ? preferredModel.id : undefined,
+        defaultReasoningLevel: preferredModel && reasoningIsValid ? preferredReasoning : undefined,
+      });
+      return;
+    }
+    const modelId = models.find(isEligibleTextModel)?.id;
     if (!modelId) {
       setError('No model has a verified PCC operation for this connection. Refresh its catalog or choose another connection.');
       return;
     }
-    await savePreferences({ ...preferences, defaultConnectionId: connectionId, defaultTextModelId: modelId });
+    await savePreferences({ ...preferences, defaultConnectionId: connectionId, defaultTextModelId: modelId, defaultReasoningLevel: 'default' });
   }
 
-  const selectedModel = modelOptions.find(model => model.id === (preferences?.defaultTextModelId ?? defaultConnection?.selectedModelId));
-  const eligibleDefaultModels = modelOptions.filter(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported' && Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true));
-  const supportedReasoning = selectedModel?.reasoning.state === 'supported'
-    ? ['default', ...(selectedModel.reasoning.value ?? [])] as ReasoningLevel[]
-    : ['default'] as ReasoningLevel[];
+  const currentDefaultCatalog = isCatalogSelectable(defaultConnection?.state ?? '', catalogPhases[preferences?.defaultConnectionId ?? 'gemini-managed']);
+  const providerDefaultSelected = preferences?.defaultConnectionId === 'gemini-managed' && !preferences.defaultTextModelId;
+  const defaultCatalogSelectable = currentDefaultCatalog || providerDefaultSelected;
+  const selectedModel = defaultCatalogSelectable
+    ? modelOptions.find(model => model.id === (preferences?.defaultTextModelId ?? defaultConnection?.selectedModelId))
+    : undefined;
+  const eligibleDefaultModels = currentDefaultCatalog ? modelOptions.filter(model => preferences?.defaultConnectionId === 'chatgpt-plan'
+    ? isSelectableTextPreferenceModel(model)
+    : isEligibleTextModel(model)) : [];
+  const supportedReasoning = supportedReasoningLevels(selectedModel?.reasoning);
+  const chatGptConnection = connections.find(item => item.id === 'chatgpt-plan');
+  const chatGptCatalogSelectable = isCatalogSelectable(chatGptConnection?.state ?? '', catalogPhases['chatgpt-plan']);
+  const chatGptTextModels = (chatGptConnection?.models ?? []).filter(isSelectableTextPreferenceModel);
+  const preferredChatGptModelId = preferences?.preferredTextModelsByConnection?.['chatgpt-plan'];
+  const preferredChatGptModel = chatGptTextModels.find(model => model.id === preferredChatGptModelId);
+  const chatGptReasoningLevels = supportedReasoningLevels(preferredChatGptModel?.reasoning);
+
+  async function saveChatGptModelPreference(modelId: string) {
+    if (!preferences || !modelId) return;
+    await savePreferences({
+      ...preferences,
+      preferredTextModelsByConnection: { ...preferences.preferredTextModelsByConnection, 'chatgpt-plan': modelId },
+      preferredReasoningLevelsByConnection: { ...preferences.preferredReasoningLevelsByConnection, 'chatgpt-plan': 'default' },
+    });
+  }
+
+  async function saveChatGptReasoningPreference(level: ReasoningLevel) {
+    if (!preferences) return;
+    await savePreferences({
+      ...preferences,
+      preferredReasoningLevelsByConnection: { ...preferences.preferredReasoningLevelsByConnection, 'chatgpt-plan': level },
+    });
+  }
 
   async function saveGeminiKey(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -280,6 +387,16 @@ export default function AiConnectionsPanel() {
 
   async function changeOverride(operation: string, connectionId: AiConnectionId) {
     if (!preferences) return;
+    if (operation === 'story' && connectionId === 'chatgpt-plan') {
+      const modelId = preferences.preferredTextModelsByConnection?.['chatgpt-plan'];
+      if (modelId !== 'gpt-6-luna' || (preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default') !== 'default') {
+        setError('ChatGPT Story is available only after saving GPT-6 Luna and Default reasoning as the exact account preference.');
+        return;
+      }
+      const operationOverrides = { ...preferences.operationOverrides, story: { connectionId, modelId, reasoningLevel: 'default' as ReasoningLevel } };
+      await savePreferences({ ...preferences, operationOverrides });
+      return;
+    }
     const models = await refreshModels(connectionId);
     const model = models.find(item => item.availability.state === 'supported' &&
       (operation === 'image' ? item.imageGeneration.state === 'supported' : item.textGeneration.state === 'supported') &&
@@ -297,6 +414,33 @@ export default function AiConnectionsPanel() {
     if (!preferences?.operationOverrides?.[operation]) return;
     const operationOverrides = { ...preferences.operationOverrides };
     delete operationOverrides[operation];
+    await savePreferences({ ...preferences, operationOverrides });
+  }
+
+  async function selectOverrideModel(operation: string, modelId: string) {
+    const current = preferences?.operationOverrides?.[operation];
+    if (!preferences || !current) return;
+    const connection = status?.connections.find(item => item.id === current.connectionId);
+    const model = connection?.models.find(item => item.id === modelId);
+    if (!connection || !isCatalogSelectable(connection.state, catalogPhases[current.connectionId])) {
+      setError('Refresh this connection’s model catalog successfully before selecting from it.');
+      return;
+    }
+    const boundedChatGptStory = operation === 'story' && current.connectionId === 'chatgpt-plan' && modelId === 'gpt-6-luna' &&
+      model?.textGeneration.state === 'supported' && preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] === 'default';
+    if (!model || model.availability.state !== 'supported' || (!boundedChatGptStory &&
+      (model.operationCapabilities[operation]?.state !== 'supported' || model.operationCapabilities[operation]?.value !== true))) {
+      setError('This exact model is not verified for the selected operation. Refresh the account catalog and choose another model.');
+      return;
+    }
+    const operationOverrides = { ...preferences.operationOverrides, [operation]: { connectionId: current.connectionId, modelId, reasoningLevel: 'default' as ReasoningLevel } };
+    await savePreferences({ ...preferences, operationOverrides });
+  }
+
+  async function selectOverrideReasoning(operation: string, reasoningLevel: ReasoningLevel) {
+    const current = preferences?.operationOverrides?.[operation];
+    if (!preferences || !current) return;
+    const operationOverrides = { ...preferences.operationOverrides, [operation]: { ...current, reasoningLevel } };
     await savePreferences({ ...preferences, operationOverrides });
   }
 
@@ -330,7 +474,43 @@ export default function AiConnectionsPanel() {
               </div>
               {connection.message && <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">{connection.message}</p>}
               <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">Observed requests: {typeof observed === 'number' ? observed : 'Not available'}</p>
-              <button type="button" className={`${buttonClass} mt-2`} disabled={busy || !['available', 'connected'].includes(connection.state)} onClick={() => void refreshModels(connection.id)}>Refresh model catalog</button>
+              <button type="button" className={`${buttonClass} mt-2`} disabled={loading || busy || !['available', 'connected'].includes(connection.state)} onClick={() => void refreshModels(connection.id)}>Refresh model catalog</button>
+
+              <details className="mt-3 space-y-2 rounded border border-gray-200 p-2 dark:border-gray-700">
+                  <summary className="cursor-pointer text-sm font-medium">Model catalog ({connection.models.length}) · {catalogStateLabel(connection.state, connection.models.length, catalogPhases[connection.id])}</summary>
+                  {!['available', 'connected'].includes(connection.state) && <p className="text-xs text-gray-600 dark:text-gray-300">This connection is {stateLabel(connection.state)}. Catalog entries are retained for inspection and cannot be selected until the connection is available.</p>}
+                  {connection.models.length === 0 ? <p className="text-xs text-gray-600 dark:text-gray-300">{catalogStateLabel(connection.state, connection.models.length, catalogPhases[connection.id]) === 'refreshed; empty catalog' ? 'The latest account catalog is empty.' : 'No models are cached for this connection.'}</p> : (
+                    <ul aria-label={CONNECTION_LABELS[connection.id] + ' model catalog'} className="max-h-80 space-y-2 overflow-y-auto">
+                      {connection.models.map(model => (
+                        <li key={model.id} className="rounded border border-gray-200 p-2 text-xs dark:border-gray-700">
+                          <p className="break-words text-sm font-medium">{model.displayName}</p>
+                          <p className="break-all text-gray-600 dark:text-gray-300">{model.id}</p>
+                          <p>Catalog availability: {model.availability.state}</p>
+                          <p>Text operation eligibility: {isEligibleTextModel(model) ? 'At least one supported PCC operation' : 'Unavailable for active PCC text routing'}</p>
+                          <p>Reasoning registry: {model.reasoning.state === 'supported' ? supportedReasoningLevels(model.reasoning).join(', ') : 'Default only (explicit reasoning unverified or unsupported)'}</p>
+                          {connection.id === 'chatgpt-plan' && <p className="text-gray-600 dark:text-gray-300">Registry metadata is informational; SIWC execution has not been live-qualified. PCC inference remains blocked by the current subscription budget policy.</p>}
+                          <details className="mt-2">
+                            <summary className="cursor-pointer font-medium">Capability evidence · policy {model.capabilityPolicyVersion}</summary>
+                            <ul className="mt-1 space-y-1">
+                              {([
+                                ['Account availability', model.availability], ['Text generation', model.textGeneration],
+                                ['Structured output', model.structuredOutput], ['Context limit', model.contextLimit],
+                                ['Output limit', model.outputLimit], ['Reasoning levels', model.reasoning],
+                                ...Object.entries(model.operationCapabilities).map(([operation, capability]) => [`Operation ${operation}`, capability] as [string, AiCapabilitySummary]),
+                              ] as Array<[string, AiCapabilitySummary]>).map(([label, capability]) => <li key={label} className="break-words">
+                                <span className="font-medium">{label}: {capability.state}</span>
+                                {capability.state === 'unknown' && capability.reason && <span> · {capability.reason}</span>}
+                                {(capability.evidence ?? []).map((proof, index) => <span key={`${proof.reference}-${index}`} className="block text-gray-600 dark:text-gray-300">
+                                  {proof.source} · {proof.transport} · {proof.modelSlug} · checked {proof.checkedAt} · <a className="underline" href={proof.reference} target="_blank" rel="noreferrer">evidence</a>
+                                </span>)}
+                              </li>)}
+                            </ul>
+                          </details>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+              </details>
 
               {connection.id === 'gemini-personal' && status.localPersonalConnectionsAvailable && <div className="mt-3 space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700">
                 <form onSubmit={saveGeminiKey} className="space-y-2">
@@ -358,7 +538,7 @@ export default function AiConnectionsPanel() {
 
               {connection.id === 'chatgpt-plan' && <div className="mt-3 space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700">
                 <p className="text-xs text-gray-700 dark:text-gray-200">ChatGPT plan access uses your existing ChatGPT plan and is subject to OpenAI’s plan limits and terms. It is separate from OpenAI API billing; this app does not promise unlimited usage.</p>
-                <p className="text-xs text-amber-800 dark:text-amber-200">Models may be listed, but PCC narrative operations are unavailable through this connection until exact input-token preflight and a hard output-token budget are supported.</p>
+                <p className="text-xs text-amber-800 dark:text-amber-200">ChatGPT inference is disabled unless the local development server is explicitly started with its trusted Story activation setting. Only GPT-6 Luna with Default reasoning is qualified for Story; all other ChatGPT operations remain blocked. The activation setting is off by default.</p>
                 {connection.state === 'connected'
                   ? <button type="button" className={buttonClass} disabled={busy} onClick={() => void disconnectChatGpt()}>Disconnect ChatGPT</button>
                   : <button type="button" className={buttonClass} disabled={busy || connection.state === 'unsupported-environment'} onClick={() => void authorizeChatGpt()}>Connect ChatGPT</button>}
@@ -383,35 +563,106 @@ export default function AiConnectionsPanel() {
             <div>
               <label htmlFor="default-ai-connection" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Default connection</label>
               <select id="default-ai-connection" className={inputClass} value={preferences.defaultConnectionId} disabled={busy} onChange={event => void changeDefaultConnection(event.target.value as AiConnectionId)}>
-                {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true))))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
+                {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => item.id === 'chatgpt-plan' ? isSelectableTextPreferenceModel(model) : isEligibleTextModel(model))))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
               </select>
             </div>
             <div>
               <label htmlFor="default-ai-model" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Default text model</label>
-              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : defaultConnection?.selectedModelId ?? '')} disabled={busy || (preferences.defaultConnectionId !== 'gemini-managed' && eligibleDefaultModels.length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' ? undefined : event.target.value, ...(selectedModel?.reasoning.state === 'supported' && !(selectedModel.reasoning.value ?? []).includes(preferences.defaultReasoningLevel ?? 'default') ? { defaultReasoningLevel: 'default' } : {}) })}>
+              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : '')} disabled={busy || !defaultCatalogSelectable || (preferences.defaultConnectionId !== 'gemini-managed' && eligibleDefaultModels.length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' || !event.target.value ? undefined : event.target.value, defaultReasoningLevel: preferences.defaultConnectionId === 'chatgpt-plan' ? undefined : 'default' })}>
                 {preferences.defaultConnectionId === 'gemini-managed' && <option value="__provider_default__">Gemini provider default</option>}
-                {eligibleDefaultModels.length === 0 && preferences.defaultConnectionId !== 'gemini-managed' && <option value="">No verified PCC operations available</option>}
+                {preferences.defaultConnectionId === 'chatgpt-plan' && !preferences.defaultTextModelId && <option value="">Choose a model explicitly</option>}
+                {preferences.defaultTextModelId && !eligibleDefaultModels.some(model => model.id === preferences.defaultTextModelId) && <option value={preferences.defaultTextModelId}>Saved model unavailable · refresh or choose again</option>}
+                {eligibleDefaultModels.length === 0 && preferences.defaultConnectionId !== 'gemini-managed' && <option value="">{preferences.defaultConnectionId === 'chatgpt-plan' ? 'No verified text models available' : 'No verified PCC operations available'}</option>}
                 {eligibleDefaultModels.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
               </select>
             </div>
             <div>
               <label htmlFor="default-reasoning" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Reasoning level</label>
-              <select id="default-reasoning" className={inputClass} value={supportedReasoning.includes(preferences.defaultReasoningLevel ?? 'default') ? preferences.defaultReasoningLevel ?? 'default' : 'default'} disabled={busy} onChange={event => void savePreferences({ ...preferences, defaultReasoningLevel: event.target.value as ReasoningLevel })}>
+              <select id="default-reasoning" className={inputClass} value={preferences.defaultConnectionId === 'chatgpt-plan' ? (preferences.defaultReasoningLevel ?? '') : supportedReasoning.includes(preferences.defaultReasoningLevel ?? 'default') ? preferences.defaultReasoningLevel ?? 'default' : 'default'} disabled={busy || !defaultCatalogSelectable || (preferences.defaultConnectionId === 'chatgpt-plan' && !selectedModel)} onChange={event => void savePreferences({ ...preferences, defaultReasoningLevel: event.target.value ? event.target.value as ReasoningLevel : undefined })}>
+                {preferences.defaultConnectionId === 'chatgpt-plan' && !preferences.defaultReasoningLevel && <option value="">Choose a reasoning level explicitly</option>}
+                {preferences.defaultConnectionId === 'chatgpt-plan' && preferences.defaultReasoningLevel && !supportedReasoning.includes(preferences.defaultReasoningLevel) && <option value={preferences.defaultReasoningLevel}>Saved reasoning unavailable · choose again</option>}
                 {supportedReasoning.map(level => <option key={level} value={level}>{level}</option>)}
               </select>
+              {preferences.defaultConnectionId === 'chatgpt-plan' && (!preferences.defaultTextModelId || !preferences.defaultReasoningLevel) && <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">ChatGPT is selected as the default connection. Choose an account model and reasoning level explicitly; no model or reasoning fallback will be applied.</p>}
               {selectedModel?.reasoning.state !== 'supported' && <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">This model’s reasoning controls are unverified; provider default will be used.</p>}
             </div>
+            <fieldset className="space-y-2 rounded border border-gray-200 p-3 dark:border-gray-700">
+              <legend className="px-1 text-sm font-medium text-gray-800 dark:text-gray-100">ChatGPT plan model preference</legend>
+              <p className="text-xs text-gray-600 dark:text-gray-300">This preference is available independently of the default provider and does not send a request. Select ChatGPT plan under Default connection to route Story through ChatGPT; inference still requires the local Story activation gate and the qualified model/reasoning pair.</p>
+              {!chatGptConnection || chatGptConnection.state !== 'connected'
+                ? <p className="text-sm text-gray-700 dark:text-gray-200">Connect ChatGPT to choose a model from your account catalog.</p>
+                : <>
+                  <div>
+                    <label htmlFor="preferred-chatgpt-model" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-200">Preferred ChatGPT text model</label>
+                    <select id="preferred-chatgpt-model" className={inputClass} disabled={busy || !chatGptCatalogSelectable || chatGptTextModels.length === 0} value={preferredChatGptModelId ?? ''} onChange={event => void saveChatGptModelPreference(event.target.value)}>
+                      {!preferredChatGptModelId && <option value="">Choose a model from your account catalog</option>}
+                      {preferredChatGptModelId && !chatGptTextModels.some(model => model.id === preferredChatGptModelId) && <option value={preferredChatGptModelId}>Saved model unavailable or no longer verified · refresh or choose again</option>}
+                      {chatGptTextModels.length === 0 && <option value="">No verified text models in the current catalog</option>}
+                      {chatGptTextModels.map(model => <option key={model.id} value={model.id}>{model.displayName} · {model.id}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="preferred-chatgpt-reasoning" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-200">Preferred reasoning level</label>
+                    <select id="preferred-chatgpt-reasoning" className={inputClass} disabled={busy || !preferredChatGptModel} value={chatGptReasoningLevels.includes(preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default') ? preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default' : 'default'} onChange={event => void saveChatGptReasoningPreference(event.target.value as ReasoningLevel)}>
+                      {chatGptReasoningLevels.map(level => <option key={level} value={level}>{level}</option>)}
+                    </select>
+                  </div>
+                  <p className="text-xs text-amber-800 dark:text-amber-200">Reasoning choices reflect general model documentation, not SIWC compatibility. For ChatGPT plan, only Default is currently qualified for the bounded story operation; this preference alone does not make other levels executable.</p>
+                  <p className="text-xs text-gray-600 dark:text-gray-300">Catalog order is preserved. Models without verified text-generation capability are not selectable. Missing or stale saved models are shown without automatic substitution.</p>
+                </>}
+            </fieldset>
             <details className="pt-1">
               <summary className="cursor-pointer text-sm font-medium text-gray-800 dark:text-gray-100">Per-operation connection overrides</summary>
               <div className="mt-2 space-y-2">
-                {OPERATIONS.filter(([operation]) => operation !== 'image').map(([operation, label]) => <div key={operation} className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
-                  <label htmlFor={`override-${operation}`} className="text-sm text-gray-700 dark:text-gray-200">{label}</label>
-                  <select id={`override-${operation}`} className={inputClass} disabled={busy} value={preferences.operationOverrides?.[operation]?.connectionId ?? ''} onChange={event => event.target.value && void changeOverride(operation, event.target.value as AiConnectionId)}>
-                    <option value="">Use default</option>
-                    {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true)))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
-                  </select>
-                  {preferences.operationOverrides?.[operation] && <button type="button" className={buttonClass} disabled={busy} onClick={() => void clearOverride(operation)}>Use default</button>}
-                </div>)}
+                {OPERATIONS.filter(([operation]) => operation !== 'image').map(([operation, label]) => {
+                  const override = preferences.operationOverrides?.[operation];
+                  const connection = connections.find(item => item.id === override?.connectionId);
+                  const operationModels = (connection && isCatalogSelectable(connection.state, catalogPhases[connection.id]) ? connection.models : []).filter(model =>
+                    operation === 'story' && connection?.id === 'chatgpt-plan'
+                      ? model.id === 'gpt-6-luna' && model.availability.state === 'supported' && model.textGeneration.state === 'supported'
+                      : model.availability.state === 'supported' && model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true);
+                  const chosenModel = operationModels.find(model => model.id === override?.modelId);
+                  const reasoningLevels = supportedReasoningLevels(chosenModel?.reasoning);
+                  return <div key={operation} className="space-y-2 rounded border border-gray-200 p-2 dark:border-gray-700">
+                    {operation === 'story' && (() => {
+                      const connectionId = override?.connectionId ?? preferences.defaultConnectionId;
+                      const modelId = override?.modelId ?? preferences.defaultTextModelId ?? 'provider default';
+                      const reasoning = override?.reasoningLevel ?? preferences.defaultReasoningLevel ?? 'default';
+                      const chatGptQualified = connectionId === 'chatgpt-plan' && modelId === 'gpt-6-luna' && reasoning === 'default';
+                      return <p className="text-xs text-gray-600 dark:text-gray-300">Effective Story route: {CONNECTION_LABELS[connectionId]} · {modelId} · reasoning {reasoning}. {connectionId === 'chatgpt-plan' ? chatGptQualified
+                        ? 'Qualified only through the trusted synthetic test adapter; production ChatGPT inference is disabled.'
+                        : 'Unavailable: only GPT-6 Luna with Default reasoning is within the current Story qualification; no provider fallback will occur.'
+                        : 'Production availability follows this provider’s configuration; no provider fallback will occur.'}</p>;
+                    })()}
+                    <div className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
+                      <label htmlFor={`override-${operation}`} className="text-sm text-gray-700 dark:text-gray-200">{label}</label>
+                      <select id={`override-${operation}`} className={inputClass} disabled={busy} value={override?.connectionId ?? ''} onChange={event => event.target.value && void changeOverride(operation, event.target.value as AiConnectionId)}>
+                        <option value="">Use default</option>
+                        {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && (item.id === 'chatgpt-plan' && operation === 'story'
+                          ? item.models.some(model => model.id === 'gpt-6-luna' && model.availability.state === 'supported' && model.textGeneration.state === 'supported')
+                          : item.models.some(model => model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true))))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
+                      </select>
+                      {override && <button type="button" className={buttonClass} disabled={busy} onClick={() => void clearOverride(operation)}>Use default</button>}
+                    </div>
+                    {override && <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <div>
+                        <label htmlFor={`override-model-${operation}`} className="mb-1 block text-xs font-medium">Model for {label.toLowerCase()}</label>
+                        <select id={`override-model-${operation}`} className={inputClass} disabled={busy || operationModels.length === 0} value={override.modelId ?? ''} onChange={event => void selectOverrideModel(operation, event.target.value)}>
+                          {override.modelId && !operationModels.some(model => model.id === override.modelId) && <option value={override.modelId}>Saved model unavailable · refresh or choose again</option>}
+                          {operationModels.length === 0 && <option value="">No verified model available</option>}
+                          {operationModels.map(model => <option key={model.id} value={model.id}>{model.displayName} · {model.id}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor={`override-reasoning-${operation}`} className="mb-1 block text-xs font-medium">Reasoning for {label.toLowerCase()}</label>
+                        <select id={`override-reasoning-${operation}`} className={inputClass} disabled={busy || !chosenModel || (operation === 'story' && override.connectionId === 'chatgpt-plan')} value={reasoningLevels.includes(override.reasoningLevel ?? 'default') ? override.reasoningLevel ?? 'default' : 'default'} onChange={event => void selectOverrideReasoning(operation, event.target.value as ReasoningLevel)}>
+                          {reasoningLevels.map(level => <option key={level} value={level}>{level}</option>)}
+                        </select>
+                        {chosenModel?.reasoning.state !== 'supported' && <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">Explicit reasoning is unverified for this exact model; Default only.</p>}
+                      </div>
+                    </div>}
+                  </div>;
+                })}
                 <p className="text-xs text-gray-600 dark:text-gray-300">Image generation currently requires Gemini Managed. It will not switch billing paths automatically when another connection is selected.</p>
                 {preferences.operationOverrides?.image && <div className="flex flex-wrap items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
                   <span>The saved image override is not qualified and will not be used.</span>

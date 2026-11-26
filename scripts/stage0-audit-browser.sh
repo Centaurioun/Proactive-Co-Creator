@@ -582,7 +582,7 @@ async (page) => {
       const projectId = localStorage.getItem('proactive_co_creator_active_id_v2');
       if (!projectId) throw new Error('J10 active project identity is missing.');
       const snapshot = await new Promise((resolve, reject) => {
-        const request = indexedDB.open('proactive_co_creator_db_v2', 1);
+        const request = indexedDB.open('proactive_co_creator_db_v2');
         request.onerror = () => reject(request.error || new Error('Could not open authoritative project storage.'));
         request.onsuccess = () => {
           const db = request.result;

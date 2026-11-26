@@ -141,6 +141,7 @@ import {
   analyzePromptToBeliefGraph,
   ClientApiError,
   fetchAiCapabilities,
+  getEffectiveStoryProviderSelection,
   generateClarifications,
   generateImagesFromPrompt,
   generateStoryFromPrompt,
@@ -168,6 +169,8 @@ import type {
 } from './shared/types';
 
 type MobileTab = 'decisions' | 'graph' | 'inspector' | 'output';
+type StoryProviderUsage = { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' };
+type StoryProviderUsageRecord = { storyText: string; usage: StoryProviderUsage };
 
 const AUTO_BACKUP_PREF_KEY = 'pcc_auto_backup_pref_v1';
 
@@ -211,6 +214,10 @@ function App() {
   const [workspaceMode, setWorkspaceMode] = useState<'write' | 'plan' | 'review' | 'projects' | 'import'>(readBrowserWorkspacePreference);
   const lastStableWorkspaceModeRef = useRef<'write' | 'plan' | 'review'>(workspaceMode === 'projects' || workspaceMode === 'import' ? 'write' : workspaceMode);
   const [aiConfigured, setAiConfigured] = useState<boolean>(false);
+  const [chatGptStoryLocalActivation, setChatGptStoryLocalActivation] = useState(false);
+  const chatGptStoryLocalActivationRef = useRef(false);
+  const [storyProviderSelection, setStoryProviderSelection] = useState(getEffectiveStoryProviderSelection);
+  const [lastStoryProviderUsage, setLastStoryProviderUsage] = useState<StoryProviderUsageRecord | null>(null);
   const autoAnalysisCallCount = useRef(0);
   const [autoAnalysisCallsUsed, setAutoAnalysisCallsUsed] = useState<number>(0);
   const [autoBackupEnabled, setAutoBackupEnabled] = useState<boolean>(() => {
@@ -481,13 +488,31 @@ function App() {
     let cancelled = false;
     void fetchAiCapabilities()
       .then((cap) => {
-        if (!cancelled) setAiConfigured(Boolean(cap.configured));
+        if (!cancelled) {
+          setAiConfigured(Boolean(cap.configured));
+          setChatGptStoryLocalActivation(cap.chatGptStoryLocalActivation === true);
+          chatGptStoryLocalActivationRef.current = cap.chatGptStoryLocalActivation === true;
+        }
       })
       .catch(() => {
         if (!cancelled) setAiConfigured(false);
       });
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const refreshStorySelection = () => {
+      try { setStoryProviderSelection(getEffectiveStoryProviderSelection()); }
+      catch { setStoryProviderSelection({ connectionId: 'gemini-managed' }); }
+    };
+    window.addEventListener('pcc:ai-preferences-changed', refreshStorySelection);
+    window.addEventListener('storage', refreshStorySelection);
+    refreshStorySelection();
+    return () => {
+      window.removeEventListener('pcc:ai-preferences-changed', refreshStorySelection);
+      window.removeEventListener('storage', refreshStorySelection);
     };
   }, []);
 
@@ -1689,6 +1714,7 @@ function App() {
   );
 
   const handleGenerateOutput = useCallback(async () => {
+    const storyRequestId = globalThis.crypto.randomUUID();
     const originProject = activeProjectRef.current;
     const originSnap = originProject.snapshot;
     const promptDecision = resolveProviderPrompt(originProject, originSnap.mode);
@@ -1705,6 +1731,26 @@ function App() {
     if (!promptToUse) return;
 
     const requestMode = originSnap.mode;
+    if (requestMode === 'story') {
+      const selected = getEffectiveStoryProviderSelection();
+      if (selected.connectionId === 'chatgpt-plan') {
+        const blockedMessage = !chatGptStoryLocalActivationRef.current
+          ? 'ChatGPT Story is disabled for this local server process. No provider request was sent.'
+          : !selected.modelId || !selected.reasoningLevel
+            ? 'Choose the ChatGPT account model and reasoning level explicitly in AI settings. No provider request was sent.'
+            : selected.modelId !== 'gpt-6-luna' || selected.reasoningLevel !== 'default'
+              ? 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning. No provider request was sent.'
+              : undefined;
+        if (blockedMessage) {
+          setShowOutputDrawer(true);
+          setGalleryErrors((prev) => ({ ...prev, [originProject.id]: {
+            ...(prev[originProject.id] ?? { story: null, image: null }), story: blockedMessage,
+          } }));
+          setStatusNotification(blockedMessage);
+          return;
+        }
+      }
+    }
     const lengthCheck = validateEffectivePromptLength(promptToUse, MAX_PROMPT_CHARS);
     if (!lengthCheck.ok) {
       const msg = lengthCheck.error ?? 'Compiled prompt exceeds character limit.';
@@ -1720,7 +1766,9 @@ function App() {
       return;
     }
 
-    await runAsyncGenerationSlot({
+    let completedStoryUsage: StoryProviderUsage | undefined;
+    let completedStoryText: string | undefined;
+    const generationCompletion = await runAsyncGenerationSlot({
       authority: aiTicketAuthorityRef.current!,
       originProject,
       mode: requestMode,
@@ -1737,13 +1785,16 @@ function App() {
       },
       generate: async (signal) => {
         if (requestMode === 'story') {
-          const generatedStory = await generateStoryFromPrompt(promptToUse, signal);
-          return { storyText: generatedStory };
+          const generatedStory = await generateStoryFromPrompt(promptToUse, signal, storyRequestId);
+          completedStoryUsage = generatedStory.usage;
+          completedStoryText = generatedStory.story;
+          return { storyText: generatedStory.story };
         }
         const result = await generateImagesFromPrompt(promptToUse, signal);
         return { images: result.images, warning: result.warning };
       },
       onStart: () => {
+        setLastStoryProviderUsage(null);
         setShowOutputDrawer(true);
         setGalleryErrors((prev) => ({
           ...prev,
@@ -1767,6 +1818,10 @@ function App() {
         }));
       },
     });
+    if (requestMode === 'story' && completedStoryUsage && generationCompletion && !generationCompletion.superseded &&
+      (generationCompletion.appliedToActive || generationCompletion.appliedToBackgroundProject)) {
+      if (completedStoryText) setLastStoryProviderUsage({ storyText: completedStoryText, usage: completedStoryUsage });
+    }
   }, []);
 
   const handlePolishPromptWithAi = async () => {
@@ -2675,6 +2730,9 @@ function App() {
               images={latestImageArtifact?.images ?? []}
               imageWarning={latestImageArtifact?.warning ?? null}
               story={latestStoryArtifact?.storyText ?? null}
+              storyProviderSelection={storyProviderSelection}
+              chatGptStoryLocalActivation={chatGptStoryLocalActivation}
+              storyProviderUsage={lastStoryProviderUsage}
               mode={mode}
               isLoading={isGenerating}
               error={currentGalleryError}

@@ -37,6 +37,11 @@ async (bootstrap) => {
     await context.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname;
       if (path.endsWith('/capabilities')) return route.fulfill({ json: { configured: true } });
+      if (path === '/api/ai/provider-hub/status') return route.fulfill({ json: {
+        capabilityPolicyVersion: 'qa-synthetic-policy-v1',
+        credentialAuthorityIds: { 'gemini-managed': 'qa-synthetic-authority' },
+        connections: [{ id: 'gemini-managed', selectedModelId: 'qa-synthetic-model', models: [{ id: 'qa-synthetic-model', operationCapabilities: {} }] }],
+      } });
       if (!path.match(/\/(diagnostics\/analyze|batch-edit)$/)) throw new Error('Unexpected API route ' + path);
       const id = calls.length + 1;
       await new Promise(resolve => calls.push({ finish: resolve }));
@@ -62,6 +67,8 @@ async (bootstrap) => {
     try {
       await page.goto(base, { waitUntil: 'networkidle' });
       if (kind === 'batch') {
+        await open('Plan');
+        await page.getByRole('button', { name: /^Inbox/ }).click();
         await page.locator('#nl-batch-input').fill('The party should be mysterious.');
         await page.getByRole('button', { name: 'Preview', exact: true }).click();
         await page.getByRole('tab', { name: 'Story Bible' }).click();
@@ -80,11 +87,11 @@ async (bootstrap) => {
         continue;
       }
       if (kind === 'switch') {
-        await page.getByRole('tab', { name: 'History' }).click();
-        await page.getByLabel('New project title').fill('Other project');
-        await page.getByLabel('New project initial prompt').fill('An independent test project.');
-        await page.getByRole('button', { name: 'Create Project' }).click();
-        await page.getByRole('button', { name: /^Cat.s Woodland Dinner Party/ }).click();
+        await page.getByRole('button', { name: 'Projects', exact: true }).click();
+        await page.getByLabel('Project title').fill('Other project');
+        await page.getByLabel('Starting idea').fill('An independent test project.');
+        await page.getByRole('button', { name: 'Create project', exact: true }).click();
+        await page.getByRole('combobox', { name: 'Current project' }).selectOption({ label: 'Cat’s Woodland Dinner Party' });
       }
       await open('Review');
       if (kind === 'pause') {
@@ -94,9 +101,12 @@ async (bootstrap) => {
         await begin(start, 'narrative/diagnostics/analyze');
         if (kind === 'edit' || kind === 'switch') {
           await open('Plan');
-          await page.getByRole('tab', { name: kind === 'edit' ? 'Story Bible' : 'History' }).click();
-          if (kind === 'edit') await page.locator('#bible-genre').fill('A newer edit');
-          else await page.getByRole('button', { name: /^Other project/ }).click();
+          if (kind === 'switch') {
+            await page.getByRole('combobox', { name: 'Current project' }).selectOption({ label: 'Other project' });
+          } else {
+            await page.getByRole('tab', { name: 'Story Bible' }).click();
+            await page.locator('#bible-genre').fill('A newer edit');
+          }
           await open('Review');
         } else {
           await open('Plan');

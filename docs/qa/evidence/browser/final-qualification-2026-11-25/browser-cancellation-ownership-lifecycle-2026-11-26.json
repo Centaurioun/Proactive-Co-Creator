@@ -1,0 +1,61 @@
+{
+  "status": "PASS",
+  "candidateHead": "6878e260e0dbc537de34e6dbaf45daa21daead14",
+  "providerConfigured": false,
+  "liveProviderCalls": false,
+  "scenarios": {
+    "q06ImportCancellation": {
+      "status": "PASS",
+      "lateResponseAbortObserved": true,
+      "reviewCandidatesVisible": false,
+      "projectDigestUnchanged": true,
+      "manuscriptUnchanged": true,
+      "workspacePreferenceUnchanged": true,
+      "evidence": "q06-import-cancellation-2026-11-25.json"
+    },
+    "sharedIndexedDbLeaseRace": {
+      "status": "PASS",
+      "twoPagesSameBrowserContext": true,
+      "liveOwnerBlocksPeerReservation": true,
+      "expiredOwnerCannotRenew": true,
+      "expiredOwnerCannotCommit": true,
+      "reclamationChargesRetryBudget": true,
+      "staleCompletionRejected": true,
+      "reclaimedOwnerCompletionPersists": true,
+      "recreatedCheckpointFencesOldCompletion": true,
+      "retentionBoundedToEight": true,
+      "storageFailureVisible": true
+    },
+    "aiOwnership": {
+      "status": "PASS",
+      "scenarios": [
+        "switch",
+        "edit",
+        "pause",
+        "supersede",
+        "batch"
+      ]
+    },
+    "projectLifecycle": {
+      "status": "PASS",
+      "scenarios": [
+        "delete",
+        "append",
+        "archive",
+        "backup-retry",
+        "write-recovery"
+      ]
+    }
+  },
+  "limitations": [
+    "Browser runs used synthetic API fixtures and local storage only; no provider accounts or live AI services were contacted.",
+    "The root-cause browser capture includes the init-script API-call log; agent-browser did not expose a browser-console log API.",
+    "Q06 and checkpoint race were rerun against the R1 code candidate; AI ownership and project lifecycle were also rerun against that same candidate."
+  ],
+  "origins": {
+    "q06ImportCancellation": "http://127.0.0.1:4353",
+    "sharedIndexedDbLeaseRace": "http://127.0.0.1:4354",
+    "aiOwnership": "http://127.0.0.1:4355",
+    "projectLifecycle": "http://127.0.0.1:4355"
+  }
+}

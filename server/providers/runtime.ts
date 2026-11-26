@@ -5,11 +5,16 @@ import { ChatGptResponsesAdapter } from './chatgptResponses.ts';
 import { chatGptSessionStore } from '../auth/chatgpt/runtime.ts';
 import { getGeminiClient, hasConfiguredGeminiKey } from '../geminiClient.ts';
 import { AppApiError } from '../errors.ts';
+import { randomUUID } from 'node:crypto';
+import { CAPABILITY_POLICY_VERSION } from './policy.ts';
 
 export interface ProviderPreferences {
   defaultConnectionId: AiConnectionId;
   defaultTextModelId?: string;
   defaultReasoningLevel?: AiProviderSelection['reasoningLevel'];
+  /** Inert per-connection preferences; never used as execution authorization. */
+  preferredTextModelsByConnection?: Partial<Record<AiConnectionId, string>>;
+  preferredReasoningLevelsByConnection?: Partial<Record<AiConnectionId, AiProviderSelection['reasoningLevel']>>;
   operationOverrides?: Record<string, AiProviderSelection>;
 }
 
@@ -24,6 +29,10 @@ let managedGeminiModels: AiModelDescriptor[] = [];
 let chatGptModels: AiModelDescriptor[] = [];
 let openAiApiModels: AiModelDescriptor[] = [];
 const observed = new Map<AiConnectionId, number>();
+// Opaque, non-secret runtime identity. It intentionally changes on process
+// restart so persisted work cannot silently resume against an unqualified
+// credential authority.
+const processAuthorityId = randomUUID();
 interface CredentialAuthorityState { generation: number; active: Set<AbortController> }
 const credentialAuthorities = new Map<AiConnectionId, CredentialAuthorityState>([
   ['gemini-personal', { generation: 0, active: new Set() }],
@@ -34,6 +43,13 @@ function authorityState(connectionId: AiConnectionId): CredentialAuthorityState 
   let state = credentialAuthorities.get(connectionId);
   if (!state) { state = { generation: 0, active: new Set() }; credentialAuthorities.set(connectionId, state); }
   return state;
+}
+
+export function getCredentialAuthorityId(connectionId: AiConnectionId): string {
+  const generation = connectionId === 'chatgpt-plan'
+    ? chatGptSessionStore.getGeneration()
+    : authorityState(connectionId).generation;
+  return `${processAuthorityId}:${connectionId}:${generation}`;
 }
 
 function invalidateCredentialAuthority(connectionId: AiConnectionId): void {
@@ -180,6 +196,11 @@ export function connectionDescriptors(localPersonalConnectionsAvailable: boolean
 export function providerHubStatus(localPersonalConnectionsAvailable: boolean) {
   return {
     localPersonalConnectionsAvailable,
+    capabilityPolicyVersion: CAPABILITY_POLICY_VERSION,
+    credentialAuthorityIds: Object.fromEntries(
+      (['gemini-managed', 'gemini-personal', 'chatgpt-plan', 'openai-api'] as const)
+        .map(connectionId => [connectionId, getCredentialAuthorityId(connectionId)]),
+    ),
     connections: connectionDescriptors(localPersonalConnectionsAvailable),
     preferences: getPreferences(),
     usage: {

@@ -101,7 +101,7 @@ test('model listing maps only SDK-reported supported actions and reasoning suppo
   assert.equal(models[0].operationCapabilities.story?.state, 'supported');
   assert.equal(models[0].operationCapabilities.writing?.state, 'unknown');
   assert.equal(models[0].operationCapabilities.analyze?.state, 'unknown');
-  assert.equal(models[0].capabilityPolicyVersion, '2026-11-26.2');
+  assert.equal(models[0].capabilityPolicyVersion, '2026-11-26.3');
   assert.equal(models[1].imageGeneration.state, 'supported');
   assert.equal(models[1].operationCapabilities.image?.state, 'unsupported');
   assert.equal(models[2].textGeneration.state, 'unknown');

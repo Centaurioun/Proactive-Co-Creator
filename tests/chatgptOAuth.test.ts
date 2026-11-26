@@ -7,6 +7,7 @@ import { ChatGptResponsesAdapter } from '../server/providers/chatgptResponses.ts
 
 const CLIENT_ID = 'test-client';
 const ISSUED_CLIENT_ID = 'oaiapp_test-client';
+const OFFICIAL_ISSUER = 'https://auth.openai.com';
 const REDIRECT = 'http://127.0.0.1:43129/auth/callback';
 const fixedNow = () => 1_800_000_000_000;
 
@@ -37,7 +38,7 @@ test('token response parser accepts documented OAuth token fields and hides prov
 
 test('OpenID discovery rejects endpoints outside the fixed official host', async () => {
   await assert.rejects(() => discoverOpenId(async () => jsonResponse({
-    issuer: CHATGPT_OAUTH_ISSUER,
+    issuer: OFFICIAL_ISSUER,
     authorization_endpoint: 'https://evil.example/authorize',
     token_endpoint: 'https://auth.openai.com/oauth/token',
     jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',
@@ -45,6 +46,7 @@ test('OpenID discovery rejects endpoints outside the fixed official host', async
 });
 
 test('authorization code flow uses state, nonce, PKCE, verifies JWKS signature, and consumes state once', async () => {
+  assert.equal(CHATGPT_OAUTH_ISSUER, OFFICIAL_ISSUER);
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'test-key', use: 'sig', alg: 'RS256' };
   let now = fixedNow();
@@ -53,7 +55,7 @@ test('authorization code flow uses state, nonce, PKCE, verifies JWKS signature, 
     const url = String(input);
     seen.push({ url, init });
     if (url.endsWith('/.well-known/openid-configuration')) return jsonResponse({
-      issuer: CHATGPT_OAUTH_ISSUER,
+      issuer: OFFICIAL_ISSUER,
       authorization_endpoint: 'https://auth.openai.com/oauth/authorize',
       token_endpoint: 'https://auth.openai.com/oauth/token',
       jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',
@@ -67,7 +69,7 @@ test('authorization code flow uses state, nonce, PKCE, verifies JWKS signature, 
       assert.equal(body.get('redirect_uri'), REDIRECT);
       assert.ok(body.get('code_verifier'));
       const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'test-key', typ: 'JWT' })).toString('base64url');
-      const claims = Buffer.from(JSON.stringify({ iss: CHATGPT_OAUTH_ISSUER, sub: 'user-1', aud: ISSUED_CLIENT_ID, exp: Math.floor(now / 1000) + 600, iat: Math.floor(now / 1000), nonce: authorizationNonce })).toString('base64url');
+      const claims = Buffer.from(JSON.stringify({ iss: OFFICIAL_ISSUER, sub: 'user-1', aud: ISSUED_CLIENT_ID, exp: Math.floor(now / 1000) + 600, iat: Math.floor(now / 1000), nonce: authorizationNonce })).toString('base64url');
       const signer = createSign('RSA-SHA256');
       signer.update(`${header}.${claims}`);
       signer.end();
@@ -88,7 +90,11 @@ test('authorization code flow uses state, nonce, PKCE, verifies JWKS signature, 
   assert.equal(authUrl.searchParams.get('agent_name_hint'), 'Proactive Co-Creator');
   assert.equal(authUrl.searchParams.get('ext_agent_host_id'), 'urn:uuid:host-test');
   assert.equal(authUrl.searchParams.get('resource'), 'https://api.openai.com/v1');
-  assert.ok(authUrl.searchParams.get('scope')?.split(/\s+/).includes('offline_access'));
+  const requestedScopes = authUrl.searchParams.get('scope')?.split(/\s+/) ?? [];
+  assert.deepEqual(new Set(requestedScopes), new Set([
+    'openid', 'profile', 'email', 'offline_access', 'resource.invoke', 'chatgpt.tokens.use.direct',
+  ]));
+  assert.equal(requestedScopes.length, new Set(requestedScopes).size);
   assert.equal(authUrl.searchParams.get('state'), request.state);
   assert.equal(authUrl.searchParams.get('code_challenge_method'), 'S256');
   assert.match(authUrl.searchParams.get('code_challenge') ?? '', /^[A-Za-z0-9_-]{43}$/);
@@ -110,7 +116,7 @@ test('a stale OAuth callback cannot exchange a cancelled authorization state', a
     fetch: async (input) => {
       calls += 1;
       if (String(input).endsWith('/.well-known/openid-configuration')) return jsonResponse({
-        issuer: CHATGPT_OAUTH_ISSUER,
+        issuer: OFFICIAL_ISSUER,
         authorization_endpoint: 'https://auth.openai.com/oauth/authorize',
         token_endpoint: 'https://auth.openai.com/oauth/token',
         jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',

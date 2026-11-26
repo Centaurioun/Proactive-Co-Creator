@@ -182,6 +182,53 @@ test('streams Responses text and requires the completed terminal event', async (
   assert.equal('max_output_tokens' in body, false);
 });
 
+test('bounded story transport verifies its plan body and enforces SSE limits incrementally', async () => {
+  const storyRequest = request({ reasoningLevel: 'default', maxInputBytes: 32 * 1024, maxOutputBytes: 16 * 1024, timeoutMs: 60_000 });
+  const body = JSON.stringify({
+    model: storyRequest.modelId,
+    input: [{ role: 'user', content: storyRequest.input }],
+    store: false,
+    stream: true,
+  });
+  const response = sse(
+    { type: 'response.output_text.delta', delta: 'Bounded story.' },
+    { type: 'response.completed', response: { usage: { input_tokens: 9, output_tokens: 4 } } },
+  );
+  const bytes = new TextEncoder().encode(await response.clone().text()).byteLength;
+  const adapter = new ChatGptResponsesAdapter('local-token', async (_input, init) => {
+    assert.equal(init?.body, body);
+    return response;
+  });
+  const result = await adapter.generateStoryText(storyRequest, body, {
+    maxStreamBytes: 256 * 1024, maxAcceptedOutputBytes: 16 * 1024, maxStreamEvents: 4_096,
+  });
+  assert.equal(result.text, 'Bounded story.');
+  assert.equal(result.terminalEvent, 'response.completed');
+  assert.equal(result.streamBytes, bytes);
+  assert.equal(result.eventCount, 2);
+  assert.equal(result.refusal, false);
+
+  const tooManyEvents = new ChatGptResponsesAdapter('local-token', async () => sse(
+    { type: 'response.created', response: {} },
+    { type: 'response.completed', response: {} },
+  ));
+  await assert.rejects(tooManyEvents.generateStoryText(storyRequest, body, {
+    maxStreamBytes: 256 * 1024, maxAcceptedOutputBytes: 16 * 1024, maxStreamEvents: 1,
+  }), /event-count limit/);
+});
+
+test('bounded story transport rejects a body that differs from its prepared plan', async () => {
+  let calls = 0;
+  const adapter = new ChatGptResponsesAdapter('local-token', async () => { calls += 1; return sse({ type: 'response.completed', response: {} }); });
+  await assert.rejects(adapter.generateStoryText(request({ reasoningLevel: 'default' }), '{}', {
+    maxStreamBytes: 256 * 1024, maxAcceptedOutputBytes: 16 * 1024, maxStreamEvents: 4_096,
+  }), /does not match its approved serialized plan/);
+  await assert.rejects(adapter.generateStoryText(request({ reasoningLevel: 'high' }), '{}', {
+    maxStreamBytes: 256 * 1024, maxAcceptedOutputBytes: 16 * 1024, maxStreamEvents: 4_096,
+  }), /default-reasoning/);
+  assert.equal(calls, 0);
+});
+
 test('rejects streams that end without response.completed', async () => {
   const adapter = new ChatGptResponsesAdapter('local-token', async () => sse(
     { type: 'response.output_text.delta', delta: 'partial' },

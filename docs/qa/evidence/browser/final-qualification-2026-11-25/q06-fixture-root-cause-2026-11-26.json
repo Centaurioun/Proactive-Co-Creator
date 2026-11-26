@@ -1,0 +1,16 @@
+{
+  "status": "ROOT_CAUSE_REPRODUCED",
+  "candidateHead": "73017f9174764b514871d8007246d932ff772f81",
+  "origin": "http://127.0.0.1:4350",
+  "providerConfigured": false,
+  "failedScenario": "staged-source-to-analysis-ready",
+  "observedBrowserApiCalls": [
+    { "path": "/api/ai/capabilities", "method": "GET", "mocked": true },
+    { "path": "/api/ai/capabilities", "method": "GET", "mocked": true }
+  ],
+  "missingFixtureRequest": { "path": "/api/ai/provider-hub/status", "method": "GET" },
+  "failure": "Analyze source did not become enabled before the 20 second timeout.",
+  "cause": "The init script mocked the retired capabilities response. ImportWorkflow now fetches provider-hub/status and requires capabilityPolicyVersion, credentialAuthorityIds for the selected connection, and a matching connection/model identity before planning the import.",
+  "evidenceSource": "agent-browser page evaluation of window.__pccImportQa.apiCalls during reproduction; command failure and seeded baseline recorded by the unmodified qualification script.",
+  "limitations": ["No browser console log API was available through this agent-browser session; the API-call log was captured from the init-script QA hook."]
+}
