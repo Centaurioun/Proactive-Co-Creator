@@ -233,8 +233,8 @@ describe('server/routes API contract', () => {
 
   it('qualifies the ChatGPT story route through the injected SRB and Responses transport chain', async () => {
     const originalModels = getChatGptModels();
-    const modelId = 'gpt-6.2-sol';
-    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT 6.2 Sol' })]);
+    const modelId = 'gpt-6-luna';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT-6 Luna' })]);
     let transportCalls = 0;
     let fallbackCalls = 0;
     const authority = createChatGptStorySrbAuthority({ enabled: true, makeId: () => 'story-plan-test-1' });
@@ -283,6 +283,18 @@ describe('server/routes API contract', () => {
       assert.deepEqual(await response.json(), { story: 'A mocked story.' });
       assert.equal(transportCalls, 1);
       assert.equal(fallbackCalls, 0);
+
+      const unqualifiedReasoning = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-ai-reasoning': 'high',
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(unqualifiedReasoning.status, 422);
+      assert.equal(transportCalls, 1);
+      assert.equal(fallbackCalls, 0);
     } finally {
       await server.close();
       closeServer = null;
@@ -292,8 +304,8 @@ describe('server/routes API contract', () => {
 
   it('keeps ordinary ChatGPT story production admission blocked without trusted injection', async () => {
     const originalModels = getChatGptModels();
-    const modelId = 'gpt-6.2-sol';
-    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT 6.2 Sol' })]);
+    const modelId = 'gpt-6-luna';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT-6 Luna' })]);
     let fallbackCalls = 0;
     const server = await startTestServer(createStubHandlers({
       generateStoryText: async () => { fallbackCalls += 1; return 'No fallback.'; },

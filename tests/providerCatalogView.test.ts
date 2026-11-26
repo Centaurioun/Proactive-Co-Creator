@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { catalogStateLabel, isCatalogSelectable, modelsForConnection, isEligibleTextModel } from '../lib/providerCatalogView.ts';
+import { catalogStateLabel, isCatalogSelectable, modelsForConnection, isEligibleTextModel, isSelectableTextPreferenceModel } from '../lib/providerCatalogView.ts';
 
 test('refreshing a different catalog does not change the active model choices', () => {
   const gemini = [{ id: 'gemini' }];
@@ -16,6 +16,9 @@ test('account catalog visibility is independent of active text-operation eligibi
   assert.deepEqual(modelsForConnection([{ id: 'chatgpt-plan', models: [blocked] }], 'chatgpt-plan'), [blocked]);
   assert.equal(isEligibleTextModel(blocked), false);
   assert.equal(isEligibleTextModel({ ...blocked, operationCapabilities: { story: { state: 'supported', value: true } } }), true);
+  assert.equal(isSelectableTextPreferenceModel(blocked), true);
+  assert.equal(isSelectableTextPreferenceModel({ ...blocked, textGeneration: { state: 'unknown' } }), false);
+  assert.equal(isSelectableTextPreferenceModel({ ...blocked, availability: { state: 'unsupported' } }), false);
 });
 
 test('ten account-visible entries preserve server order when Gemini is the active default', () => {

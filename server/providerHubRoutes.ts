@@ -195,6 +195,18 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'The selected reasoning preference is invalid.' } });
       return;
     }
+    const preferredModels = value.preferredTextModelsByConnection;
+    if (preferredModels !== undefined && (!preferredModels || typeof preferredModels !== 'object' || Array.isArray(preferredModels) ||
+      Object.entries(preferredModels).some(([connectionId, modelId]) => connectionId !== 'chatgpt-plan' || !validModelId(modelId)))) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Connection-scoped preferred text models are invalid.' } });
+      return;
+    }
+    const preferredReasoning = value.preferredReasoningLevelsByConnection;
+    if (preferredReasoning !== undefined && (!preferredReasoning || typeof preferredReasoning !== 'object' || Array.isArray(preferredReasoning) ||
+      Object.entries(preferredReasoning).some(([connectionId, level]) => connectionId !== 'chatgpt-plan' || !REASONING.includes(level as AiReasoningLevel)))) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Connection-scoped preferred reasoning levels are invalid.' } });
+      return;
+    }
     if (value.defaultConnectionId !== 'gemini-managed' && !value.defaultTextModelId) {
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Choose a model from the refreshed account catalog before saving this default connection.' } });
       return;

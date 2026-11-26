@@ -35,6 +35,33 @@ test('text follows the selected provider while images stay on the disclosed exis
   }
 });
 
+test('a saved ChatGPT preference does not change active provider routing or start inference', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  installPreferences(JSON.stringify({
+    defaultConnectionId: 'gemini-managed',
+    preferredTextModelsByConnection: { 'chatgpt-plan': 'gpt-6-luna' },
+    preferredReasoningLevelsByConnection: { 'chatgpt-plan': 'medium' },
+  }));
+  const calls: Array<{ connection: string | null; model: string | null; reasoning: string | null }> = [];
+  globalThis.fetch = async (_input, init) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      connection: headers.get('x-pcc-ai-connection'),
+      model: headers.get('x-pcc-ai-model'),
+      reasoning: headers.get('x-pcc-ai-reasoning'),
+    });
+    return new Response(JSON.stringify({ clarifications: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    await generateClarifications('A safe question prompt.', [], 'story');
+    assert.deepEqual(calls, [{ connection: 'gemini-managed', model: null, reasoning: null }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
 test('malformed saved preferences fail before any provider request', async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;

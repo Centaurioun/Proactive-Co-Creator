@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invalidateAiProviderRequests } from '../../services/apiClient';
-import { catalogStateLabel, isCatalogSelectable, isEligibleTextModel, modelsForConnection, type CatalogRefreshPhase } from '../../lib/providerCatalogView';
+import { catalogStateLabel, isCatalogSelectable, isEligibleTextModel, isSelectableTextPreferenceModel, modelsForConnection, type CatalogRefreshPhase } from '../../lib/providerCatalogView';
 import type { AiReasoningLevel as ReasoningLevel } from '../../server/providers/contracts';
 
 type AiConnectionId = 'gemini-managed' | 'gemini-personal' | 'chatgpt-plan' | 'openai-api';
@@ -56,6 +56,8 @@ interface ProviderPreferences {
   defaultConnectionId: AiConnectionId;
   defaultTextModelId?: string;
   defaultReasoningLevel?: ReasoningLevel;
+  preferredTextModelsByConnection?: Partial<Record<AiConnectionId, string>>;
+  preferredReasoningLevelsByConnection?: Partial<Record<AiConnectionId, ReasoningLevel>>;
   operationOverrides?: Record<string, {
     connectionId: AiConnectionId;
     modelId?: string;
@@ -251,6 +253,29 @@ export default function AiConnectionsPanel() {
     : undefined;
   const eligibleDefaultModels = currentDefaultCatalog ? modelOptions.filter(isEligibleTextModel) : [];
   const supportedReasoning = supportedReasoningLevels(selectedModel?.reasoning);
+  const chatGptConnection = connections.find(item => item.id === 'chatgpt-plan');
+  const chatGptCatalogSelectable = isCatalogSelectable(chatGptConnection?.state ?? '', catalogPhases['chatgpt-plan']);
+  const chatGptTextModels = (chatGptConnection?.models ?? []).filter(isSelectableTextPreferenceModel);
+  const preferredChatGptModelId = preferences?.preferredTextModelsByConnection?.['chatgpt-plan'];
+  const preferredChatGptModel = chatGptTextModels.find(model => model.id === preferredChatGptModelId);
+  const chatGptReasoningLevels = supportedReasoningLevels(preferredChatGptModel?.reasoning);
+
+  async function saveChatGptModelPreference(modelId: string) {
+    if (!preferences || !modelId) return;
+    await savePreferences({
+      ...preferences,
+      preferredTextModelsByConnection: { ...preferences.preferredTextModelsByConnection, 'chatgpt-plan': modelId },
+      preferredReasoningLevelsByConnection: { ...preferences.preferredReasoningLevelsByConnection, 'chatgpt-plan': 'default' },
+    });
+  }
+
+  async function saveChatGptReasoningPreference(level: ReasoningLevel) {
+    if (!preferences) return;
+    await savePreferences({
+      ...preferences,
+      preferredReasoningLevelsByConnection: { ...preferences.preferredReasoningLevelsByConnection, 'chatgpt-plan': level },
+    });
+  }
 
   async function saveGeminiKey(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -528,6 +553,30 @@ export default function AiConnectionsPanel() {
               </select>
               {selectedModel?.reasoning.state !== 'supported' && <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">This model’s reasoning controls are unverified; provider default will be used.</p>}
             </div>
+            <fieldset className="space-y-2 rounded border border-gray-200 p-3 dark:border-gray-700">
+              <legend className="px-1 text-sm font-medium text-gray-800 dark:text-gray-100">ChatGPT plan model preference</legend>
+              <p className="text-xs text-gray-600 dark:text-gray-300">This saved preference does not change the active provider, enable an operation, or send an inference request.</p>
+              {!chatGptConnection || chatGptConnection.state !== 'connected'
+                ? <p className="text-sm text-gray-700 dark:text-gray-200">Connect ChatGPT to choose a model from your account catalog.</p>
+                : <>
+                  <div>
+                    <label htmlFor="preferred-chatgpt-model" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-200">Preferred ChatGPT text model</label>
+                    <select id="preferred-chatgpt-model" className={inputClass} disabled={busy || !chatGptCatalogSelectable || chatGptTextModels.length === 0} value={preferredChatGptModelId ?? ''} onChange={event => void saveChatGptModelPreference(event.target.value)}>
+                      {preferredChatGptModelId && !chatGptTextModels.some(model => model.id === preferredChatGptModelId) && <option value={preferredChatGptModelId}>Saved model unavailable or no longer verified · refresh or choose again</option>}
+                      {chatGptTextModels.length === 0 && <option value="">No verified text models in the current catalog</option>}
+                      {chatGptTextModels.map(model => <option key={model.id} value={model.id}>{model.displayName} · {model.id}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="preferred-chatgpt-reasoning" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-200">Preferred reasoning level</label>
+                    <select id="preferred-chatgpt-reasoning" className={inputClass} disabled={busy || !preferredChatGptModel} value={chatGptReasoningLevels.includes(preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default') ? preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default' : 'default'} onChange={event => void saveChatGptReasoningPreference(event.target.value as ReasoningLevel)}>
+                      {chatGptReasoningLevels.map(level => <option key={level} value={level}>{level}</option>)}
+                    </select>
+                  </div>
+                  <p className="text-xs text-amber-800 dark:text-amber-200">Reasoning choices reflect general model documentation, not SIWC compatibility. For ChatGPT plan, only Default is currently qualified for the bounded story operation; this preference alone does not make other levels executable.</p>
+                  <p className="text-xs text-gray-600 dark:text-gray-300">Catalog order is preserved. Models without verified text-generation capability are not selectable. Missing or stale saved models are shown without automatic substitution.</p>
+                </>}
+            </fieldset>
             <details className="pt-1">
               <summary className="cursor-pointer text-sm font-medium text-gray-800 dark:text-gray-100">Per-operation connection overrides</summary>
               <div className="mt-2 space-y-2">

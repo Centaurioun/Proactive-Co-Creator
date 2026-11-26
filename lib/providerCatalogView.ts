@@ -31,3 +31,8 @@ export function isEligibleTextModel(model: EligibilityDescriptor): boolean {
   return model.availability.state === 'supported' && model.textGeneration.state === 'supported' &&
     Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true);
 }
+
+/** A saved preference needs verified text capability, not an enabled operation. */
+export function isSelectableTextPreferenceModel(model: Pick<EligibilityDescriptor, 'availability' | 'textGeneration'>): boolean {
+  return model.availability.state === 'supported' && model.textGeneration.state === 'supported';
+}

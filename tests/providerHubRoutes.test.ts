@@ -105,6 +105,47 @@ test('preference routes reject ChatGPT models with no effective PCC operation ca
   }
 });
 
+test('ChatGPT text-model preferences are saved independently from active routing eligibility', async () => {
+  const previousPreferences = getPreferences();
+  const previousModels = getChatGptModels();
+  try {
+    setChatGptModels([describeChatGptModel({ id: 'gpt-6-luna', displayName: 'GPT-6 Luna' }, 'chatgpt-plan')]);
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: {
+          defaultConnectionId: 'gemini-managed',
+          preferredTextModelsByConnection: { 'chatgpt-plan': 'gpt-6-luna' },
+          preferredReasoningLevelsByConnection: { 'chatgpt-plan': 'medium' },
+        } }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      const saved = (await response.json() as { preferences: Record<string, unknown> }).preferences;
+      assert.equal(saved.defaultConnectionId, 'gemini-managed');
+      assert.deepEqual(saved.preferredTextModelsByConnection, { 'chatgpt-plan': 'gpt-6-luna' });
+      assert.deepEqual(saved.preferredReasoningLevelsByConnection, { 'chatgpt-plan': 'medium' });
+
+      const status = await fetch(`${baseUrl}/api/ai/provider-hub/status`, { headers: sameOrigin(baseUrl) });
+      const reloaded = (await status.json() as { preferences: Record<string, unknown> }).preferences;
+      assert.equal(reloaded.defaultConnectionId, 'gemini-managed');
+      assert.deepEqual(reloaded.preferredTextModelsByConnection, { 'chatgpt-plan': 'gpt-6-luna' });
+      assert.deepEqual(reloaded.preferredReasoningLevelsByConnection, { 'chatgpt-plan': 'medium' });
+
+      const invalid = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: {
+          defaultConnectionId: 'gemini-managed',
+          preferredTextModelsByConnection: { 'openai-api': 'gpt-6-luna' },
+        } }),
+      });
+      assert.equal(invalid.status, 400);
+    });
+  } finally {
+    setChatGptModels(previousModels);
+    setPreferences(previousPreferences);
+  }
+});
+
 test('OpenAI API key management is local-only, session-only, and makes no provider request', async () => {
   setOpenAiApiKey(undefined);
   try {

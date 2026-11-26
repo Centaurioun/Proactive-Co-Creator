@@ -12,6 +12,9 @@ export interface ProviderPreferences {
   defaultConnectionId: AiConnectionId;
   defaultTextModelId?: string;
   defaultReasoningLevel?: AiProviderSelection['reasoningLevel'];
+  /** Inert per-connection preferences; never used as execution authorization. */
+  preferredTextModelsByConnection?: Partial<Record<AiConnectionId, string>>;
+  preferredReasoningLevelsByConnection?: Partial<Record<AiConnectionId, AiProviderSelection['reasoningLevel']>>;
   operationOverrides?: Record<string, AiProviderSelection>;
 }
 
