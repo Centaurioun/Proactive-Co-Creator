@@ -15,19 +15,34 @@ async (bootstrap) => {
     const context = await bootstrap.context().browser().newContext();
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
-    const open = (name) => page.getByRole('navigation', { name: 'Narrative workspace' })
+    const projectHub = () => page.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    const open = (name) => name === 'Projects' ? projectHub() : page.getByRole('navigation', { name: 'Narrative workspace' })
       .getByRole('button', { name, exact: true }).click();
-    const history = () => page.getByRole('tab', { name: 'History' }).click();
+    const history = async () => {
+      await projectHub();
+      await page.getByRole('navigation', { name: 'Project workspace sections' })
+        .getByRole('button', { name: 'Revision history', exact: true }).click();
+    };
     const create = async (name) => {
-      await page.getByLabel('New project title').fill(name);
-      await page.getByLabel('New project initial prompt').fill('Synthetic fixture');
-      await page.getByRole('button', { name: 'Create Project', exact: true }).click();
-      await page.getByRole('button', { name: new RegExp('^' + name) }).waitFor();
+      await projectHub();
+      const projectSection = page.getByRole('navigation', { name: 'Project workspace sections' });
+      if (await projectSection.getByRole('button', { name: 'Projects', exact: true }).count()) {
+        await projectSection.getByRole('button', { name: 'Projects', exact: true }).click();
+      }
+      await page.locator('#new-project-title').fill(name);
+      await page.locator('#new-project-idea').fill('Synthetic fixture');
+      await page.getByRole('button', { name: 'Create project', exact: true }).click();
+      await page.getByRole('combobox', { name: 'Current project' }).selectOption({ label: name });
     };
     await context.route('**/api/**', route => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/health') return route.continue();
       if (path === '/api/ai/capabilities') return route.fulfill({ json: { configured: true } });
+      if (path === '/api/ai/provider-hub/status') return route.fulfill({ json: {
+        capabilityPolicyVersion: 'qa-synthetic-policy-v1',
+        credentialAuthorityIds: { 'gemini-managed': 'qa-synthetic-authority' },
+        connections: [{ id: 'gemini-managed', selectedModelId: 'qa-synthetic-model', models: [{ id: 'qa-synthetic-model', operationCapabilities: {} }] }],
+      } });
       if (path === '/api/narrative/import/extract') {
         return route.fulfill({ json: { extraction: { entities: [], relationships: [], findings: [], ambiguities: [] } } });
       }
@@ -71,20 +86,23 @@ async (bootstrap) => {
         await saved();
         if (await editor.inputValue() !== 'First verified manuscript line.') throw new Error('Schema 4 manuscript did not reload.');
         await open('Projects');
+        await page.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export', exact: true }).click();
         await page.getByRole('button', { name: 'Create Backup', exact: true }).click();
         await page.getByText('Verified project backup created.', { exact: true }).waitFor();
         await open('Write');
         await write('Text added after the backup.');
         await open('Projects');
+        await page.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export', exact: true }).click();
         await page.getByRole('listitem').filter({ hasText: 'Manual backup' }).getByRole('button', { name: 'Preview restore' }).click();
         page.once('dialog', dialog => dialog.accept());
-        await page.getByRole('button', { name: 'Replace current project' }).click();
+        await page.getByRole('button', { name: 'Review replacement confirmation', exact: true }).click();
         await page.getByText('Project replaced after saving a verified safety checkpoint.', { exact: true }).waitFor();
         await open('Write');
         await saved();
         if (await editor.inputValue() !== 'First verified manuscript line.') throw new Error('Verified replacement changed the backup manuscript.');
       } else if (kind === 'backup-retry') {
         await open('Projects');
+        await page.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export', exact: true }).click();
         const backup = page.getByRole('checkbox', { name: /create a verified browser backup automatically/ });
         await backup.check();
         await page.waitForFunction(() => window.failedAutoBackup);
@@ -95,7 +113,9 @@ async (bootstrap) => {
       } else if (kind === 'delete') {
         await history();
         await create('Doomed project');
-        await page.getByRole('button', { name: /^Cat.s Woodland Dinner Party/ }).click();
+        await page.getByRole('combobox', { name: 'Current project' }).selectOption({ label: 'Cat’s Woodland Dinner Party' });
+        await open('Plan');
+        await page.getByRole('tab', { name: 'History' }).click();
         await page.evaluate(() => {
           const deleteOriginal = IDBObjectStore.prototype.delete;
           IDBObjectStore.prototype.delete = function (...args) {
@@ -117,19 +137,20 @@ async (bootstrap) => {
         await create('Created during deletion');
         await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('proactive_co_creator_projects_v2') || '{}'))
           .some(project => project.name === 'Created during deletion'));
-        await page.getByRole('button', { name: /^Created during deletion/ }).waitFor();
+        await page.getByRole('combobox', { name: 'Current project' }).selectOption({ label: 'Created during deletion' });
         await page.evaluate(() => { window.releaseDeletion(); });
         await page.getByText(/Deleted project from localStorage and IndexedDB|Incomplete deletion warning/).first().waitFor();
-        if (!await page.getByRole('button', { name: /^Created during deletion/ }).isVisible()) {
+        if (!(await page.getByRole('combobox', { name: 'Current project' }).locator('option').allTextContents()).includes('Created during deletion')) {
           throw new Error('Deletion completion dropped the project created while it was pending.');
         }
       } else if (kind === 'append') {
-        await open('Import Story');
+        await page.getByRole('button', { name: 'Import', exact: true }).click();
         await page.getByRole('textbox', { name: 'Or paste narrative text' }).fill('Ada walked along the river.');
-        await page.getByRole('button', { name: 'Preview source' }).click();
-        await page.getByRole('radio', { name: 'Append to Existing Project' }).check();
-        await page.getByRole('button', { name: 'Analyze source' }).click();
+        await page.getByRole('button', { name: 'Inspect source' }).click();
+        await page.getByText('Source inspected', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Analyze source', exact: true }).click();
         await page.getByText(/All planned source segments were analyzed/).waitFor();
+        await page.getByRole('radio', { name: 'Append to an existing project' }).check();
         const writer = await context.newPage();
         await writer.goto(base + '/api/health');
         await writer.evaluate(async () => {
@@ -141,8 +162,8 @@ async (bootstrap) => {
         });
         await writer.close();
         await page.getByRole('button', { name: 'Reload Latest from Storage' }).click();
-        await page.getByText('Changed append target (Rev #2)').waitFor({ state: 'attached' });
-        const append = page.getByRole('button', { name: 'Append to "Changed append target"', exact: true });
+        await page.getByText(/Changed append target/).first().waitFor({ state: 'attached' });
+        const append = page.getByRole('button', { name: /Append.*Changed append target/ });
         const reviewUpdated = page.getByRole('button', { name: 'Review updated target' });
         if (!await append.isDisabled() || !await reviewUpdated.isVisible()) {
           throw new Error('Append became eligible against a changed target without renewed review.');
@@ -159,6 +180,7 @@ async (bootstrap) => {
           return Array.from(bytes);
         });
         await open('Projects');
+        await page.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export', exact: true }).click();
         await page.locator('#all-projects-archive-input').setInputFiles({
           name: 'fixture.zip', mimeType: 'application/zip', buffer: Buffer.from(archive),
         });
@@ -193,17 +215,19 @@ async (bootstrap) => {
         await open('Plan');
         await history();
         await create('Created during archive restore');
+        await page.getByRole('combobox', { name: 'Current project' }).selectOption({ label: 'Created during archive restore' });
         await page.evaluate(() => { window.releaseArchive(); });
         await page.waitForFunction(() => window.archiveFailureReady);
         await page.getByRole('alert', { name: 'Storage conflict or quota alert' }).waitFor();
-        if (!await page.getByRole('button', { name: /^Created during archive restore/ }).isVisible()) {
+        if (!(await page.getByRole('combobox', { name: 'Current project' }).locator('option').allTextContents()).includes('Created during archive restore')) {
           throw new Error('Partial archive restore dropped the unrelated new project.');
         }
-        await page.getByRole('button', { name: /^Archived A/ }).waitFor();
-        if (await page.getByRole('button', { name: /^Archived B/ }).count()) throw new Error('Failed archive project appeared in the list.');
+        const projectOptions = await page.getByRole('combobox', { name: 'Current project' }).locator('option').allTextContents();
+        if (!projectOptions.includes('Archived A')) throw new Error('First verified archive project was not retained.');
+        if (projectOptions.includes('Archived B')) throw new Error('Failed archive project appeared in the list.');
       }
     } catch (error) {
-      failures.push(kind + ': ' + error.message);
+      failures.push(kind + ': ' + error.message + '\nPAGE_TEXT=' + await page.locator('body').innerText().catch(() => 'unavailable'));
     } finally {
       await context.close();
     }

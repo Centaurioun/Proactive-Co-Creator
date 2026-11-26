@@ -9,6 +9,18 @@
     note: 'Isolated browser fixture; no provider is configured or contacted.',
     operations: {},
   };
+  // Current import planning binds a request to the provider identity contract.
+  // This is synthetic metadata only; it never represents a configured account.
+  const providerHubStatus = {
+    localPersonalConnectionsAvailable: false,
+    capabilityPolicyVersion: 'qa-synthetic-policy-v1',
+    credentialAuthorityIds: { 'gemini-managed': 'qa-synthetic-authority' },
+    connections: [{
+      id: 'gemini-managed',
+      selectedModelId: 'qa-synthetic-model',
+      models: [{ id: 'qa-synthetic-model', operationCapabilities: {} }],
+    }],
+  };
 
   const qa = {
     apiCalls: [],
@@ -94,6 +106,14 @@
     if (url.pathname === '/api/ai/capabilities') {
       qa.apiCalls.push({ path: url.pathname, method, mocked: true });
       return Promise.resolve(new Response(JSON.stringify(capabilityResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+
+    if (url.pathname === '/api/ai/provider-hub/status') {
+      qa.apiCalls.push({ path: url.pathname, method, mocked: true, fixture: 'synthetic-provider-identity' });
+      return Promise.resolve(new Response(JSON.stringify(providerHubStatus), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }));
