@@ -18,6 +18,11 @@ import { calculateProcessedCoverage, planAdaptiveNarrativeSourceAnalysis, type S
 import { countNarrativeWords, MAX_RETAINED_ORIGINAL_BYTES, parseNarrativeSource, type ParsedNarrativeSource } from '../../lib/narrative/import/sourceParser';
 import { manuscriptSections } from '../../lib/narrative/manuscriptModel';
 import {
+  createImportCheckpoint, deleteImportCheckpoint, listImportCheckpoints, matchesImportCheckpointIdentity,
+  reserveImportSegmentAttempt, saveImportCheckpoint, updateImportCheckpoint, validateCheckpointEvidence,
+  type ImportCheckpoint,
+} from '../../lib/narrative/import/analysisCheckpoints';
+import {
   attachAcceptedStage2Opportunities,
   createStage2EnhancementController,
   type Stage2EnhancementController,
@@ -40,6 +45,7 @@ interface ImportProviderPlanContext {
   reasoningLevel: string;
   contextLimitTokens?: number;
   operationEligible: boolean;
+  capabilityPolicyVersion?: string;
 }
 const categoryOptions: Array<[Category, string]> = [
   ['characters', 'Characters and identities'], ['attributes', 'Attributes and aliases'], ['relationships', 'Relationships'],
@@ -116,6 +122,10 @@ export default function ImportWorkflow({
   const [creating, setCreating] = useState(false);
   const [allowIncomplete, setAllowIncomplete] = useState(false);
   const [providerPlanContext, setProviderPlanContext] = useState<ImportProviderPlanContext | null>(null);
+  const [checkpointCandidates, setCheckpointCandidates] = useState<ImportCheckpoint[]>([]);
+  const [checkpointMessage, setCheckpointMessage] = useState('');
+  const [checkpointRestored, setCheckpointRestored] = useState(false);
+  const [activeCheckpointId, setActiveCheckpointId] = useState<string | null>(null);
 
   // Destination: Create New vs Append to Existing Project (Package H)
   const [destination, setDestination] = useState<'new' | 'append'>('new');
@@ -147,6 +157,7 @@ export default function ImportWorkflow({
   const inProgressRef = useRef(false);
   const creatingRef = useRef(false);
   const providerSnapshotRef = useRef<string | null>(null);
+  const checkpointRef = useRef<ImportCheckpoint | null>(null);
 
   useEffect(() => {
     const stage2Controller = createStage2EnhancementController(setStage2State);
@@ -169,6 +180,7 @@ export default function ImportWorkflow({
         const response = await fetch('/api/ai/provider-hub/status');
         if (!response.ok) throw new Error('Provider context is unavailable.');
         const status = await response.json() as {
+          capabilityPolicyVersion?: string;
           connections?: Array<{ id: string; selectedModelId?: string; models?: Array<{
             id: string; contextLimit?: { state: string; value?: number };
             operationCapabilities?: Record<string, { state?: string; value?: boolean }>;
@@ -191,6 +203,7 @@ export default function ImportWorkflow({
           reasoningLevel: override?.reasoningLevel ?? prefs.defaultReasoningLevel ?? 'default',
           contextLimitTokens: model?.contextLimit?.state === 'supported' ? model.contextLimit.value : undefined,
           operationEligible: connectionId === 'gemini-managed' || (operation?.state === 'supported' && operation.value === true),
+          capabilityPolicyVersion: status.capabilityPolicyVersion,
         });
       } catch {
         if (current) setProviderPlanContext(null);
@@ -319,6 +332,10 @@ export default function ImportWorkflow({
   );
 
   const resetAnalysis = (clearSourceIdentity = false) => {
+    checkpointRef.current = null;
+    setCheckpointRestored(false);
+    setActiveCheckpointId(null);
+    if (clearSourceIdentity) { setCheckpointCandidates([]); setCheckpointMessage(''); }
     setSourceOnlyMode(false);
     setChunks([]); setSegmentationComplete(false); setResults([]); setCompletedChunkIds(new Set());
     setFailedChunks([]); setRejectedEvidenceCount(0); setCancelled(false); setCallsUsed(0);
@@ -350,6 +367,18 @@ export default function ImportWorkflow({
       sourceReadAbortRef.current = null;
       const nextSourceId = crypto.randomUUID();
       setSource(parsed); setSourceId(nextSourceId);
+      try {
+        const checkpoints = await listImportCheckpoints(window.indexedDB);
+        if (checkpoints.ok) {
+          setCheckpointCandidates(checkpoints.value.filter(item => item.source.digest === parsed.digest &&
+            item.source.filename === parsed.filename && item.source.mediaType === parsed.mediaType &&
+            item.source.byteLength === parsed.byteLength));
+        } else {
+          setCheckpointMessage(`Saved analysis checkpoints are unavailable: ${checkpoints.error}`);
+        }
+      } catch (error) {
+        setCheckpointMessage(`Saved analysis checkpoints are unavailable: ${error instanceof Error ? error.message : 'IndexedDB access failed.'}`);
+      }
       stage2ControllerRef.current?.setActiveSource({
         sourceId: nextSourceId,
         sourceVersion: 'v1',
@@ -375,6 +404,78 @@ export default function ImportWorkflow({
     resetAnalysis(true);
   };
 
+  const restoreSavedCheckpoint = async (checkpoint: ImportCheckpoint) => {
+    if (!source || !providerPlanContext) {
+      setCheckpointMessage('Refresh the provider status and preview the source before restoring this checkpoint.');
+      return;
+    }
+    const runConfiguration = { scope, categories: [...categories], instruction: instruction.trim() };
+    const plan = planAdaptiveNarrativeSourceAnalysis(source.text, source.blocks, MAX_EXTRACTION_CALLS,
+      providerPlanContext.contextLimitTokens ? {
+        maxInputTokens: Math.min(8_000, providerPlanContext.contextLimitTokens),
+        envelopeReserveTokens: Math.min(1_500, Math.floor(providerPlanContext.contextLimitTokens * 0.2)),
+      } : undefined);
+    const identityInput = {
+      source: { digest: source.digest, filename: source.filename, mediaType: source.mediaType, byteLength: source.byteLength },
+      scope: runConfiguration.scope,
+      categories: runConfiguration.scope === 'complete' ? allCategories : runConfiguration.categories,
+      instruction: runConfiguration.instruction,
+      provider: {
+        connectionId: providerPlanContext.connectionId,
+        ...(providerPlanContext.modelId ? { modelId: providerPlanContext.modelId } : {}),
+        reasoningLevel: providerPlanContext.reasoningLevel,
+        ...(providerPlanContext.capabilityPolicyVersion ? { capabilityPolicyVersion: providerPlanContext.capabilityPolicyVersion } : {}),
+      },
+      complete: plan.complete,
+      maxCalls: MAX_EXTRACTION_CALLS,
+      maxInputTokens: plan.limits.maxInputTokens,
+      envelopeReserveTokens: plan.limits.envelopeReserveTokens,
+      ...(providerPlanContext.contextLimitTokens ? { contextLimitTokens: providerPlanContext.contextLimitTokens } : {}),
+      totalCharacters: source.text.length,
+      chunks: plan.chunks.map(({ id, index, start, end }) => ({ id, index, start, end })),
+    };
+    if (!await matchesImportCheckpointIdentity(checkpoint, identityInput)) {
+      setCheckpointMessage('This checkpoint does not match the current source, analysis plan, instruction, provider, model, or reasoning setting.');
+      return;
+    }
+    if (!validateCheckpointEvidence(checkpoint, source.text, source.digest)) {
+      setCheckpointMessage('Saved evidence no longer matches the source text. This checkpoint is rejected; no provider request was made.');
+      return;
+    }
+    const persisted = await updateImportCheckpoint(window.indexedDB, checkpoint.id, current => {
+      current.segments = current.segments.map(segment => segment.status === 'in-flight' ? { ...segment, status: 'uncertain' } : segment);
+    });
+    if (!persisted.ok) {
+      setCheckpointMessage(`The checkpoint could not be safely restored: ${persisted.error}`);
+      return;
+    }
+    const restored = persisted.value;
+    const rebindEvidence = (result: VerifiedExtraction): VerifiedExtraction => {
+      const rebind = <T extends { evidence: { sourceId: string } }>(item: T): T => ({ ...item, evidence: { ...item.evidence, sourceId } });
+      return {
+        findings: result.findings.map(rebind),
+        entities: result.entities.map(entity => ({ ...rebind(entity), attributes: entity.attributes.map(rebind) })),
+        relationships: result.relationships.map(rebind),
+        ambiguities: result.ambiguities.map(rebind),
+        rejectedEvidenceCount: result.rejectedEvidenceCount,
+      };
+    };
+    const restoredChunks = restored.segments.map(segment => ({
+      id: segment.id, index: segment.index, start: segment.start, end: segment.end,
+      text: source.text.slice(segment.start, segment.end),
+    }));
+    const completeSegments = restored.segments.filter(segment => segment.status === 'complete' && segment.result);
+    checkpointRef.current = restored;
+    setCheckpointRestored(true);
+    setActiveCheckpointId(restored.id);
+    setChunks(restoredChunks); setSegmentationComplete(restored.plan.complete);
+    setResults(completeSegments.map(segment => rebindEvidence(segment.result!)));
+    setCompletedChunkIds(new Set(completeSegments.map(segment => segment.id)));
+    setFailedChunks(restored.segments.filter(segment => segment.status === 'failed').map(segment => restoredChunks[segment.index]).filter(Boolean));
+    setCallsUsed(restored.budget.callsUsed); setRejectedEvidenceCount(completeSegments.reduce((sum, segment) => sum + (segment.result?.rejectedEvidenceCount ?? 0), 0));
+    setAnalysisConfiguration(runConfiguration); setCheckpointMessage('Checkpoint restored. Completed segments were reused; analysis continues only after you choose Analyze source.');
+  };
+
   const startAnalysis = async (retry = false) => {
     if (!source || inProgressRef.current) return;
     setSourceOnlyMode(false);
@@ -395,15 +496,62 @@ export default function ImportWorkflow({
       instruction: instruction.trim(),
     };
     if (!retry || !analysisConfiguration) setAnalysisConfiguration(runConfiguration);
-    const planned = retry ? failedChunks : (() => {
-      const segmented = initialAnalysisPlan ?? planAdaptiveNarrativeSourceAnalysis(source.text, source.blocks, callBudget - callsUsed);
+    let planned: SourceChunk[];
+    let checkpoint = checkpointRef.current;
+    if (checkpoint) {
+      const normalized = await updateImportCheckpoint(window.indexedDB, checkpoint.id, current => {
+        current.segments = current.segments.map(segment => segment.status === 'in-flight' ? { ...segment, status: 'uncertain' } : segment);
+      });
+      if (!normalized.ok) {
+        setRequestError(`Analysis stopped before provider access because checkpoint recovery could not be verified: ${normalized.error}`);
+        setBusy(false); inProgressRef.current = false;
+        if (abortRef.current === controller) abortRef.current = null;
+        return;
+      }
+      checkpoint = normalized.value; checkpointRef.current = checkpoint;
+    }
+    if (retry) {
+      planned = failedChunks;
+    } else if (checkpoint) {
+      planned = checkpoint.segments.filter(segment => segment.status !== 'complete').map(segment => ({
+        id: segment.id, index: segment.index, start: segment.start, end: segment.end,
+        text: source.text.slice(segment.start, segment.end),
+      }));
+    } else {
+      const segmented = initialAnalysisPlan ?? planAdaptiveNarrativeSourceAnalysis(source.text, source.blocks, callBudget);
+      const config = retry && analysisConfiguration ? analysisConfiguration : { scope, categories: [...categories], instruction: instruction.trim() };
+      const created = await createImportCheckpoint({
+        source: { digest: source.digest, filename: source.filename, mediaType: source.mediaType, byteLength: source.byteLength },
+        scope: config.scope,
+        categories: config.scope === 'complete' ? allCategories : config.categories,
+        instruction: config.instruction,
+        provider: {
+          connectionId: providerPlanContext?.connectionId ?? 'unknown',
+          ...(providerPlanContext?.modelId ? { modelId: providerPlanContext.modelId } : {}),
+          reasoningLevel: providerPlanContext?.reasoningLevel ?? 'default',
+          ...(providerPlanContext?.capabilityPolicyVersion ? { capabilityPolicyVersion: providerPlanContext.capabilityPolicyVersion } : {}),
+        },
+        complete: segmented.complete, maxCalls: callBudget, totalCharacters: source.text.length,
+        maxInputTokens: segmented.limits.maxInputTokens,
+        envelopeReserveTokens: segmented.limits.envelopeReserveTokens,
+        ...(providerPlanContext?.contextLimitTokens ? { contextLimitTokens: providerPlanContext.contextLimitTokens } : {}),
+        chunks: segmented.chunks.map(({ id, index, start, end }) => ({ id, index, start, end })),
+      });
+      const saved = await saveImportCheckpoint(window.indexedDB, created);
+      if (!saved.ok) {
+        setRequestError(`Analysis stopped before provider access because the local recovery checkpoint could not be saved: ${saved.error}`);
+        setBusy(false); inProgressRef.current = false;
+        if (abortRef.current === controller) abortRef.current = null;
+        return;
+      }
+      checkpoint = created; checkpointRef.current = created;
+      setActiveCheckpointId(created.id);
+      planned = segmented.chunks;
       setChunks(segmented.chunks); setSegmentationComplete(segmented.complete);
-      setCompletedChunkIds(new Set()); setResults([]); setFailedChunks([]); setRejectedEvidenceCount(0);
-      return segmented.chunks;
-    })();
+      setCompletedChunkIds(new Set()); setResults([]); setFailedChunks([]); setRejectedEvidenceCount(0); setCallsUsed(0);
+    }
     const failures: SourceChunk[] = [];
     let totalRejected = rejectedEvidenceCount;
-    let callsRemaining = callBudget - callsUsed;
     try {
       for (let index = 0; index < planned.length; index += 1) {
         const chunk = planned[index];
@@ -415,9 +563,15 @@ export default function ImportWorkflow({
           setRequestError('The provider selection changed during this analysis. Remaining segments were stopped; review the plan and start a new analysis to use the new selection.');
           break;
         }
-        if (callsRemaining <= 0) { failures.push(...planned.slice(index)); break; }
-        callsRemaining -= 1;
-        setCallsUsed((value) => value + 1);
+        if (!checkpoint) { failures.push(...planned.slice(index)); setRequestError('Analysis checkpoint authority is unavailable.'); break; }
+        const reservation = await reserveImportSegmentAttempt(window.indexedDB, checkpoint.id, chunk.id, true);
+        if (!reservation.ok) {
+          failures.push(...planned.slice(index));
+          setRequestError(`Analysis stopped before the next provider request because its persistent budget could not be reserved: ${reservation.error}`);
+          break;
+        }
+        checkpoint = reservation.value; checkpointRef.current = checkpoint;
+        setCallsUsed(checkpoint.budget.callsUsed);
         try {
           const request: NarrativeExtractionRequest = {
             sourceId, sourceVersion: 'v1', digest: source.digest, chunkId: chunk.id, text: chunk.text,
@@ -427,17 +581,44 @@ export default function ImportWorkflow({
           };
           const raw = await extractNarrativeChunk(request, controller.signal);
           if (controller.signal.aborted || runEpoch !== epochRef.current) {
+            await updateImportCheckpoint(window.indexedDB, checkpoint.id, current => {
+              const segment = current.segments.find(item => item.id === chunk.id);
+              if (segment) segment.status = 'uncertain';
+            });
             failures.push(...planned.slice(index));
             break;
           }
           const validated = verifyExtractionEvidence(NarrativeExtractionSchema.parse(raw), chunk,
             { id: sourceId, version: 'v1', digest: source.digest });
+          const persisted = await updateImportCheckpoint(window.indexedDB, checkpoint.id, current => {
+            const segment = current.segments.find(item => item.id === chunk.id);
+            if (segment) { segment.status = 'complete'; segment.result = validated; }
+            const done = current.segments.filter(item => item.status === 'complete');
+            current.coverage = {
+              complete: current.plan.complete && done.length === current.segments.length,
+              processedCharacters: calculateProcessedCoverage(done.map(item => ({ start: item.start, end: item.end, id: item.id, index: item.index, text: '' })))
+                .reduce((sum, span) => sum + span.end - span.start, 0),
+              totalCharacters: source.text.length,
+            };
+          });
+          if (!persisted.ok) {
+            failures.push(...planned.slice(index));
+            setRequestError(`The provider result was not committed to the local recovery checkpoint, so analysis stopped: ${persisted.error}`);
+            break;
+          }
+          checkpoint = persisted.value; checkpointRef.current = checkpoint;
           totalRejected += validated.rejectedEvidenceCount;
           setRejectedEvidenceCount(totalRejected);
           setResults((previous) => [...previous, validated]);
           setCompletedChunkIds((previous) => new Set([...previous, chunk.id]));
         } catch (error) {
-          if (isAbortError(error) || controller.signal.aborted) { failures.push(...planned.slice(index)); break; }
+          const uncertain = isAbortError(error) || controller.signal.aborted;
+          const persisted = await updateImportCheckpoint(window.indexedDB, checkpoint.id, current => {
+            const segment = current.segments.find(item => item.id === chunk.id);
+            if (segment) segment.status = uncertain ? 'uncertain' : 'failed';
+          });
+          if (persisted.ok) { checkpoint = persisted.value; checkpointRef.current = checkpoint; }
+          if (uncertain) { failures.push(...planned.slice(index)); break; }
           failures.push(chunk);
           setRequestError(error instanceof Error ? error.message : 'A source segment could not be analyzed.');
         }
@@ -733,6 +914,23 @@ export default function ImportWorkflow({
           <label className="block text-sm" htmlFor="import-instructions">Optional import-specific guidance (cannot override faithful extraction)</label>
           <textarea id="import-instructions" className="min-h-20 w-full rounded border p-2 dark:bg-gray-950" maxLength={1000} value={instruction} onChange={(event) => { resetAnalysis(); setInstruction(event.target.value); }} />
           <p className="text-sm">Analysis sends selected source segments through the configured narrative-import AI route. No analysis request is made until Analyze source.</p>
+          {checkpointMessage && <p role="status" className="text-sm">{checkpointMessage}</p>}
+          {checkpointCandidates.length > 0 && (
+            <section className="space-y-2 rounded border border-gray-200 p-3 text-sm dark:border-gray-700" aria-label="Saved analysis checkpoints">
+              <h3 className="font-medium">Saved analysis checkpoints</h3>
+              <p>These checkpoints contain verified proposals and source references, not manuscript text or credentials. Restoring never starts provider requests.</p>
+              {checkpointCandidates.map(checkpoint => (
+                <div key={checkpoint.id} className="flex flex-wrap items-center gap-2">
+                  <span>{checkpoint.plan.scope} · {checkpoint.segments.filter(segment => segment.status === 'complete').length}/{checkpoint.segments.length} segments · {checkpoint.budget.callsUsed}/{checkpoint.budget.maxCalls} attempts used</span>
+                  <button type="button" className={workspaceButton} disabled={busy || !providerPlanContext} onClick={() => void restoreSavedCheckpoint(checkpoint)}>Restore checkpoint</button>
+                  <button type="button" className={workspaceButton} disabled={busy || activeCheckpointId === checkpoint.id} onClick={() => void deleteImportCheckpoint(window.indexedDB, checkpoint.id).then(result => {
+                    if (result.ok) { setCheckpointCandidates(current => current.filter(item => item.id !== checkpoint.id)); setCheckpointMessage('Saved analysis checkpoint deleted.'); }
+                    else setCheckpointMessage(`Checkpoint could not be deleted: ${result.error}`);
+                  })}>Delete checkpoint</button>
+                </div>
+              ))}
+            </section>
+          )}
           {initialAnalysisPlan && (
             <div className="space-y-1 rounded border border-gray-200 p-3 text-sm dark:border-gray-700" aria-label="Local analysis plan">
               <p className="font-medium">Automatic analysis plan</p>
@@ -747,7 +945,7 @@ export default function ImportWorkflow({
           )}
           <div className="flex flex-wrap gap-2">
             <button type="button" className={workspaceButton} disabled={!source || busy || creating || (parsedHasFileRetentionGap && !confirmExtractedOnly)} onClick={() => { resetAnalysis(); setSourceOnlyMode(true); }}>Continue with source only</button>
-            <button type="button" className={workspaceButton} disabled={!canAnalyze || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false)}>Analyze source</button>
+            <button type="button" className={workspaceButton} disabled={!canAnalyze || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false)}>{checkpointRestored ? 'Continue analysis' : 'Analyze source'}</button>
             {busy && <button type="button" className={workspaceButton} onClick={cancelAnalysis}>Cancel analysis</button>}
             {failedChunks.length > 0 && !busy && <button type="button" className={workspaceButton} disabled={callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(true)}>Retry failed segments ({failedChunks.length})</button>}
           </div>

@@ -5,6 +5,7 @@
 
 import type { CreativeProject } from '../../shared/types.ts';
 import { IDB_NAME, IDB_STORE, type DurableWriteOptions, type StorageSaveResult } from './constants.ts';
+import { IMPORT_CHECKPOINT_STORE } from '../narrative/import/analysisCheckpoints.ts';
 import { evaluateCasConflict, mergeIntentIds } from './casPolicy.ts';
 
 export function getIndexedDb(): { factory?: IDBFactory; error?: string } {
@@ -43,10 +44,13 @@ function withProjectDatabase<Result>(
       finish(failed(message, quotaExceeded));
     };
     try {
-      const request = factory.open(IDB_NAME, 1);
+      const request = factory.open(IDB_NAME, 2);
       request.onupgradeneeded = () => {
         const database = request.result;
         if (!database.objectStoreNames.contains(IDB_STORE)) database.createObjectStore(IDB_STORE, { keyPath: 'id' });
+        if (!database.objectStoreNames.contains(IMPORT_CHECKPOINT_STORE)) {
+          database.createObjectStore(IMPORT_CHECKPOINT_STORE, { keyPath: 'id' });
+        }
       };
       request.onerror = () => fail(request.error, 'Could not open IndexedDB.');
       request.onblocked = () => fail(undefined, 'Another tab is blocking IndexedDB initialization.');
