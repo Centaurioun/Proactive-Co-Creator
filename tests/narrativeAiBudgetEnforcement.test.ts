@@ -137,6 +137,23 @@ describe('narrative AI budget enforcement', () => {
     assert.ok(generationConfig?.responseSchema);
   });
 
+  it('preserves the native Gemini countTokens method receiver during extraction preflight', async () => {
+    const models = {
+      async countTokens(this: unknown, _params: { model: string; contents: string; config?: Record<string, unknown> }) {
+        assert.equal(this, models);
+        return { totalTokens: 10, source: 'provider-count' as const };
+      },
+      async generateContent() {
+        return { text: JSON.stringify({ findings: [], entities: [], relationships: [], ambiguities: [] }) };
+      },
+    };
+    const client = { models } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    await extractNarrativeChunk({
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `c${Date.now().toString(16).padStart(63, '0')}`,
+      chunkId: 'native-count-receiver', text: 'Synthetic narrative.', scope: 'complete', categories: [], instruction: '',
+    }, undefined, client);
+  });
+
   it('uses the same OpenAI extraction input and schema constraints for preflight and blocks over-budget inference', async () => {
     const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
     let count = 12;

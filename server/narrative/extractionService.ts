@@ -109,7 +109,7 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       model: string; contents: string; config: { abortSignal: AbortSignal; responseSchema?: unknown };
     }) => Promise<{ totalTokens?: number }>;
     const tokenCount = await Promise.race([
-      countTokens({ model: selectedModel, contents: prompt, config: countConfig }),
+      countTokens.call(ai.models, { model: selectedModel, contents: prompt, config: countConfig }),
       new Promise<never>((_, reject) => {
         countTimer = setTimeout(() => {
           abort.abort(new AppApiError('TIMEOUT', 'Provider token counting timed out; extraction was not started.', 504, true));
