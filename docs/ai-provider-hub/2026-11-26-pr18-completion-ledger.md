@@ -44,10 +44,10 @@ All four workers were spawned as GPT-6 Luna / Medium from the exact verified bas
 - Browser checks on an isolated Chromium session and keyless local server: E2E-A through E2E-I passed; Stage0 J01–J12 and audit/performance phases passed; narrative mutations passed. These are synthetic local checks, not hosted or provider qualification.
 - Additional browser harnesses remain inconclusive: import cancellation timed out waiting for its Inspect-source flow to enable Analyze (no checks recorded); AI ownership and project lifecycle scripts failed on legacy/missing UI selectors. No product defect was established by those selector failures. The checkpoint harness did not exercise a true two-browser-context race.
 - Independent review reported no other material issue in the inspected source paths. It was a technical review, not formal acceptance.
-- Hosted CI and PR body update remain pending.
+- Hosted workflow run [45772573384](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45772573384) passed on source candidate `813548aa82d208e6fe4e9c09f05010c4893bdd29`: Node 22.13.0, Node 22.x, Node 24.x, and hosted Chromium E2E A–I. PR #18's draft description was updated with the implementation, evidence and remaining limits.
 
 ## Current limitations
 
 - No provider, account, credential, paid-use, merge, or deployment action has occurred.
 - No provider/account qualification, credential action, paid use, merge, or deployment has occurred.
-- The final branch SHA, tree, hosted CI result, and updated PR body will be recorded after publication.
+- No provider/account qualification, credential action, paid use, merge, or deployment has occurred. The passing hosted run above verifies the complete source candidate; a documentation-only ledger follow-up records this hosted result.
