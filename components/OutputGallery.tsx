@@ -26,6 +26,9 @@ interface OutputDisplayProps {
   images: string[];
   imageWarning?: string | null;
   story: string | null;
+  storyProviderSelection: { connectionId: string; modelId?: string; reasoningLevel?: string };
+  chatGptStoryLocalActivation: boolean;
+  storyProviderUsage: { storyText: string; usage: { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' } } | null;
   mode: GenerationMode;
   isLoading: boolean;
   error: string | null;
@@ -51,6 +54,9 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   images,
   imageWarning,
   story,
+  storyProviderSelection,
+  chatGptStoryLocalActivation,
+  storyProviderUsage,
   mode,
   isLoading,
   error,
@@ -72,6 +78,14 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   const displayedImages =
     mode === 'image' ? (activeArtifact?.images ?? images) : images;
   const displayedOutdated = activeArtifact ? activeArtifact.isOutdated : isOutdated;
+  const chatGptStorySelected = mode === 'story' && storyProviderSelection.connectionId === 'chatgpt-plan';
+  const chatGptStoryQualified = storyProviderSelection.modelId === 'gpt-6-luna' && storyProviderSelection.reasoningLevel === 'default';
+  const chatGptStoryBlocked = chatGptStorySelected && (!chatGptStoryLocalActivation || !chatGptStoryQualified);
+  const chatGptStoryBlockReason = !chatGptStoryLocalActivation
+    ? 'ChatGPT Story is disabled for this local server process.'
+    : !storyProviderSelection.modelId || !storyProviderSelection.reasoningLevel
+      ? 'Choose the account model and reasoning level explicitly in AI settings.'
+      : 'Only GPT-6 Luna with Default reasoning is qualified for ChatGPT Story.';
 
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const lightboxDialogRef = useRef<HTMLDivElement | null>(null);
@@ -350,6 +364,13 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
         ) : (
           /* View 2: Generated Story or Images */
           <div className="flex-1 overflow-y-auto min-h-0 relative">
+            {mode === 'story' && <div className="mb-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200" role="status">
+              <p className="font-semibold">Effective Story route: {storyProviderSelection.connectionId === 'chatgpt-plan' ? 'ChatGPT plan' : storyProviderSelection.connectionId} · model {storyProviderSelection.modelId ?? 'provider default / not selected'} · reasoning {storyProviderSelection.reasoningLevel ?? 'not selected'}.</p>
+              {chatGptStorySelected && <>
+                <p className="mt-1">A request may consume included ChatGPT allowance or eligible credits. Failed, cancelled, incomplete, or uncertain requests may still count. PCC will not retry, continue, or fall back to Gemini or API billing; local cancellation may not stop work already received upstream.</p>
+                <p className="mt-1">{chatGptStoryBlocked ? chatGptStoryBlockReason : 'This local server is enabled for explicit Story requests.'}</p>
+              </>}
+            </div>}
             {displayedOutdated && !isLoading && (displayedImages.length > 0 || displayedStory) && (
               <div className="mb-2.5 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-2 text-xs text-amber-900 dark:text-amber-200">
                 <span>
@@ -358,7 +379,8 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
                 <button
                   type="button"
                   onClick={onGenerate}
-                  className="px-2.5 py-1 font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded whitespace-nowrap"
+                  disabled={chatGptStoryBlocked}
+                  className="px-2.5 py-1 font-semibold bg-amber-600 hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50 text-white rounded whitespace-nowrap"
                 >
                   Regenerate Now
                 </button>
@@ -395,6 +417,11 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
                     .map((paragraph, index) => (
                       <p key={index}>{paragraph}</p>
                     ))}
+                  {storyProviderSelection.connectionId === 'chatgpt-plan' && storyProviderUsage && displayedStory === storyProviderUsage.storyText && <p className="border-t border-gray-200 pt-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
+                    {storyProviderUsage.usage.source === 'provider-observed'
+                      ? `Provider-observed usage: input ${storyProviderUsage.usage.inputTokens ?? 'not reported'} tokens; output ${storyProviderUsage.usage.outputTokens ?? 'not reported'} tokens.`
+                      : 'The provider did not report token usage for this response.'}
+                  </p>}
                 </article>
               ) : (
                 <div className="p-6 text-center rounded-md border border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-950/40 flex flex-col items-center justify-center gap-2">
@@ -404,7 +431,8 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
                   <button
                     type="button"
                     onClick={onGenerate}
-                    className="px-3.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+                    disabled={chatGptStoryBlocked}
+                    className="px-3.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 text-white rounded-md transition-colors"
                   >
                     Generate Story from Confirmed Plan
                   </button>

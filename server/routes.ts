@@ -56,7 +56,8 @@ import {
 import { AppApiError, classifyGeminiError } from './errors.ts';
 import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
-import { createProviderHubRouter, resolveClientSelection } from './providerHubRoutes.ts';
+import { createProviderHubRouter, hasSameOriginLocalRequest, resolveClientSelection } from './providerHubRoutes.ts';
+import type { ProviderHubRouterOptions } from './providerHubRoutes.ts';
 import { getAiProviderRequestContext, runWithAiProviderContext } from './providers/requestContext.ts';
 import { CAPABILITY_POLICY_VERSION, assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
 import { createChatGptAdapter, getCachedProviderModel, getCredentialAuthorityId } from './providers/runtime.ts';
@@ -160,12 +161,16 @@ function sendErrorResponse(res: Response, err: unknown): void {
 export interface ApiRouterOptions {
   rateLimitWindowMs?: number;
   maxRequestsPerWindow?: number;
+  /** Trusted development-process gate; no HTTP endpoint can enable it. */
+  chatGptStoryLocalActivation?: boolean;
   /** Trusted deterministic qualification seam. Production createApiRouter() never supplies it. */
   chatGptStorySrbTestInjection?: {
     authority: ChatGptStorySrbAuthority;
     currentGrantGeneration: () => number;
     adapterFactory: (generation: number) => Pick<ChatGptResponsesAdapter, 'generateStoryText'>;
   };
+  /** In-process synthetic account catalog for key-free browser qualification only. */
+  chatGptProviderHubTestInjection?: Pick<ProviderHubRouterOptions, 'chatGptStoryQualificationCatalog'>;
 }
 
 const defaultChatGptStorySrbAuthority = createChatGptStorySrbAuthority();
@@ -176,6 +181,11 @@ export function createApiRouter(
   options: ApiRouterOptions = {}
 ): Router {
   const router = express.Router();
+  // This ledger is process-local by design. Altering the startup gate requires
+  // a server restart, which also starts a fresh request/quota identity ledger.
+  const localStoryAuthority = options.chatGptStoryLocalActivation
+    ? createChatGptStorySrbAuthority({ enabled: true })
+    : defaultChatGptStorySrbAuthority;
   const windowMs = options.rateLimitWindowMs ?? 60_000;
   const maxRequests = options.maxRequestsPerWindow ?? 60;
   const clientWindows = new Map<string, { count: number; resetAt: number }>();
@@ -242,10 +252,10 @@ export function createApiRouter(
       : path.startsWith('/narrative/import/enhance') ? 'import-enhance'
       : 'story';
     try {
-      const injectedStoryQualification = operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
-        options.chatGptStorySrbTestInjection !== undefined;
-      if (injectedStoryQualification && (selection.reasoningLevel ?? 'default') !== 'default') {
-        throw new AppApiError('MODEL_UNSUPPORTED', 'The story pilot uses Default reasoning only.', 422, false);
+      const authorizedBoundedStory = operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
+        (options.chatGptStorySrbTestInjection !== undefined || options.chatGptStoryLocalActivation === true);
+      if (authorizedBoundedStory && (selection.reasoningLevel ?? 'default') !== 'default') {
+        throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story uses Default reasoning only.', 422, false);
       }
       const providerPlanBinding = isNarrativeExtraction && req.body && typeof req.body === 'object'
         ? (req.body as { providerPlanBinding?: unknown }).providerPlanBinding
@@ -270,7 +280,7 @@ export function createApiRouter(
           throw new AppApiError('CANCELLED', 'The provider, model, reasoning, policy, or credential session changed after the analysis plan was approved. Preview and confirm a new plan.', 409, false);
         }
       }
-      if (!injectedStoryQualification) assertProviderOperation(selection.connectionId, operation);
+      if (!authorizedBoundedStory) assertProviderOperation(selection.connectionId, operation);
       if (selection.connectionId !== 'gemini-managed' && !selection.modelId) {
         throw new AppApiError('MODEL_UNSUPPORTED', 'Refresh this connection’s model list and select a model before using it.', 422, false);
       }
@@ -281,7 +291,7 @@ export function createApiRouter(
             (selection.reasoningLevel ?? 'default') === 'default';
           if (!managedDefault) throw new AppApiError('MODEL_UNSUPPORTED', 'The selected model is not in the latest server-verified account catalog. Refresh the model list.', 422, false);
         } else {
-          if (!injectedStoryQualification) assertModelOperation(model, operation);
+          if (!authorizedBoundedStory) assertModelOperation(model, operation);
           assertReasoningSelection(model, selection.reasoningLevel);
         }
       }
@@ -296,7 +306,7 @@ export function createApiRouter(
     runWithAiProviderContext({ selection, operation, ...(providerPlanBinding ? { providerPlanBinding } : {}) }, next);
   });
 
-  router.use('/ai/provider-hub', createProviderHubRouter());
+  router.use('/ai/provider-hub', createProviderHubRouter(options.chatGptProviderHubTestInjection));
 
   router.post('/analyze', async (req, res) => {
     const parsed = AnalyzeRequestSchema.safeParse(req.body);
@@ -470,16 +480,25 @@ export function createApiRouter(
     try {
       const providerContext = getAiProviderRequestContext();
       if (providerContext?.operation === 'story' && providerContext.selection.connectionId === 'chatgpt-plan') {
+        if (options.chatGptStoryLocalActivation && !hasSameOriginLocalRequest(req)) {
+          throw new AppApiError('AUTH_ERROR', 'ChatGPT Story is available only from this local PCC browser origin.', 403, false);
+        }
         const selectedModelId = providerContext.selection.modelId;
         if (!selectedModelId) throw new AppApiError('MODEL_UNSUPPORTED', 'Select a current ChatGPT account model before using the story route.', 422, false);
+        if (selectedModelId !== 'gpt-6-luna' || (providerContext.selection.reasoningLevel ?? 'default') !== 'default') {
+          throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no substitution or provider fallback is available.', 422, false);
+        }
+        const requestId = req.get('x-pcc-story-request-id');
+        if (!requestId) throw new AppApiError('VALIDATION_ERROR', 'A stable identity is required for this explicit ChatGPT story action.', 400, false);
         const injection = options.chatGptStorySrbTestInjection;
-        const authority = injection?.authority ?? defaultChatGptStorySrbAuthority;
+        const authority = injection?.authority ?? localStoryAuthority;
         const currentGrantGeneration = injection?.currentGrantGeneration ?? (() => chatGptSessionStore.getGeneration());
         const grantGeneration = currentGrantGeneration();
         const sourceDigest = createHash('sha256')
           .update(`${CHATGPT_STORY_INSTRUCTIONS}\n${parsed.data.prompt}`)
           .digest('hex');
         const plan = authority.prepare({
+          requestId,
           modelId: selectedModelId,
           grantGeneration,
           sourceDigest,
@@ -493,6 +512,7 @@ export function createApiRouter(
           transport: ({ body, limits }, signal) => {
             const adapter = injection?.adapterFactory(grantGeneration) ?? createChatGptAdapter(grantGeneration);
             return adapter.generateStoryText({
+              requestId: plan.requestId,
               operation: 'story',
               modelId: plan.modelId,
               input: plan.sourceText,
@@ -512,7 +532,7 @@ export function createApiRouter(
         if (result.terminalEvent !== 'response.completed' || result.refusal || !result.text.trim()) {
           throw new AppApiError('INVALID_RESPONSE', 'The ChatGPT story response did not contain accepted completed story text.', 502, false);
         }
-        res.json({ story: result.text });
+        res.json({ story: result.text, usage: result.usage ?? { source: 'unknown' } });
         return;
       }
       const story = await handlers.generateStoryText(
@@ -526,7 +546,10 @@ export function createApiRouter(
   });
 
   router.get('/ai/capabilities', (_req, res) => {
-    res.json(getAiCapabilitiesSnapshot(handlers.hasConfiguredGeminiKey()));
+    res.json({
+      ...getAiCapabilitiesSnapshot(handlers.hasConfiguredGeminiKey()),
+      chatGptStoryLocalActivation: options.chatGptStoryLocalActivation === true,
+    });
   });
 
   router.post('/narrative/diagnostics/analyze', async (req, res) => {

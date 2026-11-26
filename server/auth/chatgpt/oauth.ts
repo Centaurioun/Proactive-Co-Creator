@@ -2,7 +2,7 @@ import { createPublicKey, verify as verifySignature } from 'node:crypto';
 import { createOAuthSecret, createPkcePair, readTokenResponse, type ChatGptTokenSet } from './sessionStore.ts';
 import { fetchBoundedHttpBody, parseOAuthJson } from '../../http.ts';
 
-export const CHATGPT_OAUTH_ISSUER = 'https://auth.openai.com/';
+export const CHATGPT_OAUTH_ISSUER = 'https://auth.openai.com';
 const AUTH_ORIGIN = 'https://auth.openai.com';
 const DISCOVERY_URL = `${AUTH_ORIGIN}/.well-known/openid-configuration`;
 const AUTHORIZE_URL = `${AUTH_ORIGIN}/api/accounts/authorize`;
@@ -121,7 +121,7 @@ export class ChatGptOAuthClient {
     this.pending.set(state, { state, nonce, verifier: pkce.verifier, requestedClientId, expiresAt: this.now() + FLOW_TTL_MS });
     const params = new URLSearchParams({
       response_type: 'code', client_id: requestedClientId,
-      redirect_uri: this.options.redirectUri, scope: [...REQUIRED_SCOPES, 'profile', 'email', 'offline_access', 'resource.invoke'].join(' '),
+      redirect_uri: this.options.redirectUri, scope: [...REQUIRED_SCOPES, 'profile', 'email'].join(' '),
       resource: OPENAI_RESOURCE,
       ext_agent_host_id: this.options.extAgentHostId,
       state, nonce, code_challenge: pkce.challenge, code_challenge_method: 'S256',

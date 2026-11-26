@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AppApiError } from '../errors.ts';
 
 export const CHATGPT_STORY_SRB_V1 = Object.freeze({
@@ -25,6 +25,7 @@ const MAX_STORED_STORY_PLANS = 64;
 const STORY_PLAN_LIFETIME_MS = 60_000;
 
 export interface ChatGptStoryPlanInput {
+  requestId: string;
   modelId: string;
   grantGeneration: number;
   sourceDigest: string;
@@ -34,6 +35,7 @@ export interface ChatGptStoryPlanInput {
 
 export interface ChatGptStoryPlan {
   id: string;
+  requestId: string;
   operation: 'story';
   modelId: string;
   grantGeneration: number;
@@ -68,6 +70,8 @@ export interface ChatGptStorySrbAuthority {
       signal: AbortSignal,
     ) => Promise<ChatGptStoryTransportResult>;
   }): Promise<ChatGptStoryTransportResult>;
+  /** Explicit operator recovery only; never called by a retry path. */
+  recoverQuotaBlock(): void;
 }
 
 interface StoredPlan {
@@ -94,8 +98,10 @@ export function createChatGptStorySrbAuthority(options: {
   const now = options.now ?? Date.now;
   const makeId = options.makeId ?? randomUUID;
   const plans = new Map<string, StoredPlan>();
+  const requestBindings = new Map<string, string>();
   const attempts: Array<{ at: number; estimatedInputTokens: number }> = [];
   let activePlanId: string | undefined;
+  let quotaBlocked = false;
 
   const prunePlans = (timestamp: number) => {
     for (const [id, stored] of plans) {
@@ -113,6 +119,9 @@ export function createChatGptStorySrbAuthority(options: {
     prunePlans(timestamp);
     if (plans.size >= MAX_STORED_STORY_PLANS) {
       throw fail('RATE_LIMITED', 'The ChatGPT story pilot has no available bounded plan capacity.', 429);
+    }
+    if (!/^[A-Za-z0-9._:-]{16,128}$/.test(input.requestId)) {
+      throw fail('VALIDATION_ERROR', 'The ChatGPT story request identity is invalid.', 400);
     }
     if (!input.modelId.trim() || !input.sourceDigest.trim() || !Number.isSafeInteger(input.grantGeneration) || input.grantGeneration < 0) {
       throw fail('VALIDATION_ERROR', 'The ChatGPT story plan identity is invalid.', 400);
@@ -135,8 +144,27 @@ export function createChatGptStorySrbAuthority(options: {
     if (estimatedInputTokens > CHATGPT_STORY_SRB_V1.maxEstimatedInputTokens) {
       throw fail('VALIDATION_ERROR', 'The conservative ChatGPT story input estimate exceeds 4,000 tokens.', 413);
     }
+    const requestBinding = JSON.stringify({
+      operation: 'story', requestId: input.requestId, sourceDigest: input.sourceDigest,
+      approvedPayloadDigest: createHash('sha256').update(requestBody).digest('hex'),
+      modelId: input.modelId, grantGeneration: input.grantGeneration,
+      policyVersion: CHATGPT_STORY_SRB_V1.version,
+    });
+    const previousBinding = requestBindings.get(input.requestId);
+    if (previousBinding) {
+      throw fail('RATE_LIMITED', previousBinding === requestBinding
+        ? 'This explicit story request was already admitted and cannot be replayed.'
+        : 'This story request identity is already bound to a different approved payload or provider selection.', 409);
+    }
+    if (requestBindings.size >= 4096) {
+      throw fail('RATE_LIMITED', 'The ChatGPT story request identity ledger is full for this server process.', 429);
+    }
+    if (quotaBlocked) {
+      throw fail('RATE_LIMITED', 'ChatGPT plan quota is blocked after a provider quota response; an explicit recovery decision is required.', 429);
+    }
+    requestBindings.set(input.requestId, requestBinding);
     const value: ChatGptStoryPlan = Object.freeze({
-      id: makeId(), operation: 'story', modelId: input.modelId,
+      id: makeId(), requestId: input.requestId, operation: 'story', modelId: input.modelId,
       grantGeneration: input.grantGeneration, sourceDigest: input.sourceDigest,
       policyVersion: CHATGPT_STORY_SRB_V1.version, sourceText: input.sourceText,
       ...(input.instructions ? { instructions: input.instructions } : {}),
@@ -204,10 +232,13 @@ export function createChatGptStorySrbAuthority(options: {
       () => { if (activePlanId === stored.value.id) activePlanId = undefined; },
     );
     try {
-      const result = await Promise.race([
-        transportPromise,
-        aborted,
-      ]);
+      let result: ChatGptStoryTransportResult;
+      try {
+        result = await Promise.race([transportPromise, aborted]);
+      } catch (error) {
+        if (error instanceof AppApiError && error.code === 'RATE_LIMITED') quotaBlocked = true;
+        throw error;
+      }
       if (input.currentGrantGeneration() !== stored.value.grantGeneration || controller.signal.aborted) {
         throw fail('CANCELLED', 'The ChatGPT story result is stale and was discarded.', 499);
       }
@@ -228,5 +259,7 @@ export function createChatGptStorySrbAuthority(options: {
     }
   }
 
-  return { prepare, run } satisfies ChatGptStorySrbAuthority;
+  function recoverQuotaBlock(): void { quotaBlocked = false; }
+
+  return { prepare, run, recoverQuotaBlock } satisfies ChatGptStorySrbAuthority;
 }

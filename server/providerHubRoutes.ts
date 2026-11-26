@@ -8,7 +8,7 @@ import { ChatGptOAuthClient, discoverOpenId } from './auth/chatgpt/oauth.ts';
 import { chatGptSessionStore } from './auth/chatgpt/runtime.ts';
 import type { ChatGptSessionStore } from './auth/chatgpt/sessionStore.ts';
 import { setSessionGeminiKey } from './geminiClient.ts';
-import type { AiConnectionId, AiReasoningLevel } from './providers/contracts.ts';
+import type { AiConnectionId, AiModelDescriptor, AiReasoningLevel } from './providers/contracts.ts';
 import { getCachedProviderModel, getPreferences, listProviderModels, providerHubStatus, setChatGptModels, setOpenAiApiKey, setPersonalGeminiKey, setPreferences, registerChatGptAdapterFactory } from './providers/runtime.ts';
 import { ChatGptResponsesAdapter } from './providers/chatgptResponses.ts';
 import { assertReasoningSelection, hasSupportedOperation } from './providers/policy.ts';
@@ -77,7 +77,7 @@ function isLoopbackHost(value: string | undefined): boolean {
   } catch { return false; }
 }
 
-function hasSameOriginLocalRequest(req: Request): boolean {
+export function hasSameOriginLocalRequest(req: Request): boolean {
   const host = req.get('host');
   if (!isLoopbackAddress(req.socket.remoteAddress) || !isLoopbackHost(host)) return false;
   const origin = req.get('origin');
@@ -148,16 +148,25 @@ export interface ProviderHubRouterOptions {
   disconnectSessionStore?: ChatGptSessionStore;
   discoverOpenId?: typeof discoverOpenId;
   issuedClientId?: () => string | undefined;
+  /** In-process synthetic catalog for browser qualification; never configured by the production entry point. */
+  chatGptStoryQualificationCatalog?: readonly AiModelDescriptor[];
 }
 
 export function createProviderHubRouter(options: ProviderHubRouterOptions = {}): Router {
   const router = express.Router();
   const disconnectSessionStore = options.disconnectSessionStore ?? chatGptSessionStore;
   const discoverIssuer = options.discoverOpenId ?? discoverOpenId;
+  if (options.chatGptStoryQualificationCatalog) setChatGptModels([...options.chatGptStoryQualificationCatalog]);
 
   router.get('/status', (_req, res) => {
     const local = hasSameOriginLocalRequest(_req as Request);
-    res.json(providerHubStatus(local));
+    const status = providerHubStatus(local);
+    if (options.chatGptStoryQualificationCatalog) {
+      status.connections = status.connections.map(connection => connection.id === 'chatgpt-plan'
+        ? { ...connection, state: 'connected', models: [...options.chatGptStoryQualificationCatalog!], message: 'Synthetic, key-free browser qualification connection.' }
+        : connection);
+    }
+    res.json(status);
   });
 
   router.get('/models', requireLoopback, async (req, res) => {
@@ -167,6 +176,10 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
       return;
     }
     try {
+      if (connectionId === 'chatgpt-plan' && options.chatGptStoryQualificationCatalog) {
+        res.json({ models: options.chatGptStoryQualificationCatalog });
+        return;
+      }
       if (connectionId === 'chatgpt-plan') { await loadIdentity(); authAdapter(); }
       const requestGeneration = authGeneration;
       const models = await listProviderModels(connectionId as AiConnectionId);
@@ -195,7 +208,42 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'The selected reasoning preference is invalid.' } });
       return;
     }
-    if (value.defaultConnectionId !== 'gemini-managed' && !value.defaultTextModelId) {
+    const preferredModels = value.preferredTextModelsByConnection;
+    if (preferredModels !== undefined && (!preferredModels || typeof preferredModels !== 'object' || Array.isArray(preferredModels) ||
+      Object.entries(preferredModels).some(([connectionId, modelId]) => connectionId !== 'chatgpt-plan' || !validModelId(modelId)))) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Connection-scoped preferred text models are invalid.' } });
+      return;
+    }
+    const preferredReasoning = value.preferredReasoningLevelsByConnection;
+    if (preferredReasoning !== undefined && (!preferredReasoning || typeof preferredReasoning !== 'object' || Array.isArray(preferredReasoning) ||
+      Object.entries(preferredReasoning).some(([connectionId, level]) => connectionId !== 'chatgpt-plan' || !REASONING.includes(level as AiReasoningLevel)))) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Connection-scoped preferred reasoning levels are invalid.' } });
+      return;
+    }
+    const priorPreferences = getPreferences();
+    const preferredModelId = preferredModels?.['chatgpt-plan'] as string | undefined;
+    const priorPreferredModelId = priorPreferences.preferredTextModelsByConnection?.['chatgpt-plan'];
+    const preferredReasoningLevel = preferredReasoning?.['chatgpt-plan'] as AiReasoningLevel | undefined;
+    const priorPreferredReasoningLevel = priorPreferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'];
+    if (preferredModelId && preferredModelId !== priorPreferredModelId) {
+      const model = getCachedProviderModel('chatgpt-plan', preferredModelId);
+      if (!model || model.availability.state !== 'supported' || model.textGeneration.state !== 'supported') {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Choose a currently verified text model from the connected ChatGPT account catalog.' } });
+        return;
+      }
+    }
+    if (preferredReasoningLevel && preferredModelId &&
+      (preferredReasoningLevel !== priorPreferredReasoningLevel || preferredModelId !== priorPreferredModelId)) {
+      const model = getCachedProviderModel('chatgpt-plan', preferredModelId);
+      try {
+        if (!model) throw new Error('missing');
+        assertReasoningSelection(model, preferredReasoningLevel);
+      } catch {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'The preferred reasoning level is not documented for the selected ChatGPT account model.' } });
+        return;
+      }
+    }
+    if (value.defaultConnectionId !== 'gemini-managed' && value.defaultConnectionId !== 'chatgpt-plan' && !value.defaultTextModelId) {
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Choose a model from the refreshed account catalog before saving this default connection.' } });
       return;
     }
@@ -205,8 +253,11 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
     }
     if (value.defaultTextModelId) {
       const model = getCachedProviderModel(value.defaultConnectionId, value.defaultTextModelId);
-      if (!model || model.availability.state !== 'supported' || model.textGeneration.state !== 'supported' || !hasSupportedOperation(model)) {
-        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'The default model is not verified for an available PCC operation. Refresh its catalog and choose a model with a supported operation.' } });
+      if (!model || model.availability.state !== 'supported' || model.textGeneration.state !== 'supported' ||
+        (value.defaultConnectionId !== 'chatgpt-plan' && !hasSupportedOperation(model))) {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: value.defaultConnectionId === 'chatgpt-plan'
+          ? 'Choose a currently verified text model from the connected ChatGPT account catalog.'
+          : 'The default model is not verified for an available PCC operation. Refresh its catalog and choose a model with a supported operation.' } });
         return;
       }
       try { assertReasoningSelection(model, value.defaultReasoningLevel); }
@@ -227,13 +278,26 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
       if (override.modelId !== undefined && !validModelId(override.modelId)) return true;
       if (typeof override.modelId !== 'string') return true;
       if (override.reasoningLevel !== undefined && !REASONING.includes(override.reasoningLevel as AiReasoningLevel)) return true;
-      const model = getCachedProviderModel(override.connectionId as AiConnectionId, override.modelId);
+      const connectionId = override.connectionId as AiConnectionId;
+      const model = getCachedProviderModel(connectionId, override.modelId);
+      if (operation === 'story' && connectionId === 'chatgpt-plan') {
+        if (override.modelId !== 'gpt-6-luna' || override.reasoningLevel !== 'default' || !model ||
+          model.availability.state !== 'supported' || model.textGeneration.state !== 'supported') return true;
+        return false;
+      }
       if (!model || model.availability.state !== 'supported' || model.operationCapabilities[operation as AiOperation]?.state !== 'supported') return true;
       try { assertReasoningSelection(model, override.reasoningLevel as AiReasoningLevel | undefined); }
       catch { return true; }
       return false;
     })) {
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'One or more operation preferences are invalid.' } });
+      return;
+    }
+    const storyOverride = value.operationOverrides?.story as Record<string, unknown> | undefined;
+    if (storyOverride?.connectionId === 'chatgpt-plan' &&
+      (preferredModels?.['chatgpt-plan'] !== 'gpt-6-luna' ||
+        (preferredReasoning?.['chatgpt-plan'] ?? 'default') !== 'default')) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'ChatGPT Story requires the saved GPT-6 Luna preference with Default reasoning.' } });
       return;
     }
     setPreferences(value);
