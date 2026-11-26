@@ -101,6 +101,13 @@ test('default provider preferences can select a verified ChatGPT text model with
       assert.equal(saved.defaultConnectionId, 'chatgpt-plan');
       assert.equal(saved.defaultTextModelId, 'gpt-6.2-sol');
 
+      const unconfiguredDefault = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: { defaultConnectionId: 'chatgpt-plan' } }),
+      });
+      assert.equal(unconfiguredDefault.status, 200, await unconfiguredDefault.clone().text());
+      assert.equal((await unconfiguredDefault.json() as { preferences: Record<string, unknown> }).preferences.defaultTextModelId, undefined);
+
       const unsupported = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
         method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
         body: JSON.stringify({ preferences: { defaultConnectionId: 'chatgpt-plan', defaultTextModelId: 'gpt-6-luna' } }),

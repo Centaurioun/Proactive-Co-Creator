@@ -96,6 +96,41 @@ test('subscription quota error blocks new admission until explicit recovery and 
   assert.equal(transportCalls, 2);
 });
 
+test('a real SSE response.failed SIWC quota event flows through the Responses adapter and blocks the next SRB admission', async () => {
+  for (const [index, code] of ['subscription_sharing_usage_limit_exceeded', 'subscription_sharing_usage_unavailable'].entries()) {
+    let providerCalls = 0;
+    const adapter = new ChatGptResponsesAdapter('local-token', async () => {
+      providerCalls += 1;
+      return new Response([
+        'event: response.failed',
+        `data: {"type":"response.failed","response":{"error":{"code":"${code}","request_id":"req_quota_test_${index}"}}}`,
+        '', '',
+      ].join('\n'), { headers: { 'content-type': 'text/event-stream' } });
+    });
+    const authority = createChatGptStorySrbAuthority({ enabled: true });
+    const plan = authority.prepare(nextPlanInput());
+    const transport = (args: { body: string; limits: typeof CHATGPT_STORY_SRB_V1 }, signal: AbortSignal) =>
+      adapter.generateStoryText({
+        operation: 'story', modelId: plan.modelId, input: plan.sourceText, reasoningLevel: 'default',
+        maxInputBytes: args.limits.maxRequestBodyBytes, maxOutputBytes: args.limits.maxAcceptedOutputBytes,
+        timeoutMs: args.limits.timeoutMs, signal,
+      }, args.body, {
+        maxStreamBytes: args.limits.maxStreamBytes,
+        maxAcceptedOutputBytes: args.limits.maxAcceptedOutputBytes,
+        maxStreamEvents: args.limits.maxStreamEvents,
+      });
+
+    await assert.rejects(authority.run({ plan, currentGrantGeneration: () => 7, transport }), (error: unknown) => {
+      assert.ok(error instanceof AppApiError);
+      assert.equal(error.code, 'RATE_LIMITED');
+      assert.match(error.message, new RegExp(`req_quota_test_${index}`));
+      return true;
+    });
+    assert.throws(() => authority.prepare(nextPlanInput()), /explicit recovery decision/);
+    assert.equal(providerCalls, 1);
+  }
+});
+
 test('story SRB uses process-wide single-flight and two-attempt rate limits across plan IDs', async () => {
   let now = 1_000;
   let release: (() => void) | undefined;

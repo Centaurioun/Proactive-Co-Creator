@@ -280,7 +280,7 @@ describe('server/routes API contract', () => {
         body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
       });
       assert.equal(response.status, 200, await response.clone().text());
-      assert.deepEqual(await response.json(), { story: 'A mocked story.' });
+      assert.deepEqual(await response.json(), { story: 'A mocked story.', usage: { source: 'unknown' } });
       assert.equal(transportCalls, 1);
       assert.equal(fallbackCalls, 0);
 
@@ -333,6 +333,46 @@ describe('server/routes API contract', () => {
       });
       assert.equal(response.status, 422);
       assert.equal(fallbackCalls, 0);
+    } finally {
+      await server.close();
+      closeServer = null;
+      setChatGptModels(originalModels);
+    }
+  });
+
+  it('allows the trusted local Story gate only for a same-origin local request', async () => {
+    const originalModels = getChatGptModels();
+    const modelId = 'gpt-6-luna';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT-6 Luna' })]);
+    let transportCalls = 0;
+    const server = await startTestServer(createStubHandlers(), {
+      chatGptStoryLocalActivation: true,
+      chatGptStorySrbTestInjection: {
+        authority: createChatGptStorySrbAuthority({ enabled: true }),
+        currentGrantGeneration: () => 1,
+        adapterFactory: () => ({ generateStoryText: async (): Promise<ChatGptStoryTransportResult> => {
+          transportCalls += 1;
+          return { text: 'A local mock story.', terminalEvent: 'response.completed', refusal: false, streamBytes: 64, eventCount: 2 };
+        } }),
+      },
+    });
+    closeServer = server.close;
+    try {
+      const rejected = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'https://remote.example', 'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'local-story-request-0001' },
+        body: JSON.stringify({ prompt: 'Synthetic local story.' }),
+      });
+      assert.equal(rejected.status, 403);
+      assert.equal(transportCalls, 0);
+
+      const accepted = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: server.baseUrl, 'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'local-story-request-0002' },
+        body: JSON.stringify({ prompt: 'Synthetic local story.' }),
+      });
+      assert.equal(accepted.status, 200, await accepted.clone().text());
+      assert.equal(transportCalls, 1);
     } finally {
       await server.close();
       closeServer = null;

@@ -22,10 +22,12 @@ export function createApp(routerOptions: ApiRouterOptions = {}) {
 }
 
 async function startServer() {
-  const app = createApp();
+  const isProd = process.env.NODE_ENV === 'production';
+  const app = createApp({
+    chatGptStoryLocalActivation: !isProd && process.env.PCC_CHATGPT_STORY_LOCAL_ACTIVATION === '1',
+  });
   const httpServer = http.createServer(app);
   const port = Number(process.env.PORT || 3000);
-  const isProd = process.env.NODE_ENV === 'production';
   const disableHmr = process.env.DISABLE_HMR === 'true';
 
   if (!isProd) {

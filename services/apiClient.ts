@@ -124,6 +124,20 @@ function readProviderPreferences(): {
   }
 }
 
+export function getEffectiveStoryProviderSelection(): {
+  connectionId: string;
+  modelId?: string;
+  reasoningLevel?: string;
+} {
+  const preferences = readProviderPreferences();
+  const override = preferences?.operationOverrides?.story;
+  return {
+    connectionId: override?.connectionId ?? preferences?.defaultConnectionId ?? 'gemini-managed',
+    modelId: override?.modelId ?? preferences?.defaultTextModelId,
+    reasoningLevel: override?.reasoningLevel ?? preferences?.defaultReasoningLevel,
+  };
+}
+
 export function invalidateAiProviderRequests(): void {
   providerRequestGeneration += 1;
   for (const controller of activeProviderRequests) controller.abort(new DOMException('AI provider settings changed.', 'AbortError'));
@@ -342,22 +356,22 @@ export async function generateStoryFromPrompt(
   prompt: string,
   signal?: AbortSignal,
   requestId: string | undefined = globalThis.crypto?.randomUUID?.(),
-): Promise<string> {
+): Promise<{ story: string; usage?: { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' } }> {
   const request = enforceOperationRequestBounds(value => GenerateMediaRequestSchema.safeParse(value), { prompt });
-  const selected = readProviderPreferences();
-  const storyOverride = selected?.operationOverrides?.story;
-  const effectiveStoryConnection = storyOverride?.connectionId ?? selected?.defaultConnectionId;
+  const selected = getEffectiveStoryProviderSelection();
+  const effectiveStoryConnection = selected.connectionId;
   if (effectiveStoryConnection === 'chatgpt-plan') {
-    const effectiveModel = storyOverride?.modelId ?? selected?.defaultTextModelId;
-    const effectiveReasoning = storyOverride?.reasoningLevel ?? selected?.defaultReasoningLevel ?? 'default';
     if (!requestId) throw new ClientApiError('VALIDATION_ERROR', 'A stable identity is required for this ChatGPT story action.', false, 400);
-    if (effectiveModel !== 'gpt-6-luna' || effectiveReasoning !== 'default') {
+    if (!selected.modelId || !selected.reasoningLevel) {
+      throw new ClientApiError('MODEL_UNSUPPORTED', 'Choose an account model and reasoning level explicitly for ChatGPT Story; no default substitution is available.', false, 422);
+    }
+    if (selected.modelId !== 'gpt-6-luna' || selected.reasoningLevel !== 'default') {
       throw new ClientApiError('MODEL_UNSUPPORTED', 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no model substitution or provider fallback is available.', false, 422);
     }
   }
-  const data = await postJson<{ story: string }>('/api/generate/story', request, signal,
+  const data = await postJson<{ story: string; usage?: { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' } }>('/api/generate/story', request, signal,
     effectiveStoryConnection === 'chatgpt-plan' ? { requestId } : undefined);
-  return data.story;
+  return { story: data.story, ...(data.usage ? { usage: data.usage } : {}) };
 }
 
 export interface AiCapabilitiesResponse {
@@ -366,6 +380,7 @@ export interface AiCapabilitiesResponse {
   imageModel: string;
   providerLimitsVerifiedLive: boolean;
   note: string;
+  chatGptStoryLocalActivation: boolean;
   operations: Record<
     string,
     {

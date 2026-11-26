@@ -78,7 +78,7 @@ test('normal Story uses the saved ChatGPT default with Use default, exact model 
     return new Response(JSON.stringify({ story: 'Synthetic story.' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
   try {
-    assert.equal(await generateStoryFromPrompt('A safe synthetic story.', undefined, 'ui-story-action-0001'), 'Synthetic story.');
+    assert.deepEqual(await generateStoryFromPrompt('A safe synthetic story.', undefined, 'ui-story-action-0001'), { story: 'Synthetic story.' });
     assert.deepEqual(calls, [{ connection: 'chatgpt-plan', model: 'gpt-6-luna', reasoning: null, requestId: 'ui-story-action-0001' }]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -115,6 +115,21 @@ test('normal Story rejects nonqualified ChatGPT default reasoning without transp
   globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
   try {
     await assert.rejects(() => generateStoryFromPrompt('Synthetic story.', undefined, 'ui-story-action-0003'), /GPT-6 Luna with Default reasoning/);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('normal Story rejects an incomplete ChatGPT default instead of silently selecting a model or reasoning level', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  installPreferences(JSON.stringify({ defaultConnectionId: 'chatgpt-plan' }));
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+  try {
+    await assert.rejects(() => generateStoryFromPrompt('Synthetic story.', undefined, 'ui-story-action-0004'), /Choose an account model and reasoning level explicitly/);
     assert.equal(calls, 0);
   } finally {
     globalThis.fetch = originalFetch;

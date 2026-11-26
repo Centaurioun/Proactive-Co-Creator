@@ -58,6 +58,10 @@ function diagnosticSuffix(code?: string, parameter?: string, requestId?: string)
   return fields.length ? ` (${fields.join('; ')})` : '';
 }
 
+function isChatGptPlanQuotaError(code?: string): boolean {
+  return code === 'subscription_sharing_usage_limit_exceeded' || code === 'subscription_sharing_usage_unavailable';
+}
+
 function abortError(signal?: AbortSignal): AppApiError {
   if (signal?.reason instanceof AppApiError) return signal.reason;
   return new AppApiError('CANCELLED', 'The request was cancelled.', 499, false);
@@ -438,10 +442,14 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
         else if (event.type === 'response.failed') {
           const responseBody = asRecord(event.response);
           const error = asRecord(responseBody?.error);
+          const errorCode = diagnosticToken(error?.code);
           const suffix = diagnosticSuffix(
-            diagnosticToken(error?.code), diagnosticToken(error?.param),
+            errorCode, diagnosticToken(error?.param),
             diagnosticToken(error?.request_id) ?? diagnosticToken(responseBody?.id),
           );
+          if (this.connectionId === 'chatgpt-plan' && isChatGptPlanQuotaError(errorCode)) {
+            throw new AppApiError('RATE_LIMITED', 'ChatGPT plan usage is currently unavailable or exhausted; an explicit recovery decision is required' + suffix + '.', 429, false);
+          }
           throw new AppApiError('UPSTREAM_ERROR', `The ${this.providerLabel} Responses request failed${suffix}.`, 502, false);
         } else if (event.type === 'response.incomplete') {
           throw new AppApiError('INVALID_RESPONSE', `The ${this.providerLabel} Responses request ended incomplete.`, 502, false);

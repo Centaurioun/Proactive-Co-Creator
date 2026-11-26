@@ -77,7 +77,7 @@ function isLoopbackHost(value: string | undefined): boolean {
   } catch { return false; }
 }
 
-function hasSameOriginLocalRequest(req: Request): boolean {
+export function hasSameOriginLocalRequest(req: Request): boolean {
   const host = req.get('host');
   if (!isLoopbackAddress(req.socket.remoteAddress) || !isLoopbackHost(host)) return false;
   const origin = req.get('origin');
@@ -243,7 +243,7 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
         return;
       }
     }
-    if (value.defaultConnectionId !== 'gemini-managed' && !value.defaultTextModelId) {
+    if (value.defaultConnectionId !== 'gemini-managed' && value.defaultConnectionId !== 'chatgpt-plan' && !value.defaultTextModelId) {
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Choose a model from the refreshed account catalog before saving this default connection.' } });
       return;
     }
