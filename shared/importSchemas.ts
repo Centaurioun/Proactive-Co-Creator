@@ -56,6 +56,13 @@ export const NarrativeExtractionRequestSchema = z.strictObject({
   categories: z.array(z.enum(['characters', 'attributes', 'relationships', 'locations', 'objects', 'events', 'story-bible', 'themes-style', 'continuity'])).max(9)
     .refine(categories => new Set(categories).size === categories.length, 'Extraction categories must be unique.'),
   instruction: z.string().max(1000).default(''),
+  providerPlanBinding: z.object({
+    connectionId: z.enum(['gemini-managed', 'gemini-personal', 'chatgpt-plan', 'openai-api']),
+    modelId: z.string().min(1).max(160),
+    reasoningLevel: z.enum(['default', 'none', 'minimal', 'low', 'medium', 'high', 'extra-high', 'max']),
+    capabilityPolicyVersion: z.string().min(1).max(100),
+    credentialAuthorityId: z.string().min(1).max(256),
+  }).strict().optional(),
 }).superRefine((request, context) => {
   if (request.scope === 'selective' && request.categories.length === 0) {
     context.addIssue({ code: 'custom', message: 'Choose at least one extraction category for selective analysis.', path: ['categories'] });

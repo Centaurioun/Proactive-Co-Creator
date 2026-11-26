@@ -77,6 +77,73 @@ export class ClientApiError extends Error {
   }
 }
 
+let providerRequestGeneration = 0;
+let providerStorageListenerInstalled = false;
+const activeProviderRequests = new Set<AbortController>();
+let observedExecutionPreferenceFingerprint: string | undefined;
+
+function executionPreferenceFingerprint(raw: string | null): string {
+  if (!raw) return '';
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    return JSON.stringify({
+      defaultConnectionId: value.defaultConnectionId,
+      defaultTextModelId: value.defaultTextModelId,
+      defaultReasoningLevel: value.defaultReasoningLevel,
+      operationOverrides: value.operationOverrides,
+    });
+  } catch { return 'invalid'; }
+}
+
+export function invalidateAiProviderRequestsForPreferenceChange(previousRaw: string | null, nextRaw: string | null): void {
+  const previous = executionPreferenceFingerprint(previousRaw);
+  const next = executionPreferenceFingerprint(nextRaw);
+  observedExecutionPreferenceFingerprint = next;
+  if (previous !== next) invalidateAiProviderRequests();
+}
+
+function readProviderPreferences(): {
+  defaultConnectionId: string;
+  defaultTextModelId?: string;
+  defaultReasoningLevel?: string;
+  preferredTextModelsByConnection?: Record<string, string>;
+  preferredReasoningLevelsByConnection?: Record<string, string>;
+  operationOverrides?: Record<string, { connectionId?: string; modelId?: string; reasoningLevel?: string }>;
+} | undefined {
+  if (typeof window === 'undefined') return undefined;
+  let raw: string | null;
+  try { raw = window.localStorage.getItem('pcc.ai.providerPreferences.v1'); }
+  catch { throw new ClientApiError('UPSTREAM_ERROR', 'AI provider preferences could not be read. Open AI Settings and confirm the selected billing path before retrying.', false, 503); }
+  if (!raw) return undefined;
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.defaultConnectionId !== 'string') throw new Error('Invalid provider preferences');
+    return value;
+  } catch {
+    throw new ClientApiError('VALIDATION_ERROR', 'AI provider preferences are invalid. Open AI Settings and confirm the selected billing path before retrying.', false, 400);
+  }
+}
+
+export function getEffectiveStoryProviderSelection(): {
+  connectionId: string;
+  modelId?: string;
+  reasoningLevel?: string;
+} {
+  const preferences = readProviderPreferences();
+  const override = preferences?.operationOverrides?.story;
+  return {
+    connectionId: override?.connectionId ?? preferences?.defaultConnectionId ?? 'gemini-managed',
+    modelId: override?.modelId ?? preferences?.defaultTextModelId,
+    reasoningLevel: override?.reasoningLevel ?? preferences?.defaultReasoningLevel,
+  };
+}
+
+export function invalidateAiProviderRequests(): void {
+  providerRequestGeneration += 1;
+  for (const controller of activeProviderRequests) controller.abort(new DOMException('AI provider settings changed.', 'AbortError'));
+  activeProviderRequests.clear();
+}
+
 export function isAbortError(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
   if (error instanceof ClientApiError && error.code === 'CANCELLED') return true;
@@ -94,41 +161,116 @@ export async function extractNarrativeChunk(
 async function postJson<TResponse>(
   url: string,
   body: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { requestId?: string },
 ): Promise<TResponse> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  const payload = (await response.json().catch(() => null)) as
-    | { error?: ApiErrorPayload }
-    | TResponse
-    | null;
-
-  if (!response.ok) {
-    const errPayload =
-      payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;
-    throw new ClientApiError(
-      errPayload?.code ?? 'UPSTREAM_ERROR',
-      errPayload?.message ?? `Request failed with status ${response.status}.`,
-      errPayload?.retryable ?? response.status >= 500,
-      response.status
-    );
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function' && !providerStorageListenerInstalled) {
+    window.addEventListener('storage', event => {
+      if (event.key !== 'pcc.ai.providerPreferences.v1') return;
+      const next = executionPreferenceFingerprint(event.newValue);
+      const previous = observedExecutionPreferenceFingerprint ?? executionPreferenceFingerprint(event.oldValue);
+      observedExecutionPreferenceFingerprint = next;
+      if (previous !== next) invalidateAiProviderRequests();
+    });
+    providerStorageListenerInstalled = true;
   }
-
-  if (!payload || typeof payload !== 'object') {
-    throw new ClientApiError(
-      'INVALID_RESPONSE',
-      'Server returned an invalid JSON payload.',
-      false,
-      response.status
-    );
+  const providerHeaders: Record<string, string> = {};
+  const preferences = readProviderPreferences();
+  if (preferences) {
+    try {
+      observedExecutionPreferenceFingerprint = executionPreferenceFingerprint(window.localStorage.getItem('pcc.ai.providerPreferences.v1'));
+      const operation = url.includes('/generate/images') ? 'image'
+        : url.includes('/narrative/import/extract') ? 'narrative-import'
+        : url.includes('/narrative/diagnostics/') ? 'diagnostics'
+        : url.includes('/narrative/sync/') ? 'sync'
+        : url.includes('/narrative/writing/') ? 'writing'
+        : url.includes('/narrative/opportunities/') ? 'opportunities'
+        : url.includes('/narrative/import/enhance') ? 'import-enhance'
+        : url.includes('/generate/story') ? 'story'
+        : url.includes('/batch-edit') ? 'batch-edit'
+        : url.includes('/clarify') ? 'clarify'
+        : url.includes('/refine') ? 'polish'
+        : url.includes('/analyze') ? 'analyze' : undefined;
+      const override = operation ? preferences.operationOverrides?.[operation] : undefined;
+      if (operation === 'image' && override) {
+        throw new Error('Image provider overrides are unavailable until the image capability and budget path is qualified.');
+      }
+      const connectionId = operation === 'image' ? 'gemini-managed' : override?.connectionId ?? preferences.defaultConnectionId;
+      const modelId = override?.modelId ?? (operation === 'image' ? undefined : preferences.defaultTextModelId);
+      const reasoning = override?.reasoningLevel ?? preferences.defaultReasoningLevel;
+      if (operation === 'story' && connectionId === 'chatgpt-plan' &&
+        (modelId !== 'gpt-6-luna' || (reasoning ?? 'default') !== 'default')) {
+        throw new Error('ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no other model, reasoning level, or provider fallback is available.');
+      }
+      if (connectionId) providerHeaders['x-pcc-ai-connection'] = connectionId;
+      if (modelId) providerHeaders['x-pcc-ai-model'] = modelId;
+      if (operation !== 'image' && reasoning && reasoning !== 'default') providerHeaders['x-pcc-ai-reasoning'] = reasoning;
+    } catch {
+      throw new ClientApiError('VALIDATION_ERROR', 'AI provider preferences are invalid. Open AI Settings and confirm the selected billing path before retrying.', false, 400);
+    }
   }
+  const providerPlanBinding = body && typeof body === 'object'
+    ? (body as { providerPlanBinding?: NarrativeExtractionRequest['providerPlanBinding'] }).providerPlanBinding
+    : undefined;
+  if (url.includes('/narrative/import/extract') && providerPlanBinding) {
+    // Preserve normal preference-derived headers when present so the server
+    // can reject a stale plan. When preferences are absent, carry the exact
+    // approved selection instead of silently using a server default.
+    providerHeaders['x-pcc-ai-connection'] ??= providerPlanBinding.connectionId;
+    providerHeaders['x-pcc-ai-model'] ??= providerPlanBinding.modelId;
+    if (providerPlanBinding.reasoningLevel !== 'default') {
+      providerHeaders['x-pcc-ai-reasoning'] ??= providerPlanBinding.reasoningLevel;
+    }
+  }
+  const requestGeneration = providerRequestGeneration;
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(new DOMException('The request was cancelled.', 'AbortError'));
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
+  activeProviderRequests.add(controller);
+  try {
+    const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...providerHeaders };
+    if (url.includes('/api/generate/story') && providerHeaders['x-pcc-ai-connection'] === 'chatgpt-plan' && options?.requestId) {
+      requestHeaders['x-pcc-story-request-id'] = options.requestId;
+    }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: requestHeaders,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: ApiErrorPayload }
+      | TResponse
+      | null;
+    if (requestGeneration !== providerRequestGeneration || controller.signal.aborted) {
+      throw new ClientApiError('CANCELLED', 'The AI response was discarded because its provider selection changed.', false, 499);
+    }
+    if (!response.ok) {
+      const errPayload =
+        payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined;
+      throw new ClientApiError(
+        errPayload?.code ?? 'UPSTREAM_ERROR',
+        errPayload?.message ?? `Request failed with status ${response.status}.`,
+        errPayload?.retryable ?? response.status >= 500,
+        response.status
+      );
+    }
 
-  return payload as TResponse;
+    if (!payload || typeof payload !== 'object') {
+      throw new ClientApiError(
+        'INVALID_RESPONSE',
+        'Server returned an invalid JSON payload.',
+        false,
+        response.status
+      );
+    }
+
+    return payload as TResponse;
+  } finally {
+    activeProviderRequests.delete(controller);
+    signal?.removeEventListener('abort', abortFromCaller);
+  }
 }
 
 export async function analyzePromptToBeliefGraph(
@@ -212,11 +354,24 @@ export async function generateImagesFromPrompt(
 
 export async function generateStoryFromPrompt(
   prompt: string,
-  signal?: AbortSignal
-): Promise<string> {
+  signal?: AbortSignal,
+  requestId: string | undefined = globalThis.crypto?.randomUUID?.(),
+): Promise<{ story: string; usage?: { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' } }> {
   const request = enforceOperationRequestBounds(value => GenerateMediaRequestSchema.safeParse(value), { prompt });
-  const data = await postJson<{ story: string }>('/api/generate/story', request, signal);
-  return data.story;
+  const selected = getEffectiveStoryProviderSelection();
+  const effectiveStoryConnection = selected.connectionId;
+  if (effectiveStoryConnection === 'chatgpt-plan') {
+    if (!requestId) throw new ClientApiError('VALIDATION_ERROR', 'A stable identity is required for this ChatGPT story action.', false, 400);
+    if (!selected.modelId || !selected.reasoningLevel) {
+      throw new ClientApiError('MODEL_UNSUPPORTED', 'Choose an account model and reasoning level explicitly for ChatGPT Story; no default substitution is available.', false, 422);
+    }
+    if (selected.modelId !== 'gpt-6-luna' || selected.reasoningLevel !== 'default') {
+      throw new ClientApiError('MODEL_UNSUPPORTED', 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no model substitution or provider fallback is available.', false, 422);
+    }
+  }
+  const data = await postJson<{ story: string; usage?: { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' } }>('/api/generate/story', request, signal,
+    effectiveStoryConnection === 'chatgpt-plan' ? { requestId } : undefined);
+  return { story: data.story, ...(data.usage ? { usage: data.usage } : {}) };
 }
 
 export interface AiCapabilitiesResponse {
@@ -225,6 +380,7 @@ export interface AiCapabilitiesResponse {
   imageModel: string;
   providerLimitsVerifiedLive: boolean;
   note: string;
+  chatGptStoryLocalActivation: boolean;
   operations: Record<
     string,
     {

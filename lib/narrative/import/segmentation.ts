@@ -3,6 +3,8 @@ import type { SourceBlock } from './sourceParser.ts';
 export const IMPORT_CHUNK_CHARS = 28_000;
 export const IMPORT_OVERLAP_CHARS = 600;
 export const MAX_IMPORT_CHUNKS = 20;
+export const NARRATIVE_IMPORT_INPUT_TOKEN_LIMIT = 8_000;
+export const NARRATIVE_IMPORT_ENVELOPE_RESERVE_TOKENS = 1_500;
 
 export interface SourceChunk {
   id: string;
@@ -71,4 +73,136 @@ export function calculateProcessedCoverage(chunks: SourceChunk[]): Array<{ start
     else merged.push({ ...span });
   }
   return merged;
+}
+
+/** Local-only preview of the existing extraction plan. It does not authorize provider calls. */
+export function planNarrativeSourceAnalysis(
+  text: string,
+  blocks: SourceBlock[],
+  remainingCalls: number,
+  maxChars = IMPORT_CHUNK_CHARS,
+  overlap = IMPORT_OVERLAP_CHARS,
+) {
+  if (!Number.isSafeInteger(remainingCalls) || remainingCalls < 0) throw new Error('Invalid extraction call budget.');
+  const segmented = segmentNarrativeSource(text, blocks, maxChars, overlap, MAX_IMPORT_CHUNKS);
+  const scheduledRequests = Math.min(remainingCalls, segmented.chunks.length);
+  const coveredChars = calculateProcessedCoverage(segmented.chunks.slice(0, scheduledRequests))
+    .reduce((total, span) => total + span.end - span.start, 0);
+  const unplannedChars = text.length - coveredChars;
+  return { ...segmented, scheduledRequests, unplannedChars, completeWithinCallBudget: unplannedChars === 0 && segmented.complete };
+}
+
+/**
+ * Conservative local planning estimate for narrative-import. Provider token
+ * preflight on the server remains authoritative; this estimate only chooses
+ * safe, reviewable source boundaries before the user starts analysis.
+ */
+export function estimateNarrativeInputTokens(text: string): number {
+  let estimate = 0;
+  for (const character of text) estimate += character.codePointAt(0)! <= 0x7f ? 0.25 : 1;
+  return Math.ceil(estimate);
+}
+
+const adaptiveGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+function estimateNarrativeInputTokensRaw(text: string): number {
+  let estimate = 0;
+  for (const character of text) estimate += character.codePointAt(0)! <= 0x7f ? 0.25 : 1;
+  return estimate;
+}
+
+function findAdaptiveBudgetEnd(text: string, start: number, budget: number): { end: number; boundaries: Set<number> } {
+  let estimate = 0;
+  let end = start;
+  const boundaries = new Set<number>();
+  for (const part of adaptiveGraphemeSegmenter.segment(text.slice(start))) {
+    const cost = estimateNarrativeInputTokensRaw(part.segment);
+    if (estimate + cost > budget) break;
+    estimate += cost;
+    end = start + part.index + part.segment.length;
+    boundaries.add(end);
+  }
+  return { end, boundaries };
+}
+
+function previousAdaptiveGraphemeBoundary(text: string, start: number, end: number, target: number): number {
+  let previous = start;
+  for (const part of adaptiveGraphemeSegmenter.segment(text.slice(start, end))) {
+    const boundary = start + part.index;
+    if (boundary > target) break;
+    if (boundary > start) previous = boundary;
+  }
+  return previous > start ? previous : end;
+}
+
+export function planAdaptiveNarrativeSourceAnalysis(
+  text: string,
+  blocks: SourceBlock[],
+  remainingCalls: number,
+  options: { maxInputTokens?: number; envelopeReserveTokens?: number; maxChunks?: number } = {},
+) {
+  if (!Number.isSafeInteger(remainingCalls) || remainingCalls < 0) throw new Error('Invalid extraction call budget.');
+  const maxInputTokens = options.maxInputTokens ?? NARRATIVE_IMPORT_INPUT_TOKEN_LIMIT;
+  const envelopeReserveTokens = options.envelopeReserveTokens ?? NARRATIVE_IMPORT_ENVELOPE_RESERVE_TOKENS;
+  const maxChunks = options.maxChunks ?? MAX_IMPORT_CHUNKS;
+  const payloadTokenBudget = maxInputTokens - envelopeReserveTokens;
+  if (!Number.isSafeInteger(maxInputTokens) || !Number.isSafeInteger(envelopeReserveTokens) ||
+    payloadTokenBudget < 1 || !Number.isSafeInteger(maxChunks) || maxChunks < 1) {
+    throw new Error('Invalid adaptive narrative import limits.');
+  }
+  const validBlocks = blocks.filter(block => block.start >= 0 && block.end > block.start && block.end <= text.length)
+    .sort((a, b) => a.end - b.end || a.start - b.start);
+  const chunks: SourceChunk[] = [];
+  let start = 0;
+  while (start < text.length && chunks.length < maxChunks) {
+    const budget = findAdaptiveBudgetEnd(text, start, payloadTokenBudget);
+    let end = budget.end;
+    // A single grapheme can exceed a deliberately tiny budget. Do not split it
+    // or emit an oversized request; the returned plan remains honestly partial.
+    if (end <= start) break;
+    if (end < text.length) {
+      const minBoundary = start + Math.floor((end - start) * 0.55);
+      const paragraph = text.lastIndexOf('\n\n', end - 2);
+      const paragraphEnd = paragraph + 2;
+      if (paragraph >= minBoundary && paragraphEnd > start && budget.boundaries.has(paragraphEnd)) {
+        end = paragraphEnd;
+      } else {
+        let low = 0;
+        let high = validBlocks.length;
+        while (low < high) {
+          const middle = low + Math.floor((high - low) / 2);
+          if (validBlocks[middle].end <= end) low = middle + 1;
+          else high = middle;
+        }
+        for (let index = low - 1; index >= 0; index -= 1) {
+          const structural = validBlocks[index].end;
+          if (structural <= start) break;
+          if (structural >= minBoundary && budget.boundaries.has(structural)) {
+            end = structural;
+            break;
+          }
+        }
+      }
+    }
+    const chunkText = text.slice(start, end);
+    chunks.push({ id: `chunk-${chunks.length + 1}`, index: chunks.length, start, end, text: chunkText });
+    if (end === text.length) break;
+    const overlap = Math.min(250, Math.max(1, Math.floor((end - start) * 0.1)));
+    const next = previousAdaptiveGraphemeBoundary(text, start, end, Math.max(start + 1, end - overlap));
+    if (next <= start) throw new Error('Adaptive narrative segmentation failed to make forward progress.');
+    start = next;
+  }
+  const complete = text.length === 0 || chunks.at(-1)?.end === text.length;
+  const scheduledRequests = Math.min(remainingCalls, chunks.length);
+  const coveredChars = calculateProcessedCoverage(chunks.slice(0, scheduledRequests))
+    .reduce((total, span) => total + span.end - span.start, 0);
+  const unplannedChars = text.length - coveredChars;
+  return {
+    chunks, complete, scheduledRequests, unplannedChars,
+    completeWithinCallBudget: complete && unplannedChars === 0,
+    operation: 'narrative-import' as const,
+    limits: { maxInputTokens, envelopeReserveTokens, payloadTokenBudget, maxChunks },
+    estimatedMaxInputTokens: chunks.length ? Math.max(...chunks.map(chunk => estimateNarrativeInputTokens(chunk.text) + envelopeReserveTokens)) : 0,
+    countAuthority: 'server-provider-preflight' as const,
+  };
 }

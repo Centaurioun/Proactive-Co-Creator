@@ -3,8 +3,29 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import express from 'express';
 import { AppApiError } from '../server/errors.ts';
-import { createApiRouter, type AiServiceHandlers } from '../server/routes.ts';
+import { createApiRouter, type AiServiceHandlers, type ApiRouterOptions } from '../server/routes.ts';
+import { CAPABILITY_POLICY_VERSION, describeChatGptModel } from '../server/providers/policy.ts';
+import { getAiProviderRequestContext } from '../server/providers/requestContext.ts';
+import { getChatGptModels, getCredentialAuthorityId, setChatGptModels } from '../server/providers/runtime.ts';
+import { CHATGPT_STORY_SRB_V1, createChatGptStorySrbAuthority, type ChatGptStoryTransportResult } from '../server/providers/subscriptionResourceBudget.ts';
 import type { BeliefState } from '../shared/types.ts';
+
+const importPlanBinding = {
+  connectionId: 'gemini-managed',
+  modelId: 'gemini-4-hydrogen',
+  reasoningLevel: 'default',
+  capabilityPolicyVersion: CAPABILITY_POLICY_VERSION,
+  credentialAuthorityId: getCredentialAuthorityId('gemini-managed'),
+};
+const importRequest = (value: Record<string, unknown>) => ({
+  ...value,
+  providerPlanBinding: (value.providerPlanBinding as typeof importPlanBinding | undefined) ?? importPlanBinding,
+});
+const importRequestHeaders = {
+  'Content-Type': 'application/json',
+  'x-pcc-ai-connection': importPlanBinding.connectionId,
+  'x-pcc-ai-model': importPlanBinding.modelId,
+};
 
 function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServiceHandlers {
   const sampleGraph: BeliefState = {
@@ -67,10 +88,10 @@ function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServi
   };
 }
 
-async function startTestServer(handlers: AiServiceHandlers) {
+async function startTestServer(handlers: AiServiceHandlers, options: ApiRouterOptions = {}) {
   const app = express();
   app.use(express.json());
-  app.use('/api', createApiRouter(handlers));
+  app.use('/api', createApiRouter(handlers, options));
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -110,18 +131,22 @@ describe('server/routes API contract', () => {
   it('validates narrative import extraction requests and returns only the mocked scoped result', async () => {
     let observedText = '';
     let observedScope = '';
+    let observedPlanBinding: unknown;
+    let observedContextConnection: string | undefined;
     let handlerCalls = 0;
     const srv = await startTestServer(createStubHandlers({
       extractNarrativeChunk: async request => {
         handlerCalls += 1;
         observedText = request.text;
         observedScope = request.scope;
+        observedPlanBinding = request.providerPlanBinding;
+        observedContextConnection = getAiProviderRequestContext()?.selection.connectionId;
         return { findings: [{ id: 'other-1', title: 'Unclassified', value: 'Kept for review', category: 'other', kind: 'reported', rationale: 'No reporter attributed.', evidence: { sourceId: 's', version: 'v1', digest: 'd', start: 0, end: 1, excerpt: 'A' } }], entities: [], relationships: [], ambiguities: [] } as never;
       },
     }));
     closeServer = srv.close;
     const bad = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: importRequestHeaders,
       body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'narrative', scope: 'selective', categories: [] }),
     });
     assert.equal(bad.status, 400);
@@ -132,19 +157,27 @@ describe('server/routes API contract', () => {
       { sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'x'.repeat(36_001), scope: 'complete', categories: [] },
     ]) {
       const response = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(invalid),
+        method: 'POST', headers: importRequestHeaders, body: JSON.stringify(invalid),
       });
       assert.equal(response.status, 400);
       const payload = await response.json() as { error?: { code?: string } };
       assert.equal(payload.error?.code, 'VALIDATION_ERROR');
     }
+    const stalePlan = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
+      method: 'POST', headers: importRequestHeaders,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [],
+        providerPlanBinding: { ...importPlanBinding, credentialAuthorityId: 'stale-runtime-authority' } })),
+    });
+    assert.equal(stalePlan.status, 409, 'a result planned under a previous credential authority must not reach the provider handler');
     const good = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [], instruction: 'Keep it faithful.' }),
+      method: 'POST', headers: importRequestHeaders,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [], instruction: 'Keep it faithful.' })),
     });
     assert.equal(good.status, 200);
     assert.equal(observedText, 'Ada enters.');
     assert.equal(observedScope, 'complete');
+    assert.deepEqual(observedPlanBinding, importPlanBinding);
+    assert.equal(observedContextConnection, 'gemini-managed');
     const result = await good.json() as { extraction: { findings: Array<{ category: string }> } };
     assert.equal(result.extraction.findings[0].category, 'other', 'complete-scope route returns retained unclassified findings');
     assert.equal(handlerCalls, 1, 'invalid requests must not reach the extraction handler');
@@ -171,8 +204,8 @@ describe('server/routes API contract', () => {
     closeServer = srv.close;
     const controller = new AbortController();
     const request = fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] }),
+      method: 'POST', headers: importRequestHeaders, signal: controller.signal,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] })),
     });
     await started;
     controller.abort();
@@ -188,14 +221,163 @@ describe('server/routes API contract', () => {
     }));
     closeServer = srv.close;
     const response = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] }),
+      method: 'POST', headers: importRequestHeaders,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] })),
     });
     assert.equal(response.status, 500);
     const payload = await response.json() as { error?: { code?: string; message?: string } };
     assert.equal(payload.error?.code, 'INTERNAL_ERROR');
     assert.equal(payload.error?.message, 'An unexpected error occurred while communicating with Gemini.');
     assert.equal(JSON.stringify(payload).includes('do-not-expose-test-secret'), false);
+  });
+
+  it('qualifies the ChatGPT story route through the injected SRB and Responses transport chain', async () => {
+    const originalModels = getChatGptModels();
+    const modelId = 'gpt-6-luna';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT-6 Luna' })]);
+    let transportCalls = 0;
+    let fallbackCalls = 0;
+    const authority = createChatGptStorySrbAuthority({ enabled: true, makeId: () => 'story-plan-test-1' });
+    const server = await startTestServer(createStubHandlers({
+      generateStoryText: async () => { fallbackCalls += 1; return 'Gemini fallback must not run.'; },
+    }), {
+      chatGptStorySrbTestInjection: {
+        authority,
+        currentGrantGeneration: () => 9,
+        adapterFactory: generation => {
+          assert.equal(generation, 9);
+          return {
+            generateStoryText: async (request, approvedBody, limits): Promise<ChatGptStoryTransportResult> => {
+              transportCalls += 1;
+              const body = JSON.parse(approvedBody) as Record<string, unknown>;
+              assert.equal(body.model, modelId);
+              assert.equal(body.store, false);
+              assert.equal(body.stream, true);
+              assert.equal('reasoning' in body, false);
+              assert.equal(request.operation, 'story');
+              assert.equal(request.reasoningLevel, 'default');
+              assert.equal(request.maxOutputTokens, undefined);
+              assert.equal(limits.maxStreamBytes, CHATGPT_STORY_SRB_V1.maxStreamBytes);
+              assert.equal(limits.maxAcceptedOutputBytes, CHATGPT_STORY_SRB_V1.maxAcceptedOutputBytes);
+              assert.equal(limits.maxStreamEvents, CHATGPT_STORY_SRB_V1.maxStreamEvents);
+              return {
+                text: 'A mocked story.', terminalEvent: 'response.completed', refusal: false,
+                streamBytes: 128, eventCount: 2,
+              };
+            },
+          };
+        },
+      },
+    });
+    closeServer = server.close;
+    try {
+      const response = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'route-story-request-0001',
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.deepEqual(await response.json(), { story: 'A mocked story.', usage: { source: 'unknown' } });
+      assert.equal(transportCalls, 1);
+      assert.equal(fallbackCalls, 0);
+
+      const duplicate = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'route-story-request-0001',
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(duplicate.status, 409);
+      assert.equal(transportCalls, 1);
+
+      const unqualifiedReasoning = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-ai-reasoning': 'high',
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(unqualifiedReasoning.status, 422);
+      assert.equal(transportCalls, 1);
+      assert.equal(fallbackCalls, 0);
+    } finally {
+      await server.close();
+      closeServer = null;
+      setChatGptModels(originalModels);
+    }
+  });
+
+  it('keeps ordinary ChatGPT story production admission blocked without trusted injection', async () => {
+    const originalModels = getChatGptModels();
+    const modelId = 'gpt-6-luna';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT-6 Luna' })]);
+    let fallbackCalls = 0;
+    const server = await startTestServer(createStubHandlers({
+      generateStoryText: async () => { fallbackCalls += 1; return 'No fallback.'; },
+    }));
+    closeServer = server.close;
+    try {
+      const response = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId,
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(response.status, 422);
+      assert.equal(fallbackCalls, 0);
+    } finally {
+      await server.close();
+      closeServer = null;
+      setChatGptModels(originalModels);
+    }
+  });
+
+  it('allows the trusted local Story gate only for a same-origin local request', async () => {
+    const originalModels = getChatGptModels();
+    const modelId = 'gpt-6-luna';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT-6 Luna' })]);
+    let transportCalls = 0;
+    const server = await startTestServer(createStubHandlers(), {
+      chatGptStoryLocalActivation: true,
+      chatGptStorySrbTestInjection: {
+        authority: createChatGptStorySrbAuthority({ enabled: true }),
+        currentGrantGeneration: () => 1,
+        adapterFactory: () => ({ generateStoryText: async (): Promise<ChatGptStoryTransportResult> => {
+          transportCalls += 1;
+          return { text: 'A local mock story.', terminalEvent: 'response.completed', refusal: false, streamBytes: 64, eventCount: 2 };
+        } }),
+      },
+    });
+    closeServer = server.close;
+    try {
+      const rejected = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'https://remote.example', 'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'local-story-request-0001' },
+        body: JSON.stringify({ prompt: 'Synthetic local story.' }),
+      });
+      assert.equal(rejected.status, 403);
+      assert.equal(transportCalls, 0);
+
+      const accepted = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: server.baseUrl, 'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'local-story-request-0002' },
+        body: JSON.stringify({ prompt: 'Synthetic local story.' }),
+      });
+      assert.equal(accepted.status, 200, await accepted.clone().text());
+      assert.equal(transportCalls, 1);
+    } finally {
+      await server.close();
+      closeServer = null;
+      setChatGptModels(originalModels);
+    }
   });
 
   it('handles /api/analyze, /api/clarify, /api/refine, and /api/batch-edit validation and success', async () => {

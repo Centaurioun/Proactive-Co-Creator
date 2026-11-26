@@ -1,8 +1,8 @@
 {
   "status": "PASS",
-  "candidateHead": "e6a70f5143121727b51276ed9e3ae29936f9c4a9",
-  "browserSession": "pcc-import-cancel-7515c387cd68",
-  "origin": "http://127.0.0.1:4337",
+  "candidateHead": "6878e260e0dbc537de34e6dbaf45daa21daead14",
+  "browserSession": "pcc-import-cancel-ce621618666a",
+  "origin": "http://127.0.0.1:4353",
   "providerConfigured": false,
   "fixture": {
     "manuscript": "PCC cancellation fixture — Türkçe — manuscript stays intact.",
@@ -18,7 +18,7 @@
       "samePreference": true,
       "stage": "staged-source-before-exit",
       "state": {
-        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+        "digest": "6848dee4d771c8df88022ccf9125aff4ff3558d6ef44badadc9beb335447254b",
         "projectCount": 1,
         "projectionCharacters": 76205,
         "projects": [
@@ -39,7 +39,7 @@
       "samePreference": true,
       "stage": "staged-source-after-exit",
       "state": {
-        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+        "digest": "6848dee4d771c8df88022ccf9125aff4ff3558d6ef44badadc9beb335447254b",
         "projectCount": 1,
         "projectionCharacters": 76205,
         "projects": [
@@ -64,7 +64,7 @@
       "samePreference": true,
       "stage": "late-response-rejected",
       "state": {
-        "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+        "digest": "6848dee4d771c8df88022ccf9125aff4ff3558d6ef44badadc9beb335447254b",
         "projectCount": 1,
         "projectionCharacters": 76205,
         "projects": [
@@ -86,7 +86,7 @@
   ],
   "baseline": {
     "projectBaseline": {
-      "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+      "digest": "6848dee4d771c8df88022ccf9125aff4ff3558d6ef44badadc9beb335447254b",
       "projectCount": 1,
       "projectionCharacters": 76205,
       "projects": [
@@ -110,7 +110,7 @@
     "samePreference": true,
     "stage": "after-in-flight-import-exit",
     "state": {
-      "digest": "4c6ebca541d33b5c0c16f91c6d4c40215ec4decfeb58b812c282327b8687ce6d",
+      "digest": "6848dee4d771c8df88022ccf9125aff4ff3558d6ef44badadc9beb335447254b",
       "projectCount": 1,
       "projectionCharacters": 76205,
       "projects": [
@@ -133,6 +133,30 @@
       "method": "GET",
       "mocked": true,
       "path": "/api/ai/capabilities"
+    },
+    {
+      "fixture": "synthetic-provider-identity",
+      "method": "GET",
+      "mocked": true,
+      "path": "/api/ai/provider-hub/status"
+    },
+    {
+      "fixture": "synthetic-provider-identity",
+      "method": "GET",
+      "mocked": true,
+      "path": "/api/ai/provider-hub/status"
+    },
+    {
+      "fixture": "synthetic-provider-identity",
+      "method": "GET",
+      "mocked": true,
+      "path": "/api/ai/provider-hub/status"
+    },
+    {
+      "fixture": "synthetic-provider-identity",
+      "method": "GET",
+      "mocked": true,
+      "path": "/api/ai/provider-hub/status"
     },
     {
       "method": "POST",

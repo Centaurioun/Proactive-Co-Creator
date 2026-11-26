@@ -30,29 +30,40 @@ async (page) => {
   });
   const errors = [];
   let extractionCalls = 0;
+  let delayNextExtraction = false;
+  await context.route('**/api/ai/capabilities', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true }),
+  }));
   await context.route('**/api/narrative/import/extract', async route => {
     extractionCalls += 1;
     const request = route.request().postDataJSON();
-    const quote = 'Ada is a cartographer.';
+    const delayed = delayNextExtraction;
+    if (delayed) {
+      delayNextExtraction = false;
+      await new Promise(resolve => setTimeout(resolve, 5_000));
+    }
+    const quote = request.text.includes('Mara guards the bridge.') ? 'Mara guards the bridge.' : 'Ada is a cartographer.';
     const start = request.text.indexOf(quote);
     if (start < 0) throw new Error('Synthetic source quote was not present in the request.');
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ extraction: {
+    try { await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ extraction: {
       findings: [],
-      entities: [{ id: 'model-id-ignored', name: 'Ada', category: 'character', description: 'Cartographer', aliases: [],
-        attributes: [{ id: 'model-attribute-ignored', name: 'occupation', value: 'cartographer', kind: 'explicit', rationale: 'The source states this directly.', evidence: { start, end: start + quote.length, quote } }],
-        kind: 'explicit', rationale: 'The source names Ada and her occupation.', evidence: { start, end: start + quote.length, quote } }],
+      entities: [{ id: 'model-id-ignored', name: quote.startsWith('Mara') ? 'Mara' : 'Ada', category: 'character', description: 'Narrative character', aliases: [],
+        attributes: [{ id: 'model-attribute-ignored', name: 'role', value: quote.startsWith('Mara') ? 'bridge guard' : 'cartographer', kind: 'explicit', rationale: 'The source states this directly.', evidence: { start, end: start + quote.length, quote } }],
+        kind: 'explicit', rationale: 'The source directly supports this character detail.', evidence: { start, end: start + quote.length, quote } }],
       relationships: [], ambiguities: [],
-    } }) });
+    } }) }); }
+    catch (error) { if (!delayed) throw error; }
   });
   const p = await context.newPage();
   p.on('pageerror', error => errors.push(error.message));
   try {
     await p.goto('__BASE_URL__', { waitUntil: 'networkidle' });
     const activeIdBefore = await p.evaluate(() => localStorage.getItem('proactive_co_creator_active_id_v2'));
-    await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Import Story' }).click();
+    await p.setViewportSize({ width: 1280, height: 900 });
+    await p.getByRole('banner').getByRole('button', { name: 'Import', exact: true }).click();
     const story = 'Ada is a cartographer.\n\nShe distrusts the letter.';
     await p.getByRole('textbox', { name: 'Or paste narrative text' }).fill(story);
-    await p.getByRole('button', { name: 'Preview source' }).click();
+    await p.getByRole('button', { name: 'Inspect source', exact: true }).click();
     await p.getByText(/Source SHA-256:/).waitFor();
     if (extractionCalls !== 0) throw new Error('Preview unexpectedly called extraction.');
     await p.getByRole('button', { name: 'Analyze source' }).click();
@@ -98,11 +109,12 @@ async (page) => {
     await p.getByText(/SHA-256/).waitFor();
     if (extractionCalls !== 1) throw new Error('Unexpected extraction request count: ' + extractionCalls);
     if (errors.length) throw new Error('Browser page errors: ' + errors.join('; '));
-    await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Projects' }).click();
+    await p.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
+    await p.getByRole('navigation', { name: 'Project workspace sections' }).getByRole('button', { name: 'Backup & export' }).click();
     await p.getByRole('button', { name: 'Create Backup' }).click();
     await p.getByText('Verified project backup created.', { exact: true }).waitFor();
     await p.getByRole('listitem').filter({ hasText: 'Manual backup' }).getByRole('button', { name: 'Preview restore' }).click();
-    await p.getByRole('button', { name: 'Restore project copy' }).click();
+    await p.getByRole('button', { name: 'Restore as a separate project' }).click();
     await p.getByText(/Restored and saved project copy/).waitFor();
     const restored = await p.evaluate(() => {
       const activeId = localStorage.getItem('proactive_co_creator_active_id_v2');
@@ -120,7 +132,46 @@ async (page) => {
     await p.getByText(/Imported findings and proposals/).waitFor();
     if (await p.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error('Horizontal overflow at 390px.');
     await p.screenshot({ path: '.playwright-cli/phase-02-import-review-record-390.png', fullPage: true });
-    return 'IMPORT_E2E_JSON_BEGIN' + JSON.stringify({ passed: true, extractionCalls, activeProjectId: saved.activeId, restoredProjectId: restored.id, sourceCharacters: story.length, screenshots: ['.playwright-cli/phase-02-import-review-1280-dark.png', '.playwright-cli/phase-02-import-review-record-390.png'], pageErrors: errors }) + 'IMPORT_E2E_JSON_END';
+    await p.setViewportSize({ width: 1280, height: 900 });
+    await p.getByRole('banner').getByRole('button', { name: 'Import', exact: true }).click();
+    const interruptedStory = 'Mara guards the bridge.\n\nShe distrusts the letter.';
+    await p.getByRole('textbox', { name: 'Or paste narrative text' }).fill(interruptedStory);
+    await p.getByRole('button', { name: 'Inspect source', exact: true }).click();
+    await p.getByText(/Source SHA-256:/).waitFor();
+    delayNextExtraction = true;
+    await p.getByRole('button', { name: 'Analyze source' }).click();
+    await p.getByText(/1\/12 requests used/).waitFor();
+    await p.getByRole('button', { name: 'Cancel analysis' }).click();
+    await p.getByText(/Analysis was cancelled/).waitFor();
+    const interrupted = await p.evaluate(async () => {
+      const checkpoints = await import('/lib/narrative/import/analysisCheckpoints.ts');
+      const listed = await checkpoints.listImportCheckpoints(indexedDB);
+      const record = listed.ok ? listed.value.find(item => item.source.filename === 'pasted-narrative.txt' && item.segments.some(segment => segment.status === 'uncertain')) : null;
+      return record ? { callsUsed: record.budget.callsUsed, status: record.segments[0]?.status, id: record.id } : null;
+    });
+    if (!interrupted || interrupted.callsUsed !== 1 || interrupted.status !== 'uncertain') throw new Error('Cancelled analysis did not preserve an uncertain, charged checkpoint: ' + JSON.stringify(interrupted));
+    await p.setViewportSize({ width: 1280, height: 900 });
+    await p.reload({ waitUntil: 'networkidle' });
+    const importButton = p.getByRole('banner').getByRole('button', { name: 'Import', exact: true });
+    if (await importButton.count() === 0) throw new Error('After reload the import entry point is absent; body=' + (await p.locator('body').innerText()).slice(0, 1800));
+    await importButton.click();
+    await p.getByRole('textbox', { name: 'Or paste narrative text' }).fill(interruptedStory);
+    await p.getByRole('button', { name: 'Inspect source', exact: true }).click();
+    await p.getByText(/Source SHA-256:/).waitFor();
+    await p.getByRole('button', { name: 'Restore checkpoint' }).click();
+    await p.getByText(/Completed segments were reused/).waitFor();
+    if (extractionCalls !== 2) throw new Error('Checkpoint restoration replayed provider work automatically.');
+    await p.getByRole('button', { name: 'Continue analysis' }).click();
+    await p.getByText(/All planned source segments were analyzed/).waitFor();
+    const resumed = await p.evaluate(async (id) => {
+      const checkpoints = await import('/lib/narrative/import/analysisCheckpoints.ts');
+      const listed = await checkpoints.listImportCheckpoints(indexedDB);
+      const record = listed.ok ? listed.value.find(item => item.id === id) : null;
+      return record ? { callsUsed: record.budget.callsUsed, status: record.segments[0]?.status } : null;
+    }, interrupted.id);
+    if (!resumed || resumed.callsUsed !== 2 || resumed.status !== 'complete' || extractionCalls !== 3) throw new Error('Explicit checkpoint continuation did not charge the second request exactly once: ' + JSON.stringify({ resumed, extractionCalls }));
+    if (errors.length) throw new Error('Browser page errors after checkpoint recovery: ' + errors.join('; '));
+    return 'IMPORT_E2E_JSON_BEGIN' + JSON.stringify({ passed: true, extractionCalls, activeProjectId: saved.activeId, restoredProjectId: restored.id, sourceCharacters: story.length, cancelledAttempts: interrupted.callsUsed, resumedAttempts: resumed.callsUsed, screenshots: ['.playwright-cli/phase-02-import-review-1280-dark.png', '.playwright-cli/phase-02-import-review-record-390.png'], pageErrors: errors }) + 'IMPORT_E2E_JSON_END';
   } finally { await context.close(); }
 }
 JS

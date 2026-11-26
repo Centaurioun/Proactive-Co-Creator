@@ -24,7 +24,7 @@ async (bootstrap) => {
     .getByRole('button', { name, exact: true }).click();
   const waitForSavedContent = (page, kind) => page.evaluate(async ({ projectId, kind }) => {
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open('proactive_co_creator_db_v2', 1);
+      const request = indexedDB.open('proactive_co_creator_db_v2');
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });

@@ -32,10 +32,11 @@ import { AppApiError, classifyGeminiError } from '../errors.ts';
 import { getGeminiClient } from '../geminiClient.ts';
 import { withRetry } from '../retry.ts';
 import { encodeNarrativeSourceData } from './extractionService.ts';
+import { getAiProviderRequestContext } from '../providers/requestContext.ts';
 
 export interface NarrativeAiClientLike {
   models: {
-    countTokens?: (params: { model: string; contents: string; config?: { abortSignal?: AbortSignal } }) => Promise<{ totalTokens?: number }>;
+    countTokens?: (params: { model: string; contents: string; config?: { abortSignal?: AbortSignal; systemInstruction?: unknown; responseSchema?: unknown; responseMimeType?: string; thinkingConfig?: unknown } }) => Promise<{ totalTokens?: number; source?: 'provider-count' | 'estimate' }>;
     generateContent: (params: {
       model: string;
       contents: string;
@@ -93,7 +94,7 @@ export async function runBudgetedJsonOperation<T>(params: {
 }): Promise<{ data: T; usage: AiUsageReport }> {
   const policy = AI_OPERATION_POLICIES[params.operation];
   const inputChars = params.prompt.length;
-  const estimatedInputTokens = estimateTokensFromText(params.prompt);
+    let estimatedInputTokens = estimateTokensFromText(params.prompt);
   if (inputChars > policy.maxInputChars) {
     throw new AppApiError(
       'VALIDATION_ERROR',
@@ -111,6 +112,7 @@ export async function runBudgetedJsonOperation<T>(params: {
   let cleanup: () => void = () => {};
   try {
     const ai: NarrativeAiClientLike = params.clientFactory?.() ?? params.client ?? (getGeminiClient() as unknown as NarrativeAiClientLike);
+    const selectedModel = getAiProviderRequestContext()?.selection.modelId ?? policy.model;
     const combined = combineSignals(params.signal, Math.min(policy.timeoutMs, policy.maxAggregateElapsedMs));
     cleanup = combined.cleanup;
     const reqSignal = combined.signal;
@@ -122,10 +124,10 @@ export async function runBudgetedJsonOperation<T>(params: {
     if (reqSignal.aborted) abortCount();
     else reqSignal.addEventListener('abort', abortCount, { once: true });
     let countTimer: ReturnType<typeof setTimeout> | undefined;
-    let countRes: { totalTokens?: number } | undefined;
+    let countRes: { totalTokens?: number; source?: 'provider-count' | 'estimate' } | undefined;
     try {
       countRes = await Promise.race([
-        ai.models.countTokens({ model: policy.model, contents: params.prompt, config: { abortSignal: countController.signal } }),
+        ai.models.countTokens({ model: selectedModel, contents: params.prompt, config: { abortSignal: countController.signal } }),
         new Promise<never>((_, reject) => {
           countTimer = setTimeout(() => {
             countController.abort();
@@ -143,14 +145,19 @@ export async function runBudgetedJsonOperation<T>(params: {
         ? reqSignal.reason
         : new AppApiError('CANCELLED', 'The request was cancelled before generation.', 499, false);
     }
-    const providerInputTokens = countRes?.totalTokens;
-    if (typeof providerInputTokens !== 'number' || !Number.isSafeInteger(providerInputTokens) || providerInputTokens < 0) {
+    if (typeof countRes?.totalTokens !== 'number' || !Number.isSafeInteger(countRes.totalTokens) || countRes.totalTokens < 0) {
       throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; generation was not started.', 503, false);
     }
+    const connectionId = getAiProviderRequestContext()?.selection.connectionId;
+    if ((connectionId === 'chatgpt-plan' || connectionId === 'openai-api') && countRes.source !== 'provider-count') {
+      throw new AppApiError('MODEL_UNSUPPORTED', 'This narrative operation requires provider token preflight; the selected OpenAI transport did not provide an exact count. Generation was not started.', 503, false);
+    }
+    const providerInputTokens = countRes.source === 'estimate' ? undefined : countRes.totalTokens;
+    if (countRes.source === 'estimate') estimatedInputTokens = Math.max(estimatedInputTokens, countRes.totalTokens);
 
     const budget = evaluateOperationBudget({
       operation: params.operation,
-      model: policy.model,
+      model: selectedModel,
       inputChars,
       countedInputTokens: providerInputTokens,
       estimatedInputTokens,
@@ -161,7 +168,7 @@ export async function runBudgetedJsonOperation<T>(params: {
       throw new AppApiError('VALIDATION_ERROR', budget.reason ?? 'Request exceeds configured AI budget.', 400, false);
     }
 
-    const maxAttempts = maxAttemptsWithinOperationBudget(policy, providerInputTokens);
+    const maxAttempts = maxAttemptsWithinOperationBudget(policy, providerInputTokens ?? estimatedInputTokens);
     if (maxAttempts < 1) {
       throw new AppApiError(
         'VALIDATION_ERROR',
@@ -174,7 +181,7 @@ export async function runBudgetedJsonOperation<T>(params: {
     const response = await withRetry(
       () =>
         ai.models.generateContent({
-          model: policy.model,
+          model: selectedModel,
           contents: params.prompt,
           config: {
             abortSignal: reqSignal,
@@ -209,7 +216,7 @@ export async function runBudgetedJsonOperation<T>(params: {
       maxInputChars: policy.maxInputChars,
       maxInputTokens: policy.maxInputTokens,
       maxOutputTokens: policy.maxOutputTokens,
-      model: policy.model,
+      model: selectedModel,
       operation: params.operation,
     };
 
