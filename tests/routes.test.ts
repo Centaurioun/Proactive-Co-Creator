@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import express from 'express';
 import { AppApiError } from '../server/errors.ts';
-import { createApiRouter, type AiServiceHandlers } from '../server/routes.ts';
-import { CAPABILITY_POLICY_VERSION } from '../server/providers/policy.ts';
+import { createApiRouter, type AiServiceHandlers, type ApiRouterOptions } from '../server/routes.ts';
+import { CAPABILITY_POLICY_VERSION, describeChatGptModel } from '../server/providers/policy.ts';
 import { getAiProviderRequestContext } from '../server/providers/requestContext.ts';
-import { getCredentialAuthorityId } from '../server/providers/runtime.ts';
+import { getChatGptModels, getCredentialAuthorityId, setChatGptModels } from '../server/providers/runtime.ts';
+import { CHATGPT_STORY_SRB_V1, createChatGptStorySrbAuthority, type ChatGptStoryTransportResult } from '../server/providers/subscriptionResourceBudget.ts';
 import type { BeliefState } from '../shared/types.ts';
 
 const importPlanBinding = {
@@ -87,10 +88,10 @@ function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServi
   };
 }
 
-async function startTestServer(handlers: AiServiceHandlers) {
+async function startTestServer(handlers: AiServiceHandlers, options: ApiRouterOptions = {}) {
   const app = express();
   app.use(express.json());
-  app.use('/api', createApiRouter(handlers));
+  app.use('/api', createApiRouter(handlers, options));
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -228,6 +229,92 @@ describe('server/routes API contract', () => {
     assert.equal(payload.error?.code, 'INTERNAL_ERROR');
     assert.equal(payload.error?.message, 'An unexpected error occurred while communicating with Gemini.');
     assert.equal(JSON.stringify(payload).includes('do-not-expose-test-secret'), false);
+  });
+
+  it('qualifies the ChatGPT story route through the injected SRB and Responses transport chain', async () => {
+    const originalModels = getChatGptModels();
+    const modelId = 'gpt-6.2-sol';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT 6.2 Sol' })]);
+    let transportCalls = 0;
+    let fallbackCalls = 0;
+    const authority = createChatGptStorySrbAuthority({ enabled: true, makeId: () => 'story-plan-test-1' });
+    const server = await startTestServer(createStubHandlers({
+      generateStoryText: async () => { fallbackCalls += 1; return 'Gemini fallback must not run.'; },
+    }), {
+      chatGptStorySrbTestInjection: {
+        authority,
+        currentGrantGeneration: () => 9,
+        adapterFactory: generation => {
+          assert.equal(generation, 9);
+          return {
+            generateStoryText: async (request, approvedBody, limits): Promise<ChatGptStoryTransportResult> => {
+              transportCalls += 1;
+              const body = JSON.parse(approvedBody) as Record<string, unknown>;
+              assert.equal(body.model, modelId);
+              assert.equal(body.store, false);
+              assert.equal(body.stream, true);
+              assert.equal('reasoning' in body, false);
+              assert.equal(request.operation, 'story');
+              assert.equal(request.reasoningLevel, 'default');
+              assert.equal(request.maxOutputTokens, undefined);
+              assert.equal(limits.maxStreamBytes, CHATGPT_STORY_SRB_V1.maxStreamBytes);
+              assert.equal(limits.maxAcceptedOutputBytes, CHATGPT_STORY_SRB_V1.maxAcceptedOutputBytes);
+              assert.equal(limits.maxStreamEvents, CHATGPT_STORY_SRB_V1.maxStreamEvents);
+              return {
+                text: 'A mocked story.', terminalEvent: 'response.completed', refusal: false,
+                streamBytes: 128, eventCount: 2,
+              };
+            },
+          };
+        },
+      },
+    });
+    closeServer = server.close;
+    try {
+      const response = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId,
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.deepEqual(await response.json(), { story: 'A mocked story.' });
+      assert.equal(transportCalls, 1);
+      assert.equal(fallbackCalls, 0);
+    } finally {
+      await server.close();
+      closeServer = null;
+      setChatGptModels(originalModels);
+    }
+  });
+
+  it('keeps ordinary ChatGPT story production admission blocked without trusted injection', async () => {
+    const originalModels = getChatGptModels();
+    const modelId = 'gpt-6.2-sol';
+    setChatGptModels([describeChatGptModel({ id: modelId, displayName: 'GPT 6.2 Sol' })]);
+    let fallbackCalls = 0;
+    const server = await startTestServer(createStubHandlers({
+      generateStoryText: async () => { fallbackCalls += 1; return 'No fallback.'; },
+    }));
+    closeServer = server.close;
+    try {
+      const response = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId,
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(response.status, 422);
+      assert.equal(fallbackCalls, 0);
+    } finally {
+      await server.close();
+      closeServer = null;
+      setChatGptModels(originalModels);
+    }
   });
 
   it('handles /api/analyze, /api/clarify, /api/refine, and /api/batch-edit validation and success', async () => {
