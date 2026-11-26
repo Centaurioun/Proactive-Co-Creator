@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invalidateAiProviderRequests } from '../../services/apiClient';
-import { isEligibleTextModel, modelsForConnection } from '../../lib/providerCatalogView';
+import { catalogStateLabel, isCatalogSelectable, isEligibleTextModel, modelsForConnection, type CatalogRefreshPhase } from '../../lib/providerCatalogView';
 import type { AiReasoningLevel as ReasoningLevel } from '../../server/providers/contracts';
 
 type AiConnectionId = 'gemini-managed' | 'gemini-personal' | 'chatgpt-plan' | 'openai-api';
@@ -119,13 +119,38 @@ export default function AiConnectionsPanel() {
   const [apiKey, setApiKey] = useState('');
   const [openAiApiKey, setOpenAiApiKeyInput] = useState('');
   const [preferences, setPreferences] = useState<ProviderPreferences | null>(null);
+  const [catalogPhases, setCatalogPhases] = useState<Partial<Record<AiConnectionId, CatalogRefreshPhase>>>({});
+  const statusRef = useRef<ProviderHubStatus | null>(null);
+  const statusEpoch = useRef(0);
+  const catalogEpochs = useRef(new Map<AiConnectionId, number>());
+
+  const publishStatus = useCallback((next: ProviderHubStatus) => {
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
 
   const refresh = useCallback(async () => {
+    const requestEpoch = ++statusEpoch.current;
+    for (const id of catalogEpochs.current.keys()) catalogEpochs.current.set(id, (catalogEpochs.current.get(id) ?? 0) + 1);
+    const cachedStatus = statusRef.current;
+    if (cachedStatus) {
+      const stalePhases: Partial<Record<AiConnectionId, CatalogRefreshPhase>> = {};
+      for (const connection of cachedStatus.connections) stalePhases[connection.id] = 'stale';
+      setCatalogPhases(stalePhases);
+    }
     setLoading(true);
     setError('');
     try {
       const next = await requestJson<ProviderHubStatus>('/status');
-      setStatus(next);
+      if (requestEpoch !== statusEpoch.current) return;
+      publishStatus(next);
+      if (!cachedStatus) {
+        const initialPhases: Partial<Record<AiConnectionId, CatalogRefreshPhase>> = {};
+        for (const connection of next.connections) {
+          if (connection.models.length > 0) initialPhases[connection.id] = 'stale';
+        }
+        setCatalogPhases(initialPhases);
+      }
       let saved = next.preferences;
       const raw = window.localStorage.getItem(PREFS_KEY);
       if (raw) {
@@ -139,11 +164,11 @@ export default function AiConnectionsPanel() {
       }
       setPreferences(saved);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not load AI connection status.');
+      if (requestEpoch === statusEpoch.current) setError(cause instanceof Error ? cause.message : 'Could not load AI connection status.');
     } finally {
-      setLoading(false);
+      if (requestEpoch === statusEpoch.current) setLoading(false);
     }
-  }, []);
+  }, [publishStatus]);
 
   useEffect(() => { void Promise.resolve().then(refresh); }, [refresh]);
 
@@ -152,18 +177,31 @@ export default function AiConnectionsPanel() {
   const modelOptions = modelsForConnection(connections, preferences?.defaultConnectionId);
 
   async function refreshModels(connectionId: AiConnectionId) {
+    const requestStatusEpoch = statusEpoch.current;
+    const requestEpoch = (catalogEpochs.current.get(connectionId) ?? 0) + 1;
+    catalogEpochs.current.set(connectionId, requestEpoch);
+    setCatalogPhases(current => ({ ...current, [connectionId]: 'loading' }));
     setBusy(true);
     setError('');
     try {
       const result = await requestJson<{ models: AiModelDescriptor[] }>(`/models?connectionId=${encodeURIComponent(connectionId)}`);
+      if (requestStatusEpoch !== statusEpoch.current || catalogEpochs.current.get(connectionId) !== requestEpoch) return [];
+      const currentStatus = statusRef.current;
+      const target = currentStatus?.connections.find(item => item.id === connectionId);
+      if (!currentStatus || !target || !['available', 'connected'].includes(target.state)) return [];
       invalidateAiProviderRequests();
-      setStatus(current => current ? ({ ...current, connections: current.connections.map(item => item.id === connectionId && ['available', 'connected'].includes(item.state) ? { ...item, models: result.models, state: 'connected' } : item) }) : current);
+      publishStatus({ ...currentStatus, connections: currentStatus.connections.map(item => item.id === connectionId
+        ? { ...item, models: result.models, state: 'connected' }
+        : item) });
+      setCatalogPhases(current => ({ ...current, [connectionId]: 'fresh' }));
       return result.models;
     } catch (cause) {
+      if (requestStatusEpoch !== statusEpoch.current || catalogEpochs.current.get(connectionId) !== requestEpoch) return [];
+      setCatalogPhases(current => ({ ...current, [connectionId]: 'failed' }));
       setError(cause instanceof Error ? cause.message : 'Could not load models.');
       return [];
     } finally {
-      setBusy(false);
+      if (catalogEpochs.current.get(connectionId) === requestEpoch) setBusy(false);
     }
   }
 
@@ -205,8 +243,13 @@ export default function AiConnectionsPanel() {
     await savePreferences({ ...preferences, defaultConnectionId: connectionId, defaultTextModelId: modelId, defaultReasoningLevel: 'default' });
   }
 
-  const selectedModel = modelOptions.find(model => model.id === (preferences?.defaultTextModelId ?? defaultConnection?.selectedModelId));
-  const eligibleDefaultModels = modelOptions.filter(isEligibleTextModel);
+  const currentDefaultCatalog = isCatalogSelectable(defaultConnection?.state ?? '', catalogPhases[preferences?.defaultConnectionId ?? 'gemini-managed']);
+  const providerDefaultSelected = preferences?.defaultConnectionId === 'gemini-managed' && !preferences.defaultTextModelId;
+  const defaultCatalogSelectable = currentDefaultCatalog || providerDefaultSelected;
+  const selectedModel = defaultCatalogSelectable
+    ? modelOptions.find(model => model.id === (preferences?.defaultTextModelId ?? defaultConnection?.selectedModelId))
+    : undefined;
+  const eligibleDefaultModels = currentDefaultCatalog ? modelOptions.filter(isEligibleTextModel) : [];
   const supportedReasoning = supportedReasoningLevels(selectedModel?.reasoning);
 
   async function saveGeminiKey(event: React.FormEvent<HTMLFormElement>) {
@@ -325,7 +368,12 @@ export default function AiConnectionsPanel() {
   async function selectOverrideModel(operation: string, modelId: string) {
     const current = preferences?.operationOverrides?.[operation];
     if (!preferences || !current) return;
-    const model = status?.connections.find(connection => connection.id === current.connectionId)?.models.find(item => item.id === modelId);
+    const connection = status?.connections.find(item => item.id === current.connectionId);
+    const model = connection?.models.find(item => item.id === modelId);
+    if (!connection || !isCatalogSelectable(connection.state, catalogPhases[current.connectionId])) {
+      setError('Refresh this connection’s model catalog successfully before selecting from it.');
+      return;
+    }
     if (!model || model.availability.state !== 'supported' || model.operationCapabilities[operation]?.state !== 'supported' ||
       model.operationCapabilities[operation]?.value !== true) {
       setError('This exact model is not verified for the selected operation. Refresh the account catalog and choose another model.');
@@ -374,10 +422,10 @@ export default function AiConnectionsPanel() {
               <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">Observed requests: {typeof observed === 'number' ? observed : 'Not available'}</p>
               <button type="button" className={`${buttonClass} mt-2`} disabled={loading || busy || !['available', 'connected'].includes(connection.state)} onClick={() => void refreshModels(connection.id)}>Refresh model catalog</button>
 
-              {['available', 'connected'].includes(connection.state) && (connection.id === 'gemini-managed' || status.localPersonalConnectionsAvailable) && (
-                <details className="mt-3 space-y-2 rounded border border-gray-200 p-2 dark:border-gray-700">
-                  <summary className="cursor-pointer text-sm font-medium">Model catalog ({connection.models.length})</summary>
-                  {connection.models.length === 0 ? <p className="text-xs text-gray-600 dark:text-gray-300">No models in the current catalog. Refresh the catalog to check account availability.</p> : (
+              <details className="mt-3 space-y-2 rounded border border-gray-200 p-2 dark:border-gray-700">
+                  <summary className="cursor-pointer text-sm font-medium">Model catalog ({connection.models.length}) · {catalogStateLabel(connection.state, connection.models.length, catalogPhases[connection.id])}</summary>
+                  {!['available', 'connected'].includes(connection.state) && <p className="text-xs text-gray-600 dark:text-gray-300">This connection is {stateLabel(connection.state)}. Catalog entries are retained for inspection and cannot be selected until the connection is available.</p>}
+                  {connection.models.length === 0 ? <p className="text-xs text-gray-600 dark:text-gray-300">{catalogStateLabel(connection.state, connection.models.length, catalogPhases[connection.id]) === 'refreshed; empty catalog' ? 'The latest account catalog is empty.' : 'No models are cached for this connection.'}</p> : (
                     <ul aria-label={CONNECTION_LABELS[connection.id] + ' model catalog'} className="max-h-80 space-y-2 overflow-y-auto">
                       {connection.models.map(model => (
                         <li key={model.id} className="rounded border border-gray-200 p-2 text-xs dark:border-gray-700">
@@ -408,8 +456,7 @@ export default function AiConnectionsPanel() {
                       ))}
                     </ul>
                   )}
-                </details>
-              )}
+              </details>
 
               {connection.id === 'gemini-personal' && status.localPersonalConnectionsAvailable && <div className="mt-3 space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700">
                 <form onSubmit={saveGeminiKey} className="space-y-2">
@@ -467,15 +514,16 @@ export default function AiConnectionsPanel() {
             </div>
             <div>
               <label htmlFor="default-ai-model" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Default text model</label>
-              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : defaultConnection?.selectedModelId ?? '')} disabled={busy || (preferences.defaultConnectionId !== 'gemini-managed' && eligibleDefaultModels.length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' ? undefined : event.target.value, defaultReasoningLevel: 'default' })}>
+              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : defaultConnection?.selectedModelId ?? '')} disabled={busy || !defaultCatalogSelectable || (preferences.defaultConnectionId !== 'gemini-managed' && eligibleDefaultModels.length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' ? undefined : event.target.value, defaultReasoningLevel: 'default' })}>
                 {preferences.defaultConnectionId === 'gemini-managed' && <option value="__provider_default__">Gemini provider default</option>}
+                {preferences.defaultTextModelId && !eligibleDefaultModels.some(model => model.id === preferences.defaultTextModelId) && <option value={preferences.defaultTextModelId}>Saved model unavailable · refresh or choose again</option>}
                 {eligibleDefaultModels.length === 0 && preferences.defaultConnectionId !== 'gemini-managed' && <option value="">No verified PCC operations available</option>}
                 {eligibleDefaultModels.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}
               </select>
             </div>
             <div>
               <label htmlFor="default-reasoning" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Reasoning level</label>
-              <select id="default-reasoning" className={inputClass} value={supportedReasoning.includes(preferences.defaultReasoningLevel ?? 'default') ? preferences.defaultReasoningLevel ?? 'default' : 'default'} disabled={busy} onChange={event => void savePreferences({ ...preferences, defaultReasoningLevel: event.target.value as ReasoningLevel })}>
+              <select id="default-reasoning" className={inputClass} value={supportedReasoning.includes(preferences.defaultReasoningLevel ?? 'default') ? preferences.defaultReasoningLevel ?? 'default' : 'default'} disabled={busy || !defaultCatalogSelectable} onChange={event => void savePreferences({ ...preferences, defaultReasoningLevel: event.target.value as ReasoningLevel })}>
                 {supportedReasoning.map(level => <option key={level} value={level}>{level}</option>)}
               </select>
               {selectedModel?.reasoning.state !== 'supported' && <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">This model’s reasoning controls are unverified; provider default will be used.</p>}
@@ -486,7 +534,7 @@ export default function AiConnectionsPanel() {
                 {OPERATIONS.filter(([operation]) => operation !== 'image').map(([operation, label]) => {
                   const override = preferences.operationOverrides?.[operation];
                   const connection = connections.find(item => item.id === override?.connectionId);
-                  const operationModels = (connection?.models ?? []).filter(model => model.availability.state === 'supported' &&
+                  const operationModels = (connection && isCatalogSelectable(connection.state, catalogPhases[connection.id]) ? connection.models : []).filter(model => model.availability.state === 'supported' &&
                     model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true);
                   const chosenModel = operationModels.find(model => model.id === override?.modelId);
                   const reasoningLevels = supportedReasoningLevels(chosenModel?.reasoning);
@@ -503,6 +551,7 @@ export default function AiConnectionsPanel() {
                       <div>
                         <label htmlFor={`override-model-${operation}`} className="mb-1 block text-xs font-medium">Model for {label.toLowerCase()}</label>
                         <select id={`override-model-${operation}`} className={inputClass} disabled={busy || operationModels.length === 0} value={override.modelId ?? ''} onChange={event => void selectOverrideModel(operation, event.target.value)}>
+                          {override.modelId && !operationModels.some(model => model.id === override.modelId) && <option value={override.modelId}>Saved model unavailable · refresh or choose again</option>}
                           {operationModels.length === 0 && <option value="">No verified model available</option>}
                           {operationModels.map(model => <option key={model.id} value={model.id}>{model.displayName} · {model.id}</option>)}
                         </select>
