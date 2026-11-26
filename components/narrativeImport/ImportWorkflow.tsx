@@ -40,10 +40,23 @@ interface AnalysisConfiguration {
   categories: Category[];
   instruction: string;
 }
+const importConnectionIds = ['gemini-managed', 'gemini-personal', 'chatgpt-plan', 'openai-api'] as const;
+const importReasoningLevels = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'extra-high', 'max'] as const;
+type ImportConnectionId = typeof importConnectionIds[number];
+type ImportReasoningLevel = typeof importReasoningLevels[number];
+
+function isImportConnectionId(value: string): value is ImportConnectionId {
+  return importConnectionIds.some(connectionId => connectionId === value);
+}
+
+function isImportReasoningLevel(value: string): value is ImportReasoningLevel {
+  return importReasoningLevels.some(reasoningLevel => reasoningLevel === value);
+}
+
 interface ImportProviderPlanContext {
-  connectionId: string;
+  connectionId: ImportConnectionId;
   modelId: string;
-  reasoningLevel: string;
+  reasoningLevel: ImportReasoningLevel;
   contextLimitTokens?: number;
   operationEligible: boolean;
   capabilityPolicyVersion: string;
@@ -184,7 +197,7 @@ export default function ImportWorkflow({
         if (!response.ok) throw new Error('Provider context is unavailable.');
         const status = await response.json() as {
           capabilityPolicyVersion?: string;
-          credentialAuthorityId?: string;
+          credentialAuthorityIds?: Partial<Record<string, string>>;
           connections?: Array<{ id: string; selectedModelId?: string; models?: Array<{
             id: string; contextLimit?: { state: string; value?: number };
             operationCapabilities?: Record<string, { state?: string; value?: boolean }>;
@@ -196,10 +209,17 @@ export default function ImportWorkflow({
           operationOverrides?: Record<string, { connectionId?: string; modelId?: string; reasoningLevel?: string }>;
         } : {};
         const override = prefs.operationOverrides?.['narrative-import'];
-        const connectionId = override?.connectionId ?? prefs.defaultConnectionId ?? 'gemini-managed';
+        const rawConnectionId = override?.connectionId ?? prefs.defaultConnectionId ?? 'gemini-managed';
+        const rawReasoningLevel = override?.reasoningLevel ?? prefs.defaultReasoningLevel ?? 'default';
+        if (!isImportConnectionId(rawConnectionId) || !isImportReasoningLevel(rawReasoningLevel)) {
+          throw new Error('Provider selection is invalid.');
+        }
+        const connectionId = rawConnectionId;
+        const reasoningLevel = rawReasoningLevel;
+        const credentialAuthorityId = status.credentialAuthorityIds?.[connectionId];
         const connection = status.connections?.find(item => item.id === connectionId);
         const modelId = override?.modelId ?? prefs.defaultTextModelId ?? connection?.selectedModelId;
-        if (!connection || !modelId || !status.capabilityPolicyVersion || !status.credentialAuthorityId) {
+        if (!connection || typeof modelId !== 'string' || !modelId || !status.capabilityPolicyVersion || !credentialAuthorityId) {
           throw new Error('Provider identity is incomplete.');
         }
         const model = connection?.models?.find(item => item.id === modelId);
@@ -207,11 +227,11 @@ export default function ImportWorkflow({
         if (current) setProviderPlanContext({
           connectionId,
           modelId,
-          reasoningLevel: override?.reasoningLevel ?? prefs.defaultReasoningLevel ?? 'default',
+          reasoningLevel,
           contextLimitTokens: model?.contextLimit?.state === 'supported' ? model.contextLimit.value : undefined,
           operationEligible: connectionId === 'gemini-managed' || (operation?.state === 'supported' && operation.value === true),
           capabilityPolicyVersion: status.capabilityPolicyVersion,
-          credentialAuthorityId: status.credentialAuthorityId,
+          credentialAuthorityId,
         });
       } catch {
         if (current) setProviderPlanContext(null);
@@ -615,17 +635,23 @@ export default function ImportWorkflow({
         };
         setCallsUsed(checkpoint.budget.callsUsed);
         try {
+          const checkpointProvider = checkpoint.provider;
+          if (!isImportConnectionId(checkpointProvider.connectionId) || !checkpointProvider.modelId ||
+              !isImportReasoningLevel(checkpointProvider.reasoningLevel) || !checkpointProvider.capabilityPolicyVersion ||
+              !checkpointProvider.credentialAuthorityId) {
+            throw new Error('The checkpoint provider identity is incomplete. Replan and confirm the analysis before continuing.');
+          }
           const request: NarrativeExtractionRequest = {
             sourceId, sourceVersion: 'v1', digest: source.digest, chunkId: chunk.id, text: chunk.text,
             scope: runConfiguration.scope,
             categories: runConfiguration.scope === 'complete' ? allCategories : runConfiguration.categories,
             instruction: runConfiguration.instruction,
             providerPlanBinding: {
-              connectionId: checkpoint.provider.connectionId,
-              ...(checkpoint.provider.modelId ? { modelId: checkpoint.provider.modelId } : {}),
-              reasoningLevel: checkpoint.provider.reasoningLevel,
-              ...(checkpoint.provider.capabilityPolicyVersion ? { capabilityPolicyVersion: checkpoint.provider.capabilityPolicyVersion } : {}),
-              credentialAuthorityId: checkpoint.provider.credentialAuthorityId!,
+              connectionId: checkpointProvider.connectionId,
+              modelId: checkpointProvider.modelId,
+              reasoningLevel: checkpointProvider.reasoningLevel,
+              capabilityPolicyVersion: checkpointProvider.capabilityPolicyVersion,
+              credentialAuthorityId: checkpointProvider.credentialAuthorityId,
             },
           };
           let leaseTimer: ReturnType<typeof setTimeout> | undefined;

@@ -57,8 +57,8 @@ import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
 import { createProviderHubRouter, resolveClientSelection } from './providerHubRoutes.ts';
 import { runWithAiProviderContext } from './providers/requestContext.ts';
-import { assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
-import { getCachedProviderModel } from './providers/runtime.ts';
+import { CAPABILITY_POLICY_VERSION, assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
+import { getCachedProviderModel, getCredentialAuthorityId } from './providers/runtime.ts';
 import type { AiOperation } from './aiBudget.ts';
 import { extractNarrativeChunk } from './narrative/extractionService.ts';
 import {
@@ -206,8 +206,9 @@ export function createApiRouter(
 
   router.use((req, res, next) => {
     if (req.path === '/health' || req.path.startsWith('/ai/provider-hub/')) { next(); return; }
+    const isNarrativeExtraction = req.method === 'POST' && req.path === '/narrative/import/extract';
     const hasSelection = ['x-pcc-ai-connection', 'x-pcc-ai-model', 'x-pcc-ai-reasoning'].some((name) => req.get(name) !== undefined);
-    if (!hasSelection) { next(); return; }
+    if (!hasSelection && !isNarrativeExtraction) { next(); return; }
     const selection = resolveClientSelection(req);
     if (!selection) {
       res.status(403).json({ error: { code: 'PROVIDER_SELECTION_INVALID', message: 'The selected AI connection is unavailable in this environment. Choose an available connection explicitly.' } });
@@ -228,22 +229,53 @@ export function createApiRouter(
       : path.startsWith('/narrative/import/enhance') ? 'import-enhance'
       : 'story';
     try {
+      const providerPlanBinding = isNarrativeExtraction && req.body && typeof req.body === 'object'
+        ? (req.body as { providerPlanBinding?: unknown }).providerPlanBinding
+        : undefined;
+      if (isNarrativeExtraction) {
+        if (!providerPlanBinding || typeof providerPlanBinding !== 'object' || Array.isArray(providerPlanBinding)) {
+          throw new AppApiError('VALIDATION_ERROR', 'Narrative extraction requires its approved provider plan identity.', 400, false);
+        }
+        const binding = providerPlanBinding as {
+          connectionId?: unknown; modelId?: unknown; reasoningLevel?: unknown;
+          capabilityPolicyVersion?: unknown; credentialAuthorityId?: unknown;
+        };
+        const selectedReasoning = selection.reasoningLevel ?? 'default';
+        const selectedModel = selection.modelId ? getCachedProviderModel(selection.connectionId, selection.modelId) : undefined;
+        const managedModelMatches = selection.connectionId === 'gemini-managed' &&
+          selection.modelId === GEMINI_MODELS.text && binding.capabilityPolicyVersion === CAPABILITY_POLICY_VERSION &&
+          selectedReasoning === 'default';
+        if (binding.connectionId !== selection.connectionId || binding.modelId !== selection.modelId ||
+            binding.reasoningLevel !== selectedReasoning ||
+            !(selectedModel?.capabilityPolicyVersion === binding.capabilityPolicyVersion || managedModelMatches) ||
+            binding.credentialAuthorityId !== getCredentialAuthorityId(selection.connectionId)) {
+          throw new AppApiError('CANCELLED', 'The provider, model, reasoning, policy, or credential session changed after the analysis plan was approved. Preview and confirm a new plan.', 409, false);
+        }
+      }
       assertProviderOperation(selection.connectionId, operation);
       if (selection.connectionId !== 'gemini-managed' && !selection.modelId) {
         throw new AppApiError('MODEL_UNSUPPORTED', 'Refresh this connection’s model list and select a model before using it.', 422, false);
       }
       if (selection.modelId) {
         const model = getCachedProviderModel(selection.connectionId, selection.modelId);
-        if (!model) throw new AppApiError('MODEL_UNSUPPORTED', 'The selected model is not in the latest server-verified account catalog. Refresh the model list.', 422, false);
-        assertModelOperation(model, operation);
-        assertReasoningSelection(model, selection.reasoningLevel);
+        if (!model) {
+          const managedDefault = selection.connectionId === 'gemini-managed' && selection.modelId === GEMINI_MODELS.text &&
+            (selection.reasoningLevel ?? 'default') === 'default';
+          if (!managedDefault) throw new AppApiError('MODEL_UNSUPPORTED', 'The selected model is not in the latest server-verified account catalog. Refresh the model list.', 422, false);
+        } else {
+          assertModelOperation(model, operation);
+          assertReasoningSelection(model, selection.reasoningLevel);
+        }
       }
     } catch (error) {
       const failure = error instanceof AppApiError ? error : new AppApiError('MODEL_UNSUPPORTED', 'The selected AI model cannot run this operation.', 422, false);
       res.status(failure.statusCode).json({ error: failure.toPayload() });
       return;
     }
-    runWithAiProviderContext({ selection, operation }, next);
+    const providerPlanBinding = isNarrativeExtraction
+      ? (req.body as { providerPlanBinding?: NarrativeExtractionRequest['providerPlanBinding'] } | undefined)?.providerPlanBinding
+      : undefined;
+    runWithAiProviderContext({ selection, operation, ...(providerPlanBinding ? { providerPlanBinding } : {}) }, next);
   });
 
   router.use('/ai/provider-hub', createProviderHubRouter());

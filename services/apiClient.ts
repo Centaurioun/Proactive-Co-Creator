@@ -158,6 +158,19 @@ async function postJson<TResponse>(
       throw new ClientApiError('VALIDATION_ERROR', 'AI provider preferences are invalid. Open AI Settings and confirm the selected billing path before retrying.', false, 400);
     }
   }
+  const providerPlanBinding = body && typeof body === 'object'
+    ? (body as { providerPlanBinding?: NarrativeExtractionRequest['providerPlanBinding'] }).providerPlanBinding
+    : undefined;
+  if (url.includes('/narrative/import/extract') && providerPlanBinding) {
+    // Preserve normal preference-derived headers when present so the server
+    // can reject a stale plan. When preferences are absent, carry the exact
+    // approved selection instead of silently using a server default.
+    providerHeaders['x-pcc-ai-connection'] ??= providerPlanBinding.connectionId;
+    providerHeaders['x-pcc-ai-model'] ??= providerPlanBinding.modelId;
+    if (providerPlanBinding.reasoningLevel !== 'default') {
+      providerHeaders['x-pcc-ai-reasoning'] ??= providerPlanBinding.reasoningLevel;
+    }
+  }
   const requestGeneration = providerRequestGeneration;
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort(new DOMException('The request was cancelled.', 'AbortError'));

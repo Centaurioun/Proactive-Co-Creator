@@ -4,7 +4,27 @@ import http from 'node:http';
 import express from 'express';
 import { AppApiError } from '../server/errors.ts';
 import { createApiRouter, type AiServiceHandlers } from '../server/routes.ts';
+import { CAPABILITY_POLICY_VERSION } from '../server/providers/policy.ts';
+import { getAiProviderRequestContext } from '../server/providers/requestContext.ts';
+import { getCredentialAuthorityId } from '../server/providers/runtime.ts';
 import type { BeliefState } from '../shared/types.ts';
+
+const importPlanBinding = {
+  connectionId: 'gemini-managed',
+  modelId: 'gemini-4-hydrogen',
+  reasoningLevel: 'default',
+  capabilityPolicyVersion: CAPABILITY_POLICY_VERSION,
+  credentialAuthorityId: getCredentialAuthorityId('gemini-managed'),
+};
+const importRequest = (value: Record<string, unknown>) => ({
+  ...value,
+  providerPlanBinding: (value.providerPlanBinding as typeof importPlanBinding | undefined) ?? importPlanBinding,
+});
+const importRequestHeaders = {
+  'Content-Type': 'application/json',
+  'x-pcc-ai-connection': importPlanBinding.connectionId,
+  'x-pcc-ai-model': importPlanBinding.modelId,
+};
 
 function createStubHandlers(overrides: Partial<AiServiceHandlers> = {}): AiServiceHandlers {
   const sampleGraph: BeliefState = {
@@ -110,18 +130,22 @@ describe('server/routes API contract', () => {
   it('validates narrative import extraction requests and returns only the mocked scoped result', async () => {
     let observedText = '';
     let observedScope = '';
+    let observedPlanBinding: unknown;
+    let observedContextConnection: string | undefined;
     let handlerCalls = 0;
     const srv = await startTestServer(createStubHandlers({
       extractNarrativeChunk: async request => {
         handlerCalls += 1;
         observedText = request.text;
         observedScope = request.scope;
+        observedPlanBinding = request.providerPlanBinding;
+        observedContextConnection = getAiProviderRequestContext()?.selection.connectionId;
         return { findings: [{ id: 'other-1', title: 'Unclassified', value: 'Kept for review', category: 'other', kind: 'reported', rationale: 'No reporter attributed.', evidence: { sourceId: 's', version: 'v1', digest: 'd', start: 0, end: 1, excerpt: 'A' } }], entities: [], relationships: [], ambiguities: [] } as never;
       },
     }));
     closeServer = srv.close;
     const bad = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: importRequestHeaders,
       body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'narrative', scope: 'selective', categories: [] }),
     });
     assert.equal(bad.status, 400);
@@ -132,19 +156,27 @@ describe('server/routes API contract', () => {
       { sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'x'.repeat(36_001), scope: 'complete', categories: [] },
     ]) {
       const response = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(invalid),
+        method: 'POST', headers: importRequestHeaders, body: JSON.stringify(invalid),
       });
       assert.equal(response.status, 400);
       const payload = await response.json() as { error?: { code?: string } };
       assert.equal(payload.error?.code, 'VALIDATION_ERROR');
     }
+    const stalePlan = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
+      method: 'POST', headers: importRequestHeaders,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [],
+        providerPlanBinding: { ...importPlanBinding, credentialAuthorityId: 'stale-runtime-authority' } })),
+    });
+    assert.equal(stalePlan.status, 409, 'a result planned under a previous credential authority must not reach the provider handler');
     const good = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [], instruction: 'Keep it faithful.' }),
+      method: 'POST', headers: importRequestHeaders,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [], instruction: 'Keep it faithful.' })),
     });
     assert.equal(good.status, 200);
     assert.equal(observedText, 'Ada enters.');
     assert.equal(observedScope, 'complete');
+    assert.deepEqual(observedPlanBinding, importPlanBinding);
+    assert.equal(observedContextConnection, 'gemini-managed');
     const result = await good.json() as { extraction: { findings: Array<{ category: string }> } };
     assert.equal(result.extraction.findings[0].category, 'other', 'complete-scope route returns retained unclassified findings');
     assert.equal(handlerCalls, 1, 'invalid requests must not reach the extraction handler');
@@ -171,8 +203,8 @@ describe('server/routes API contract', () => {
     closeServer = srv.close;
     const controller = new AbortController();
     const request = fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] }),
+      method: 'POST', headers: importRequestHeaders, signal: controller.signal,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] })),
     });
     await started;
     controller.abort();
@@ -188,8 +220,8 @@ describe('server/routes API contract', () => {
     }));
     closeServer = srv.close;
     const response = await fetch(`${srv.baseUrl}/api/narrative/import/extract`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] }),
+      method: 'POST', headers: importRequestHeaders,
+      body: JSON.stringify(importRequest({ sourceId: 's', sourceVersion: 'v1', digest: 'd', chunkId: 'c', text: 'Ada enters.', scope: 'complete', categories: [] })),
     });
     assert.equal(response.status, 500);
     const payload = await response.json() as { error?: { code?: string; message?: string } };
