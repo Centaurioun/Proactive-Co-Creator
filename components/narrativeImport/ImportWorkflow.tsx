@@ -14,7 +14,7 @@ import {
 } from '../../lib/narrative/import/appendApply';
 import { findPossibleIdentityMatches } from '../../lib/narrative/import/identityResolver';
 import { deduplicateChunkProposals, verifyExtractionEvidence, type VerifiedExtraction } from '../../lib/narrative/import/proposalValidator';
-import { calculateProcessedCoverage, planNarrativeSourceAnalysis, type SourceChunk } from '../../lib/narrative/import/segmentation';
+import { calculateProcessedCoverage, planAdaptiveNarrativeSourceAnalysis, type SourceChunk } from '../../lib/narrative/import/segmentation';
 import { countNarrativeWords, MAX_RETAINED_ORIGINAL_BYTES, parseNarrativeSource, type ParsedNarrativeSource } from '../../lib/narrative/import/sourceParser';
 import { manuscriptSections } from '../../lib/narrative/manuscriptModel';
 import {
@@ -27,11 +27,19 @@ import { extractNarrativeChunk, isAbortError, requestImportEnhancements } from '
 import { workspaceButton } from '../manuscript/ManuscriptEditor';
 
 const MAX_EXTRACTION_CALLS = 12;
+const PROVIDER_PREFERENCES_KEY = 'pcc.ai.providerPreferences.v1';
 type Category = NarrativeExtractionRequest['categories'][number];
 interface AnalysisConfiguration {
   scope: 'complete' | 'selective';
   categories: Category[];
   instruction: string;
+}
+interface ImportProviderPlanContext {
+  connectionId: string;
+  modelId?: string;
+  reasoningLevel: string;
+  contextLimitTokens?: number;
+  operationEligible: boolean;
 }
 const categoryOptions: Array<[Category, string]> = [
   ['characters', 'Characters and identities'], ['attributes', 'Attributes and aliases'], ['relationships', 'Relationships'],
@@ -107,6 +115,7 @@ export default function ImportWorkflow({
   const [createError, setCreateError] = useState('');
   const [creating, setCreating] = useState(false);
   const [allowIncomplete, setAllowIncomplete] = useState(false);
+  const [providerPlanContext, setProviderPlanContext] = useState<ImportProviderPlanContext | null>(null);
 
   // Destination: Create New vs Append to Existing Project (Package H)
   const [destination, setDestination] = useState<'new' | 'append'>('new');
@@ -137,6 +146,7 @@ export default function ImportWorkflow({
   const sourceReadAbortRef = useRef<AbortController | null>(null);
   const inProgressRef = useRef(false);
   const creatingRef = useRef(false);
+  const providerSnapshotRef = useRef<string | null>(null);
 
   useEffect(() => {
     const stage2Controller = createStage2EnhancementController(setStage2State);
@@ -150,6 +160,48 @@ export default function ImportWorkflow({
       stage2Controller.dispose();
       stage2ControllerRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    let current = true;
+    const refreshPlanContext = async () => {
+      try {
+        const response = await fetch('/api/ai/provider-hub/status');
+        if (!response.ok) throw new Error('Provider context is unavailable.');
+        const status = await response.json() as {
+          connections?: Array<{ id: string; selectedModelId?: string; models?: Array<{
+            id: string; contextLimit?: { state: string; value?: number };
+            operationCapabilities?: Record<string, { state?: string; value?: boolean }>;
+          }> }>;
+        };
+        const stored = window.localStorage.getItem(PROVIDER_PREFERENCES_KEY);
+        const prefs = stored ? JSON.parse(stored) as {
+          defaultConnectionId?: string; defaultTextModelId?: string; defaultReasoningLevel?: string;
+          operationOverrides?: Record<string, { connectionId?: string; modelId?: string; reasoningLevel?: string }>;
+        } : {};
+        const override = prefs.operationOverrides?.['narrative-import'];
+        const connectionId = override?.connectionId ?? prefs.defaultConnectionId ?? 'gemini-managed';
+        const connection = status.connections?.find(item => item.id === connectionId);
+        const modelId = override?.modelId ?? prefs.defaultTextModelId ?? connection?.selectedModelId;
+        const model = connection?.models?.find(item => item.id === modelId);
+        const operation = model?.operationCapabilities?.['narrative-import'];
+        if (current) setProviderPlanContext({
+          connectionId,
+          modelId,
+          reasoningLevel: override?.reasoningLevel ?? prefs.defaultReasoningLevel ?? 'default',
+          contextLimitTokens: model?.contextLimit?.state === 'supported' ? model.contextLimit.value : undefined,
+          operationEligible: connectionId === 'gemini-managed' || (operation?.state === 'supported' && operation.value === true),
+        });
+      } catch {
+        if (current) setProviderPlanContext(null);
+      }
+    };
+    void refreshPlanContext();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === PROVIDER_PREFERENCES_KEY) void refreshPlanContext();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => { current = false; window.removeEventListener('storage', onStorage); };
   }, []);
 
   const parsedHasFileRetentionGap = Boolean(file && source?.retention === 'extracted-only');
@@ -168,9 +220,15 @@ export default function ImportWorkflow({
     source && segmentationComplete && failedChunks.length === 0 && completedChunkIds.size === chunks.length && chunks.length > 0 && !busy
   );
   const hasIncompleteCoverage = Boolean(source && (!segmentationComplete || failedChunks.length > 0 || completedChunkIds.size !== chunks.length));
-  const initialAnalysisPlan = useMemo(() => source && !busy ? planNarrativeSourceAnalysis(source.text, source.blocks, Math.max(0, MAX_EXTRACTION_CALLS - callsUsed)) : null, [source, busy, callsUsed]);
+  const initialAnalysisPlan = useMemo(() => source && !busy ? planAdaptiveNarrativeSourceAnalysis(
+    source.text, source.blocks, Math.max(0, MAX_EXTRACTION_CALLS - callsUsed),
+    providerPlanContext?.contextLimitTokens ? {
+      maxInputTokens: Math.min(8_000, providerPlanContext.contextLimitTokens),
+      envelopeReserveTokens: Math.min(1_500, Math.floor(providerPlanContext.contextLimitTokens * 0.2)),
+    } : undefined,
+  ) : null, [source, busy, callsUsed, providerPlanContext]);
   const canAnalyze = Boolean(
-    aiConfigured && source && !busy && sourceError === '' && (!parsedHasFileRetentionGap || confirmExtractedOnly) && (scope !== 'selective' || categories.length > 0)
+    aiConfigured && source && !busy && sourceError === '' && providerPlanContext !== null && providerPlanContext.connectionId !== 'chatgpt-plan' && providerPlanContext.operationEligible && (!parsedHasFileRetentionGap || confirmExtractedOnly) && (scope !== 'selective' || categories.length > 0)
   );
 
   const targetProject = useMemo(
@@ -317,7 +375,7 @@ export default function ImportWorkflow({
     resetAnalysis(true);
   };
 
-  const startAnalysis = async (retry = false, smallerChunks = false) => {
+  const startAnalysis = async (retry = false) => {
     if (!source || inProgressRef.current) return;
     setSourceOnlyMode(false);
     const nextCalls = callsUsed;
@@ -326,6 +384,10 @@ export default function ImportWorkflow({
     inProgressRef.current = true;
     setBusy(true); setCancelled(false); setRequestError('');
     const runEpoch = epochRef.current;
+    if (!retry) {
+      try { providerSnapshotRef.current = window.localStorage.getItem(PROVIDER_PREFERENCES_KEY); }
+      catch { providerSnapshotRef.current = null; }
+    }
     const controller = new AbortController(); abortRef.current = controller;
     const runConfiguration = retry && analysisConfiguration ? analysisConfiguration : {
       scope,
@@ -334,9 +396,7 @@ export default function ImportWorkflow({
     };
     if (!retry || !analysisConfiguration) setAnalysisConfiguration(runConfiguration);
     const planned = retry ? failedChunks : (() => {
-      const segmented = smallerChunks
-        ? planNarrativeSourceAnalysis(source.text, source.blocks, callBudget - callsUsed, 8_000, 250)
-        : initialAnalysisPlan ?? planNarrativeSourceAnalysis(source.text, source.blocks, callBudget - callsUsed);
+      const segmented = initialAnalysisPlan ?? planAdaptiveNarrativeSourceAnalysis(source.text, source.blocks, callBudget - callsUsed);
       setChunks(segmented.chunks); setSegmentationComplete(segmented.complete);
       setCompletedChunkIds(new Set()); setResults([]); setFailedChunks([]); setRejectedEvidenceCount(0);
       return segmented.chunks;
@@ -348,6 +408,13 @@ export default function ImportWorkflow({
       for (let index = 0; index < planned.length; index += 1) {
         const chunk = planned[index];
         if (controller.signal.aborted || runEpoch !== epochRef.current) { failures.push(...planned.slice(index)); break; }
+        let currentProviderSnapshot: string | null = null;
+        try { currentProviderSnapshot = window.localStorage.getItem(PROVIDER_PREFERENCES_KEY); } catch { /* Missing storage is checked by the request layer. */ }
+        if (currentProviderSnapshot !== providerSnapshotRef.current) {
+          failures.push(...planned.slice(index));
+          setRequestError('The provider selection changed during this analysis. Remaining segments were stopped; review the plan and start a new analysis to use the new selection.');
+          break;
+        }
         if (callsRemaining <= 0) { failures.push(...planned.slice(index)); break; }
         callsRemaining -= 1;
         setCallsUsed((value) => value + 1);
@@ -670,8 +737,12 @@ export default function ImportWorkflow({
             <div className="space-y-1 rounded border border-gray-200 p-3 text-sm dark:border-gray-700" aria-label="Local analysis plan">
               <p className="font-medium">Automatic analysis plan</p>
               <p>{initialAnalysisPlan.chunks.length} planned source segment(s) · up to {initialAnalysisPlan.scheduledRequests} extraction request(s) in this pass.</p>
+              <p>Adaptive plan for narrative import · {providerPlanContext?.connectionId ?? 'provider status unavailable'}{providerPlanContext?.modelId ? ` · ${providerPlanContext.modelId}` : ' · provider default'} · reasoning {providerPlanContext?.reasoningLevel ?? 'Default'}.</p>
+              {providerPlanContext?.connectionId === 'chatgpt-plan' && <p role="status" className="text-amber-800 dark:text-amber-200">ChatGPT narrative import remains blocked. The approved ChatGPT SRB pilot is mock-only for the separate story operation; no import inference or billing fallback is available.</p>}
+              {providerPlanContext === null && <p role="status" className="text-amber-800 dark:text-amber-200">Provider selection could not be verified. Refresh provider status before starting analysis.</p>}
+              <p>Adaptive local estimate: up to {initialAnalysisPlan.limits.payloadTokenBudget.toLocaleString()} source tokens per segment, with {initialAnalysisPlan.limits.envelopeReserveTokens.toLocaleString()} reserved for instructions and schema. A supported model context limit is used when the account catalog provides one; otherwise the conservative narrative-import limit applies. The server remains authoritative and blocks transports that cannot meet operation preflight.</p>
               {!initialAnalysisPlan.completeWithinCallBudget && <p className="text-amber-800 dark:text-amber-200">The current limits permit only partial source coverage: {initialAnalysisPlan.unplannedChars.toLocaleString()} source character units remain outside this pass. The original manuscript is preserved.</p>}
-              <p className="text-xs text-gray-600 dark:text-gray-300">Local plan using existing segmentation and call ceilings. Provider preflight may reject a segment; this is not a token, quota, cost or completion guarantee.</p>
+              <p className="text-xs text-gray-600 dark:text-gray-300">The plan is pinned to this source digest, narrative-import task, current provider preference snapshot, and the displayed policy limits when analysis starts. A provider change stops remaining segments. Estimates do not guarantee quota, cost, or semantic completeness.</p>
             </div>
           )}
           <div className="flex flex-wrap gap-2">
@@ -679,7 +750,6 @@ export default function ImportWorkflow({
             <button type="button" className={workspaceButton} disabled={!canAnalyze || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false)}>Analyze source</button>
             {busy && <button type="button" className={workspaceButton} onClick={cancelAnalysis}>Cancel analysis</button>}
             {failedChunks.length > 0 && !busy && <button type="button" className={workspaceButton} disabled={callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(true)}>Retry failed segments ({failedChunks.length})</button>}
-            {requestError && !busy && <button type="button" className={workspaceButton} disabled={!source || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false, true)}>Retry with smaller segments</button>}
           </div>
           {!aiConfigured && <p role="status">Analysis is unavailable because the server Gemini API key is not configured. Local source preview remains available.</p>}
           {busy && <p role="status" aria-live="polite">{progress} · {callsUsed}/{MAX_EXTRACTION_CALLS} requests used</p>}

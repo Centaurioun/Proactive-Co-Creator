@@ -6,7 +6,7 @@ export function modelsForConnection<M>(connections: readonly { id: string; model
 interface EligibilityDescriptor {
   availability: { state: string };
   textGeneration: { state: string };
-  operationCapabilities: Record<string, { state: string; value?: boolean }>;
+  operationCapabilities: Record<string, { state: string; value?: unknown }>;
 }
 
 export function isEligibleTextModel(model: EligibilityDescriptor): boolean {

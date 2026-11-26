@@ -4,6 +4,19 @@ import { isEligibleTextModel, modelsForConnection } from '../../lib/providerCata
 import type { AiReasoningLevel as ReasoningLevel } from '../../server/providers/contracts';
 
 type AiConnectionId = 'gemini-managed' | 'gemini-personal' | 'chatgpt-plan' | 'openai-api';
+interface AiCapabilityEvidence {
+  source: string;
+  reference: string;
+  checkedAt: string;
+  transport: string;
+  modelSlug: string;
+}
+interface AiCapabilitySummary {
+  state: 'supported' | 'unsupported' | 'unknown';
+  value?: boolean | number | readonly ReasoningLevel[];
+  reason?: string;
+  evidence?: AiCapabilityEvidence[];
+}
 type ConnectionState =
   | 'available' | 'unconfigured' | 'connecting' | 'connected' | 'authorization-required'
   | 'expired' | 'unsupported-environment' | 'rate-limited' | 'quota-exhausted' | 'failed';
@@ -11,12 +24,21 @@ type ConnectionState =
 interface AiModelDescriptor {
   id: string;
   displayName: string;
-  availability: { state: 'supported' | 'unsupported' | 'unknown' };
-  textGeneration: { state: 'supported' | 'unsupported' | 'unknown' };
-  imageGeneration: { state: 'supported' | 'unsupported' | 'unknown' };
-  reasoning: { state: 'supported' | 'unsupported' | 'unknown'; value?: readonly ReasoningLevel[]; reason?: string };
-  structuredOutput: { state: 'supported' | 'unsupported' | 'unknown' };
-  operationCapabilities: Record<string, { state: 'supported' | 'unsupported' | 'unknown'; value?: boolean }>;
+  availability: AiCapabilitySummary;
+  textGeneration: AiCapabilitySummary;
+  imageGeneration: AiCapabilitySummary;
+  reasoning: AiCapabilitySummary;
+  structuredOutput: AiCapabilitySummary;
+  contextLimit: AiCapabilitySummary;
+  outputLimit: AiCapabilitySummary;
+  operationCapabilities: Record<string, AiCapabilitySummary>;
+  capabilityPolicyVersion: string;
+}
+
+function supportedReasoningLevels(capability?: AiCapabilitySummary): ReasoningLevel[] {
+  return capability?.state === 'supported' && Array.isArray(capability.value)
+    ? ['default', ...capability.value.filter((level): level is ReasoningLevel => typeof level === 'string')]
+    : ['default'];
 }
 
 interface AiConnectionDescriptor {
@@ -185,9 +207,7 @@ export default function AiConnectionsPanel() {
 
   const selectedModel = modelOptions.find(model => model.id === (preferences?.defaultTextModelId ?? defaultConnection?.selectedModelId));
   const eligibleDefaultModels = modelOptions.filter(isEligibleTextModel);
-  const supportedReasoning = selectedModel?.reasoning.state === 'supported'
-    ? ['default', ...(selectedModel.reasoning.value ?? [])] as ReasoningLevel[]
-    : ['default'] as ReasoningLevel[];
+  const supportedReasoning = supportedReasoningLevels(selectedModel?.reasoning);
 
   async function saveGeminiKey(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -302,6 +322,26 @@ export default function AiConnectionsPanel() {
     await savePreferences({ ...preferences, operationOverrides });
   }
 
+  async function selectOverrideModel(operation: string, modelId: string) {
+    const current = preferences?.operationOverrides?.[operation];
+    if (!preferences || !current) return;
+    const model = status?.connections.find(connection => connection.id === current.connectionId)?.models.find(item => item.id === modelId);
+    if (!model || model.availability.state !== 'supported' || model.operationCapabilities[operation]?.state !== 'supported' ||
+      model.operationCapabilities[operation]?.value !== true) {
+      setError('This exact model is not verified for the selected operation. Refresh the account catalog and choose another model.');
+      return;
+    }
+    const operationOverrides = { ...preferences.operationOverrides, [operation]: { connectionId: current.connectionId, modelId, reasoningLevel: 'default' as ReasoningLevel } };
+    await savePreferences({ ...preferences, operationOverrides });
+  }
+
+  async function selectOverrideReasoning(operation: string, reasoningLevel: ReasoningLevel) {
+    const current = preferences?.operationOverrides?.[operation];
+    if (!preferences || !current) return;
+    const operationOverrides = { ...preferences.operationOverrides, [operation]: { ...current, reasoningLevel } };
+    await savePreferences({ ...preferences, operationOverrides });
+  }
+
   return (
     <section aria-labelledby="ai-connections-heading" className="space-y-4">
       <header>
@@ -345,8 +385,25 @@ export default function AiConnectionsPanel() {
                           <p className="break-all text-gray-600 dark:text-gray-300">{model.id}</p>
                           <p>Catalog availability: {model.availability.state}</p>
                           <p>Text operation eligibility: {isEligibleTextModel(model) ? 'At least one supported PCC operation' : 'Unavailable for active PCC text routing'}</p>
-                          <p>Reasoning registry: {model.reasoning.state === 'supported' ? ['default', ...(model.reasoning.value ?? [])].join(', ') : 'Default only (explicit reasoning unverified or unsupported)'}</p>
+                          <p>Reasoning registry: {model.reasoning.state === 'supported' ? supportedReasoningLevels(model.reasoning).join(', ') : 'Default only (explicit reasoning unverified or unsupported)'}</p>
                           {connection.id === 'chatgpt-plan' && <p className="text-gray-600 dark:text-gray-300">Registry metadata is informational; SIWC execution has not been live-qualified. PCC inference remains blocked by the current subscription budget policy.</p>}
+                          <details className="mt-2">
+                            <summary className="cursor-pointer font-medium">Capability evidence · policy {model.capabilityPolicyVersion}</summary>
+                            <ul className="mt-1 space-y-1">
+                              {([
+                                ['Account availability', model.availability], ['Text generation', model.textGeneration],
+                                ['Structured output', model.structuredOutput], ['Context limit', model.contextLimit],
+                                ['Output limit', model.outputLimit], ['Reasoning levels', model.reasoning],
+                                ...Object.entries(model.operationCapabilities).map(([operation, capability]) => [`Operation ${operation}`, capability] as [string, AiCapabilitySummary]),
+                              ] as Array<[string, AiCapabilitySummary]>).map(([label, capability]) => <li key={label} className="break-words">
+                                <span className="font-medium">{label}: {capability.state}</span>
+                                {capability.state === 'unknown' && capability.reason && <span> · {capability.reason}</span>}
+                                {(capability.evidence ?? []).map((proof, index) => <span key={`${proof.reference}-${index}`} className="block text-gray-600 dark:text-gray-300">
+                                  {proof.source} · {proof.transport} · {proof.modelSlug} · checked {proof.checkedAt} · <a className="underline" href={proof.reference} target="_blank" rel="noreferrer">evidence</a>
+                                </span>)}
+                              </li>)}
+                            </ul>
+                          </details>
                         </li>
                       ))}
                     </ul>
@@ -426,14 +483,40 @@ export default function AiConnectionsPanel() {
             <details className="pt-1">
               <summary className="cursor-pointer text-sm font-medium text-gray-800 dark:text-gray-100">Per-operation connection overrides</summary>
               <div className="mt-2 space-y-2">
-                {OPERATIONS.filter(([operation]) => operation !== 'image').map(([operation, label]) => <div key={operation} className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
-                  <label htmlFor={`override-${operation}`} className="text-sm text-gray-700 dark:text-gray-200">{label}</label>
-                  <select id={`override-${operation}`} className={inputClass} disabled={busy} value={preferences.operationOverrides?.[operation]?.connectionId ?? ''} onChange={event => event.target.value && void changeOverride(operation, event.target.value as AiConnectionId)}>
-                    <option value="">Use default</option>
-                    {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true)))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
-                  </select>
-                  {preferences.operationOverrides?.[operation] && <button type="button" className={buttonClass} disabled={busy} onClick={() => void clearOverride(operation)}>Use default</button>}
-                </div>)}
+                {OPERATIONS.filter(([operation]) => operation !== 'image').map(([operation, label]) => {
+                  const override = preferences.operationOverrides?.[operation];
+                  const connection = connections.find(item => item.id === override?.connectionId);
+                  const operationModels = (connection?.models ?? []).filter(model => model.availability.state === 'supported' &&
+                    model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true);
+                  const chosenModel = operationModels.find(model => model.id === override?.modelId);
+                  const reasoningLevels = supportedReasoningLevels(chosenModel?.reasoning);
+                  return <div key={operation} className="space-y-2 rounded border border-gray-200 p-2 dark:border-gray-700">
+                    <div className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]">
+                      <label htmlFor={`override-${operation}`} className="text-sm text-gray-700 dark:text-gray-200">{label}</label>
+                      <select id={`override-${operation}`} className={inputClass} disabled={busy} value={override?.connectionId ?? ''} onChange={event => event.target.value && void changeOverride(operation, event.target.value as AiConnectionId)}>
+                        <option value="">Use default</option>
+                        {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => model.operationCapabilities[operation]?.state === 'supported' && model.operationCapabilities[operation]?.value === true)))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
+                      </select>
+                      {override && <button type="button" className={buttonClass} disabled={busy} onClick={() => void clearOverride(operation)}>Use default</button>}
+                    </div>
+                    {override && <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <div>
+                        <label htmlFor={`override-model-${operation}`} className="mb-1 block text-xs font-medium">Model for {label.toLowerCase()}</label>
+                        <select id={`override-model-${operation}`} className={inputClass} disabled={busy || operationModels.length === 0} value={override.modelId ?? ''} onChange={event => void selectOverrideModel(operation, event.target.value)}>
+                          {operationModels.length === 0 && <option value="">No verified model available</option>}
+                          {operationModels.map(model => <option key={model.id} value={model.id}>{model.displayName} · {model.id}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor={`override-reasoning-${operation}`} className="mb-1 block text-xs font-medium">Reasoning for {label.toLowerCase()}</label>
+                        <select id={`override-reasoning-${operation}`} className={inputClass} disabled={busy || !chosenModel} value={reasoningLevels.includes(override.reasoningLevel ?? 'default') ? override.reasoningLevel ?? 'default' : 'default'} onChange={event => void selectOverrideReasoning(operation, event.target.value as ReasoningLevel)}>
+                          {reasoningLevels.map(level => <option key={level} value={level}>{level}</option>)}
+                        </select>
+                        {chosenModel?.reasoning.state !== 'supported' && <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">Explicit reasoning is unverified for this exact model; Default only.</p>}
+                      </div>
+                    </div>}
+                  </div>;
+                })}
                 <p className="text-xs text-gray-600 dark:text-gray-300">Image generation currently requires Gemini Managed. It will not switch billing paths automatically when another connection is selected.</p>
                 {preferences.operationOverrides?.image && <div className="flex flex-wrap items-center gap-2 text-xs text-amber-800 dark:text-amber-200">
                   <span>The saved image override is not qualified and will not be used.</span>

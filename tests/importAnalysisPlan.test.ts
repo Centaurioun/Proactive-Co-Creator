@@ -36,3 +36,41 @@ test('segmentation ceiling cannot be presented as full coverage', () => {
   assert.equal(plan.completeWithinCallBudget, false);
   assert.ok(plan.unplannedChars > 0);
 });
+
+test('adaptive narrative plan leaves a safe short source whole', () => {
+  const source = 'Ada kapıyı açtı. 🗝️\n\nMina içeride bekliyordu.';
+  const plan = segmentation.planAdaptiveNarrativeSourceAnalysis(source, [], 12);
+  assert.equal(plan.chunks.length, 1);
+  assert.equal(plan.chunks[0].text, source);
+  assert.equal(plan.completeWithinCallBudget, true);
+  assert.equal(plan.operation, 'narrative-import');
+  assert.equal(plan.countAuthority, 'server-provider-preflight');
+});
+
+test('adaptive narrative plan keeps Unicode code points intact and splits at a paragraph boundary', () => {
+  const paragraph = `Türkçe öykü 🧭 ${'ö'.repeat(180)}`;
+  const source = `${paragraph}\n\n${paragraph}\n\n${paragraph}`;
+  const plan = segmentation.planAdaptiveNarrativeSourceAnalysis(source, [], 12, {
+    maxInputTokens: 250,
+    envelopeReserveTokens: 20,
+  });
+  assert.ok(plan.chunks.length > 1);
+  assert.equal(plan.chunks[0].text.endsWith('\n\n'), true);
+  for (const chunk of plan.chunks) {
+    assert.equal(source.slice(chunk.start, chunk.end), chunk.text);
+    assert.ok(!/^[\uDC00-\uDFFF]/u.test(chunk.text));
+    assert.ok(plan.limits.envelopeReserveTokens + segmentation.estimateNarrativeInputTokens(chunk.text) <= plan.limits.maxInputTokens);
+  }
+  assert.equal(plan.completeWithinCallBudget, true);
+});
+
+test('adaptive planning reports incomplete coverage when request budget is exhausted', () => {
+  const source = 'narrative '.repeat(2000);
+  const plan = segmentation.planAdaptiveNarrativeSourceAnalysis(source, [], 1, {
+    maxInputTokens: 80,
+    envelopeReserveTokens: 20,
+  });
+  assert.equal(plan.scheduledRequests, 1);
+  assert.equal(plan.completeWithinCallBudget, false);
+  assert.ok(plan.unplannedChars > 0);
+});
