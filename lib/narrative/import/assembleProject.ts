@@ -113,7 +113,7 @@ export function assembleImportedProject(
     const targets = byName.get(normalizedName(proposal.target)) ?? [];
     if (sources.length !== 1 || targets.length !== 1) {
       issues.push({
-        id: crypto.randomUUID(), fingerprint: `${sourceId}:relationship:${proposal.evidence.start}:${proposal.evidence.end}`,
+        id: crypto.randomUUID(), fingerprint: `${sourceId}:relationship:${proposal.id}`,
         title: `Relationship identity needs clarification: ${proposal.source} → ${proposal.target}`,
         disposition: 'needs-clarification', freshness: 'current', reason: 'The relationship target did not resolve to exactly one accepted entity.',
         anchors: [evidenceAnchor(proposal.evidence)], affectedTargetIds: [], severity: 'medium', certainty: 'possible', history: [],
@@ -158,7 +158,7 @@ export function assembleImportedProject(
     proposals.push({ id: proposal.id, kind: 'ambiguity', label: proposal.title, detail: proposal.detail,
       category: 'continuity', approval, rationale: proposal.rationale, evidence: evidenceAnchor(proposal.evidence) });
     issues.push({
-      id: crypto.randomUUID(), fingerprint: `${sourceId}:ambiguity:${proposal.evidence.start}:${proposal.evidence.end}:${proposal.title}`,
+      id: crypto.randomUUID(), fingerprint: `${sourceId}:ambiguity:${proposal.id}`,
       title: proposal.title, disposition: 'open', freshness: 'current', reason: proposal.detail || proposal.rationale,
       anchors: [evidenceAnchor(proposal.evidence)], affectedTargetIds: [], severity: proposal.severity, certainty: proposal.certainty,
       dispositionReason: approval === 'rejected' ? 'Author rejected this proposed issue.' : undefined, history: [],

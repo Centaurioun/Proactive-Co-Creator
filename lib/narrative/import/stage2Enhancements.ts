@@ -212,6 +212,15 @@ export function createStage2EnhancementController(
   };
 }
 
+function hashEnhancementId(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 export function attachAcceptedStage2Opportunities(
   assembled: CreativeProject,
   selectedEnhancements: ImportEnhancementProposal[],
@@ -219,27 +228,37 @@ export function attachAcceptedStage2Opportunities(
   now: number = Date.now()
 ): CreativeProject {
   if (selectedEnhancements.length > 0 && assembled.narrative) {
+    const usedIds = new Set((assembled.narrative.opportunities ?? []).map((item) => item.id));
+    const stamp = now.toString(36).slice(-4);
     assembled.narrative.opportunities = [
       ...(assembled.narrative.opportunities ?? []),
-      ...selectedEnhancements.map((enh) => ({
-        id: `opp_enh_${enh.id.slice(0, 12)}_${now.toString(36).slice(-4)}`,
-        projectId: assembled.id,
-        description: `[Import Enhancement · ${enh.category}] ${enh.title}`,
-        sourceRefs: [sourceId],
-        rationale: enh.rationale,
-        benefit: enh.afterExcerpt,
-        tradeOff: 'Post-faithful creative enhancement proposal — immutable source remains unchanged.',
-        assumptions: enh.assumptions,
-        status: 'pending' as const,
-        origin: 'ai' as const,
-        category: enh.category,
-        options: [enh.afterExcerpt],
-        baseRevision: assembled.revision,
-        lifecycleRevision: assembled.revision,
-        createdAt: now,
-        updatedAt: now,
-        history: [],
-      })),
+      ...selectedEnhancements.map((enh, index) => {
+        const base = `opp_enh_${hashEnhancementId(enh.id)}_${index}_${stamp}`;
+        let id = base;
+        let suffix = 1;
+        while (usedIds.has(id)) {
+          id = `${base}_${suffix++}`;
+        }
+        usedIds.add(id);
+        return {
+          id,
+          projectId: assembled.id,
+          description: `[Import Enhancement · ${enh.category}] ${enh.title}`,
+          sourceRefs: [sourceId],
+          rationale: enh.rationale,
+          benefit: enh.afterExcerpt,
+          tradeOff: 'Post-faithful creative enhancement proposal — immutable source remains unchanged.',
+          assumptions: enh.assumptions,
+          status: 'pending' as const,
+          origin: 'ai' as const,
+          category: enh.category,
+          options: [enh.afterExcerpt],
+          baseRevision: assembled.revision,
+          lifecycleRevision: assembled.revision,
+          createdAt: now,
+          updatedAt: now,
+        };
+      }),
     ];
   }
   return assembled;

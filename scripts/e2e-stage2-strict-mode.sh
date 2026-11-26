@@ -20,6 +20,40 @@ async (bootstrap) => {
   await context.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/ai/capabilities') return json(route, { configured: true });
+    if (path === '/api/ai/provider-hub/status') {
+      return json(route, {
+        localPersonalConnectionsAvailable: false,
+        capabilityPolicyVersion: 'cap-v1',
+        credentialAuthorityIds: {
+          'gemini-managed': 'auth-managed',
+          'gemini-personal': 'auth-personal',
+          'chatgpt-plan': 'auth-chatgpt',
+          'openai-api': 'auth-openai',
+        },
+        connections: [{
+          id: 'gemini-managed',
+          family: 'gemini',
+          billing: 'host-managed-gemini',
+          state: 'available',
+          selectedModelId: 'gemini-2.5-flash',
+          models: [{
+            id: 'gemini-2.5-flash',
+            displayName: 'Gemini 2.5 Flash',
+            availability: { state: 'supported', value: true, evidence: [] },
+            textGeneration: { state: 'supported', value: true, evidence: [] },
+            imageGeneration: { state: 'unsupported', evidence: [] },
+            structuredOutput: { state: 'supported', value: true, evidence: [] },
+            contextLimit: { state: 'supported', value: 8000, evidence: [] },
+            outputLimit: { state: 'supported', value: 4096, evidence: [] },
+            reasoning: { state: 'supported', value: ['default'], evidence: [] },
+            operationCapabilities: { 'narrative-import': { state: 'supported', value: true, evidence: [] } },
+            capabilityPolicyVersion: 'cap-v1',
+          }],
+        }],
+        preferences: { defaultConnectionId: 'gemini-managed' },
+        usage: { observedByConnection: {}, quota: { state: 'unknown' } },
+      });
+    }
     if (path === '/api/narrative/import/extract') {
       return json(route, { extraction: { entities: [], relationships: [], findings: [], ambiguities: [] } });
     }
@@ -44,10 +78,10 @@ async (bootstrap) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   const openImport = async () => {
-    await page.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Import Story' }).click();
+    await page.getByRole('banner').getByRole('button', { name: 'Import', exact: true }).click();
     await page.getByRole('textbox', { name: 'Or paste narrative text' }).fill(quote);
-    await page.getByRole('button', { name: 'Preview source' }).click();
-    await page.getByRole('radio', { name: /Reconstruct & Enhance/ }).check();
+    await page.getByRole('button', { name: 'Inspect source', exact: true }).click();
+    await page.getByRole('radio', { name: /Faithful import with optional enhancements/ }).check();
     await page.getByRole('button', { name: 'Analyze source' }).click();
     await page.getByText(/All planned source segments were analyzed/).waitFor();
   };
@@ -69,7 +103,7 @@ async (bootstrap) => {
     await generate().click();
     await secondRequest;
     await page.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan' }).click();
-    await page.getByRole('button', { name: 'Cancel import', exact: true }).waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Exit import', exact: true }).waitFor({ state: 'hidden' });
     releaseLate();
     await openImport();
     if (await page.getByRole('checkbox', { name: /Late enhancement/ }).count()) {

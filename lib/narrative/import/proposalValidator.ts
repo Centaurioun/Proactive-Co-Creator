@@ -29,13 +29,14 @@ function isTextBoundary(text: string, offset: number): boolean {
   return !(previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff);
 }
 
-function proposalFingerprint(item: object): string {
+function proposalFingerprint(item: object, scopeKey?: string): string {
   const proposal = item as {
     category?: string; kind?: string; title?: string; name?: string; value?: string; description?: string;
     aliases?: string[]; attributes?: Array<{ name: string; value: string; kind: string }>;
     source?: string; target?: string; label?: string; detail?: string; severity?: string; certainty?: string;
   };
   const signature = JSON.stringify({
+    scopeKey,
     category: proposal.category,
     kind: proposal.kind,
     title: proposal.title?.normalize('NFKC').trim(),
@@ -77,7 +78,7 @@ export function verifyExtractionEvidence(
   }
   let rejectedEvidenceCount = 0;
   const duplicateOrdinals = new Map<string, number>();
-  const verified = <T extends { evidence: { start: number; end: number; quote: string } }>(item: T, prefix: string) => {
+  const verified = <T extends { evidence: { start: number; end: number; quote: string } }>(item: T, prefix: string, scopeKey?: string) => {
     const { start, end, quote } = item.evidence;
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > chunk.text.length ||
       !isTextBoundary(chunk.text, start) || !isTextBoundary(chunk.text, end) || chunk.text.slice(start, end) !== quote) {
@@ -86,7 +87,7 @@ export function verifyExtractionEvidence(
     }
     const absoluteStart = chunk.start + start;
     const absoluteEnd = chunk.start + end;
-    const baseId = `${prefix}-${absoluteStart}-${absoluteEnd}-${proposalFingerprint(item)}`;
+    const baseId = `${prefix}-${absoluteStart}-${absoluteEnd}-${proposalFingerprint(item, scopeKey)}`;
     const ordinal = duplicateOrdinals.get(baseId) ?? 0;
     duplicateOrdinals.set(baseId, ordinal + 1);
     return { ...item, id: ordinal === 0 ? baseId : `${baseId}-${ordinal + 1}`, evidence: { sourceId: source.id, version: source.version, digest: source.digest, start: absoluteStart, end: absoluteEnd, excerpt: quote } };
@@ -95,7 +96,7 @@ export function verifyExtractionEvidence(
   const entities = extraction.entities.flatMap(item => {
     const result = verified(item, 'entity');
     if (!result) return [];
-    const attributes = item.attributes.flatMap(attribute => { const checked = verified(attribute, 'attribute'); return checked ? [checked] : []; });
+    const attributes = item.attributes.flatMap(attribute => { const checked = verified(attribute, 'attribute', result.id); return checked ? [checked] : []; });
     return [{ ...result, attributes }];
   });
   const relationships = extraction.relationships.flatMap(item => { const result = verified(item, 'relationship'); return result ? [result] : []; });

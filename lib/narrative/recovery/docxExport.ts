@@ -1,8 +1,28 @@
 import { strToU8, zipSync } from 'fflate';
 import type { ManuscriptSection } from '../../../shared/narrativeTypes.ts';
 
+function stripInvalidXmlChars(value: string): string {
+  let clean = '';
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        clean += value[i] + value[i + 1];
+        i += 1;
+      }
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) continue;
+    const allowedControl = code === 0x09 || code === 0x0a || code === 0x0d;
+    const validBmp = (code >= 0x20 && code <= 0xd7ff) || (code >= 0xe000 && code <= 0xfffd);
+    if (allowedControl || validBmp) clean += value[i];
+  }
+  return clean;
+}
+
 function escapeXml(value: string): string {
-  return value
+  return stripInvalidXmlChars(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
