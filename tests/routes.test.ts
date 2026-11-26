@@ -275,7 +275,7 @@ describe('server/routes API contract', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json', Origin: server.baseUrl,
-          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'route-story-request-0001',
         },
         body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
       });
@@ -283,6 +283,17 @@ describe('server/routes API contract', () => {
       assert.deepEqual(await response.json(), { story: 'A mocked story.' });
       assert.equal(transportCalls, 1);
       assert.equal(fallbackCalls, 0);
+
+      const duplicate = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-story-request-id': 'route-story-request-0001',
+        },
+        body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
+      });
+      assert.equal(duplicate.status, 409);
+      assert.equal(transportCalls, 1);
 
       const unqualifiedReasoning = await fetch(`${server.baseUrl}/api/generate/story`, {
         method: 'POST',

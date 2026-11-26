@@ -322,7 +322,7 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
   /** Story-only bounded Responses call. The pinned body must match the exact
    * request fields, and limits are enforced while reading the SSE stream. */
   async generateStoryText(
-    request: AiProviderRequest,
+    request: AiProviderRequest & { requestId?: string },
     approvedBody: string,
     limits: { maxStreamBytes: number; maxAcceptedOutputBytes: number; maxStreamEvents: number },
   ): Promise<ChatGptStoryTransportResult> {

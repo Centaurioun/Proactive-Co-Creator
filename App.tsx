@@ -1689,6 +1689,7 @@ function App() {
   );
 
   const handleGenerateOutput = useCallback(async () => {
+    const storyRequestId = globalThis.crypto.randomUUID();
     const originProject = activeProjectRef.current;
     const originSnap = originProject.snapshot;
     const promptDecision = resolveProviderPrompt(originProject, originSnap.mode);
@@ -1737,7 +1738,7 @@ function App() {
       },
       generate: async (signal) => {
         if (requestMode === 'story') {
-          const generatedStory = await generateStoryFromPrompt(promptToUse, signal);
+          const generatedStory = await generateStoryFromPrompt(promptToUse, signal, storyRequestId);
           return { storyText: generatedStory };
         }
         const result = await generateImagesFromPrompt(promptToUse, signal);

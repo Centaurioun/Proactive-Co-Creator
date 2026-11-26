@@ -86,7 +86,7 @@ test('preference routes reject disabled billing and unqualified image overrides'
   }
 });
 
-test('preference routes reject ChatGPT models with no effective PCC operation capability', async () => {
+test('default provider preferences can select a verified ChatGPT text model without enabling operations', async () => {
   const previousPreferences = getPreferences();
   const previousModels = getChatGptModels();
   try {
@@ -94,10 +94,19 @@ test('preference routes reject ChatGPT models with no effective PCC operation ca
     await withServer(async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
         method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
-        body: JSON.stringify({ preferences: { defaultConnectionId: 'chatgpt-plan', defaultTextModelId: 'gpt-6.2-sol' } }),
+        body: JSON.stringify({ preferences: { defaultConnectionId: 'chatgpt-plan', defaultTextModelId: 'gpt-6.2-sol', defaultReasoningLevel: 'default' } }),
       });
-      assert.equal(response.status, 400);
-      assert.match(await response.text(), /not verified for an available PCC operation/i);
+      assert.equal(response.status, 200, await response.clone().text());
+      const saved = (await response.json() as { preferences: Record<string, unknown> }).preferences;
+      assert.equal(saved.defaultConnectionId, 'chatgpt-plan');
+      assert.equal(saved.defaultTextModelId, 'gpt-6.2-sol');
+
+      const unsupported = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: { defaultConnectionId: 'chatgpt-plan', defaultTextModelId: 'gpt-6-luna' } }),
+      });
+      assert.equal(unsupported.status, 400);
+      assert.match(await unsupported.text(), /currently verified text model/i);
     });
   } finally {
     setChatGptModels(previousModels);
@@ -139,6 +148,33 @@ test('ChatGPT text-model preferences are saved independently from active routing
         } }),
       });
       assert.equal(invalid.status, 400);
+    });
+  } finally {
+    setChatGptModels(previousModels);
+    setPreferences(previousPreferences);
+  }
+});
+
+test('ChatGPT Story override accepts only the saved GPT-6 Luna and Default combination', async () => {
+  const previousPreferences = getPreferences();
+  const previousModels = getChatGptModels();
+  try {
+    setChatGptModels([describeChatGptModel({ id: 'gpt-6-luna', displayName: 'GPT-6 Luna' }, 'chatgpt-plan')]);
+    await withServer(async (baseUrl) => {
+      const save = (reasoningLevel: string) => fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: {
+          defaultConnectionId: 'gemini-managed',
+          preferredTextModelsByConnection: { 'chatgpt-plan': 'gpt-6-luna' },
+          preferredReasoningLevelsByConnection: { 'chatgpt-plan': reasoningLevel },
+          operationOverrides: { story: { connectionId: 'chatgpt-plan', modelId: 'gpt-6-luna', reasoningLevel: 'default' } },
+        } }),
+      });
+      const qualified = await save('default');
+      assert.equal(qualified.status, 200, await qualified.clone().text());
+      const unqualified = await save('medium');
+      assert.equal(unqualified.status, 400);
+      assert.match(await unqualified.text(), /requires the saved GPT-6 Luna preference with Default reasoning/i);
     });
   } finally {
     setChatGptModels(previousModels);

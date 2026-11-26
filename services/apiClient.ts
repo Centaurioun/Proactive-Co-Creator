@@ -80,6 +80,49 @@ export class ClientApiError extends Error {
 let providerRequestGeneration = 0;
 let providerStorageListenerInstalled = false;
 const activeProviderRequests = new Set<AbortController>();
+let observedExecutionPreferenceFingerprint: string | undefined;
+
+function executionPreferenceFingerprint(raw: string | null): string {
+  if (!raw) return '';
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    return JSON.stringify({
+      defaultConnectionId: value.defaultConnectionId,
+      defaultTextModelId: value.defaultTextModelId,
+      defaultReasoningLevel: value.defaultReasoningLevel,
+      operationOverrides: value.operationOverrides,
+    });
+  } catch { return 'invalid'; }
+}
+
+export function invalidateAiProviderRequestsForPreferenceChange(previousRaw: string | null, nextRaw: string | null): void {
+  const previous = executionPreferenceFingerprint(previousRaw);
+  const next = executionPreferenceFingerprint(nextRaw);
+  observedExecutionPreferenceFingerprint = next;
+  if (previous !== next) invalidateAiProviderRequests();
+}
+
+function readProviderPreferences(): {
+  defaultConnectionId: string;
+  defaultTextModelId?: string;
+  defaultReasoningLevel?: string;
+  preferredTextModelsByConnection?: Record<string, string>;
+  preferredReasoningLevelsByConnection?: Record<string, string>;
+  operationOverrides?: Record<string, { connectionId?: string; modelId?: string; reasoningLevel?: string }>;
+} | undefined {
+  if (typeof window === 'undefined') return undefined;
+  let raw: string | null;
+  try { raw = window.localStorage.getItem('pcc.ai.providerPreferences.v1'); }
+  catch { throw new ClientApiError('UPSTREAM_ERROR', 'AI provider preferences could not be read. Open AI Settings and confirm the selected billing path before retrying.', false, 503); }
+  if (!raw) return undefined;
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.defaultConnectionId !== 'string') throw new Error('Invalid provider preferences');
+    return value;
+  } catch {
+    throw new ClientApiError('VALIDATION_ERROR', 'AI provider preferences are invalid. Open AI Settings and confirm the selected billing path before retrying.', false, 400);
+  }
+}
 
 export function invalidateAiProviderRequests(): void {
   providerRequestGeneration += 1;
@@ -104,34 +147,24 @@ export async function extractNarrativeChunk(
 async function postJson<TResponse>(
   url: string,
   body: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { requestId?: string },
 ): Promise<TResponse> {
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function' && !providerStorageListenerInstalled) {
     window.addEventListener('storage', event => {
-      if (event.key === 'pcc.ai.providerPreferences.v1') invalidateAiProviderRequests();
+      if (event.key !== 'pcc.ai.providerPreferences.v1') return;
+      const next = executionPreferenceFingerprint(event.newValue);
+      const previous = observedExecutionPreferenceFingerprint ?? executionPreferenceFingerprint(event.oldValue);
+      observedExecutionPreferenceFingerprint = next;
+      if (previous !== next) invalidateAiProviderRequests();
     });
     providerStorageListenerInstalled = true;
   }
   const providerHeaders: Record<string, string> = {};
-  let rawPreferences: string | null;
-  if (typeof window === 'undefined') rawPreferences = null;
-  else {
-  try {
-    rawPreferences = window.localStorage.getItem('pcc.ai.providerPreferences.v1');
-  } catch {
-    throw new ClientApiError('UPSTREAM_ERROR', 'AI provider preferences could not be read. Open AI Settings and confirm the selected billing path before retrying.', false, 503);
-  }
-  }
-  if (rawPreferences) {
+  const preferences = readProviderPreferences();
+  if (preferences) {
     try {
-      const raw = rawPreferences;
-      const preferences = JSON.parse(raw) as {
-        defaultConnectionId?: string; defaultTextModelId?: string; defaultReasoningLevel?: string;
-        operationOverrides?: Record<string, { connectionId?: string; modelId?: string; reasoningLevel?: string }>;
-      };
-      if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences) || typeof preferences.defaultConnectionId !== 'string') {
-        throw new Error('Invalid provider preferences');
-      }
+      observedExecutionPreferenceFingerprint = executionPreferenceFingerprint(window.localStorage.getItem('pcc.ai.providerPreferences.v1'));
       const operation = url.includes('/generate/images') ? 'image'
         : url.includes('/narrative/import/extract') ? 'narrative-import'
         : url.includes('/narrative/diagnostics/') ? 'diagnostics'
@@ -151,6 +184,10 @@ async function postJson<TResponse>(
       const connectionId = operation === 'image' ? 'gemini-managed' : override?.connectionId ?? preferences.defaultConnectionId;
       const modelId = override?.modelId ?? (operation === 'image' ? undefined : preferences.defaultTextModelId);
       const reasoning = override?.reasoningLevel ?? preferences.defaultReasoningLevel;
+      if (operation === 'story' && connectionId === 'chatgpt-plan' &&
+        (modelId !== 'gpt-6-luna' || (reasoning ?? 'default') !== 'default')) {
+        throw new Error('ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no other model, reasoning level, or provider fallback is available.');
+      }
       if (connectionId) providerHeaders['x-pcc-ai-connection'] = connectionId;
       if (modelId) providerHeaders['x-pcc-ai-model'] = modelId;
       if (operation !== 'image' && reasoning && reasoning !== 'default') providerHeaders['x-pcc-ai-reasoning'] = reasoning;
@@ -178,9 +215,13 @@ async function postJson<TResponse>(
   else signal?.addEventListener('abort', abortFromCaller, { once: true });
   activeProviderRequests.add(controller);
   try {
+    const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...providerHeaders };
+    if (url.includes('/api/generate/story') && providerHeaders['x-pcc-ai-connection'] === 'chatgpt-plan' && options?.requestId) {
+      requestHeaders['x-pcc-story-request-id'] = options.requestId;
+    }
     const response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...providerHeaders },
+      headers: requestHeaders,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -299,10 +340,23 @@ export async function generateImagesFromPrompt(
 
 export async function generateStoryFromPrompt(
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  requestId: string | undefined = globalThis.crypto?.randomUUID?.(),
 ): Promise<string> {
   const request = enforceOperationRequestBounds(value => GenerateMediaRequestSchema.safeParse(value), { prompt });
-  const data = await postJson<{ story: string }>('/api/generate/story', request, signal);
+  const selected = readProviderPreferences();
+  const storyOverride = selected?.operationOverrides?.story;
+  const effectiveStoryConnection = storyOverride?.connectionId ?? selected?.defaultConnectionId;
+  if (effectiveStoryConnection === 'chatgpt-plan') {
+    const effectiveModel = storyOverride?.modelId ?? selected?.defaultTextModelId;
+    const effectiveReasoning = storyOverride?.reasoningLevel ?? selected?.defaultReasoningLevel ?? 'default';
+    if (!requestId) throw new ClientApiError('VALIDATION_ERROR', 'A stable identity is required for this ChatGPT story action.', false, 400);
+    if (effectiveModel !== 'gpt-6-luna' || effectiveReasoning !== 'default') {
+      throw new ClientApiError('MODEL_UNSUPPORTED', 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no model substitution or provider fallback is available.', false, 422);
+    }
+  }
+  const data = await postJson<{ story: string }>('/api/generate/story', request, signal,
+    effectiveStoryConnection === 'chatgpt-plan' ? { requestId } : undefined);
   return data.story;
 }
 

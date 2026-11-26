@@ -8,16 +8,16 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { createApiRouter } from './server/routes.ts';
+import { createApiRouter, type ApiRouterOptions } from './server/routes.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export function createApp() {
+export function createApp(routerOptions: ApiRouterOptions = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
-  app.use('/api', createApiRouter());
+  app.use('/api', createApiRouter(undefined, routerOptions));
   return app;
 }
 
