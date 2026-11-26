@@ -8,6 +8,7 @@ import type {
   AiTokenCount,
 } from './contracts.ts';
 import { AppApiError } from '../errors.ts';
+import { fetchBoundedHttpBody, parseOAuthJson } from '../http.ts';
 import {
   assertModelOperation,
   assertReasoningSelection,
@@ -273,10 +274,33 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
     });
   }
 
-  async countTokens(_modelId: string, input: string, signal?: AbortSignal): Promise<AiTokenCount> {
+  async countTokens(modelId: string, input: string, signal?: AbortSignal, instructions?: string, generation?: { responseSchema?: unknown }): Promise<AiTokenCount> {
     if (signal?.aborted) throw abortError(signal);
-    // SIWC documents no token-count route. This rough estimate is not provider evidence.
-    return { tokens: Math.ceil(new TextEncoder().encode(input).byteLength / 4), source: 'estimate' };
+    if (this.connectionId === 'chatgpt-plan') {
+      // The SIWC profile documents Responses inference, but no provider token-count route.
+      return { tokens: Math.ceil(new TextEncoder().encode(`${input}${instructions ?? ''}${generation?.responseSchema === undefined ? '' : JSON.stringify(generation.responseSchema)}`).byteLength / 4), source: 'estimate' };
+    }
+    const token = await this.accessToken();
+    const schemaInstruction = generation?.responseSchema === undefined ? '' :
+      `Return exactly one JSON value that conforms to this response schema. Do not add markdown fences, commentary, or extra fields. Validate internally before answering. Schema: ${JSON.stringify(generation.responseSchema)}`;
+    const completeInstructions = [instructions, schemaInstruction].filter(Boolean).join('\n\n');
+    let response;
+    try {
+      response = await fetchBoundedHttpBody(this.fetchImpl, `${API_ORIGIN}/responses/input_tokens`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ model: modelId, input: [{ role: 'user', content: input }], ...(completeInstructions ? { instructions: completeInstructions } : {}) }),
+      }, { timeoutMs: 10_000, maxBodyBytes: 16 * 1024, signal });
+    } catch {
+      if (signal?.aborted) throw abortError(signal);
+      throw new AppApiError('UPSTREAM_ERROR', 'OpenAI API input-token preflight failed; generation was not started.', 503, true);
+    }
+    if (!response.ok) throw new AppApiError(response.status === 401 || response.status === 403 ? 'AUTH_ERROR' : 'UPSTREAM_ERROR', 'OpenAI API input-token preflight was not accepted; generation was not started.', response.status, response.status >= 500);
+    const payload = asRecord(parseOAuthJson(response.body, 'OpenAI API input-token response was invalid.'));
+    if (payload?.object !== 'response.input_tokens' || typeof payload.input_tokens !== 'number' || !Number.isSafeInteger(payload.input_tokens) || payload.input_tokens < 0) {
+      throw new AppApiError('INVALID_RESPONSE', 'OpenAI API did not return a verified input-token count.', 502, false);
+    }
+    return { tokens: payload.input_tokens, source: 'provider-count' };
   }
 
   async generateText(request: AiProviderRequest): Promise<AiProviderTextResult> {
@@ -295,6 +319,9 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
     const model = describeChatGptModel({ id: request.modelId, displayName: request.modelId }, this.connectionId as 'chatgpt-plan' | 'openai-api');
     assertModelOperation(model, request.operation);
     assertReasoningSelection(model, request.reasoningLevel);
+    if (this.connectionId === 'openai-api' && (!Number.isSafeInteger(request.maxOutputTokens) || (request.maxOutputTokens ?? 0) <= 0)) {
+      throw new AppApiError('VALIDATION_ERROR', 'OpenAI API generation requires an explicit provider-enforced output-token limit.', 503, false);
+    }
     const lease = this.requestLease?.(request.signal);
     const operationSignal = lease?.signal ?? request.signal;
     if (operationSignal?.aborted) { lease?.release(); throw abortError(operationSignal); }
@@ -326,6 +353,7 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
             input: [{ role: 'user', content: request.input }],
             ...(instructions ? { instructions } : {}),
             ...reasoning,
+            ...(this.connectionId === 'openai-api' ? { max_output_tokens: request.maxOutputTokens } : {}),
             store: false,
             stream: true,
           }),

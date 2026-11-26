@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { fetchBoundedHttpBody, parseOAuthJson } from '../../http.ts';
 
 /** OAuth credentials are deliberately process-local. A restart clears the session. */
 export interface ChatGptTokenSet {
@@ -51,6 +52,7 @@ function safeTokenSet(value: ChatGptTokenSet): ChatGptTokenSet {
 export class ChatGptSessionStore {
   private tokens: ChatGptTokenSet | undefined;
   private refreshInFlight: Promise<string> | undefined;
+  private activeRefresh: AbortController | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly refreshSkewMs: number;
@@ -75,6 +77,7 @@ export class ChatGptSessionStore {
   /** Installs a validated token response in volatile memory; replacing a token set rotates it atomically. */
   install(tokens: ChatGptTokenSet, preserveActiveRequests = false): void {
     if (!preserveActiveRequests) this.abortActiveRequests();
+    this.abortActiveRefresh();
     this.abortActiveRevocations();
     this.generation += 1;
     this.tokens = safeTokenSet(tokens);
@@ -85,15 +88,19 @@ export class ChatGptSessionStore {
     return this.tokens ? { connected: true, expiresAt: this.tokens.expiresAt, ...(this.tokens.scope ? { scope: this.tokens.scope } : {}) } : { connected: false };
   }
 
+  getGeneration(): number { return this.generation; }
+
   clear(): void {
     this.abortActiveRequests();
+    this.abortActiveRefresh();
     this.abortActiveRevocations();
     this.generation += 1;
     this.tokens = undefined;
     this.refreshInFlight = undefined;
   }
 
-  createRequestLease(parentSignal?: AbortSignal): ChatGptRequestLease {
+  createRequestLease(parentSignal?: AbortSignal, expectedGeneration = this.generation): ChatGptRequestLease {
+    if (expectedGeneration !== this.generation) throw new Error('ChatGPT session changed before the request started.');
     const controller = new AbortController();
     const abortFromParent = () => controller.abort(parentSignal?.reason);
     if (parentSignal?.aborted) abortFromParent();
@@ -117,6 +124,11 @@ export class ChatGptSessionStore {
     this.activeRequests.clear();
   }
 
+  private abortActiveRefresh(): void {
+    this.activeRefresh?.abort(new Error('ChatGPT session changed.'));
+    this.activeRefresh = undefined;
+  }
+
   private abortActiveRevocations(): void {
     for (const controller of this.activeRevocations) controller.abort(new Error('ChatGPT session changed.'));
     this.activeRevocations.clear();
@@ -131,7 +143,8 @@ export class ChatGptSessionStore {
     return { ...(refreshToken ? { refreshToken } : {}), generation: this.generation };
   }
 
-  async getAccessToken(clientId: string, tokenEndpoint: string): Promise<string> {
+  async getAccessToken(clientId: string, tokenEndpoint: string, expectedGeneration = this.generation): Promise<string> {
+    if (expectedGeneration !== this.generation) throw new Error('ChatGPT session changed before access was granted.');
     const current = this.tokens;
     if (!current) throw new Error('ChatGPT authorization is required.');
     if (current.expiresAt > this.now() + this.refreshSkewMs) return current.accessToken;
@@ -141,42 +154,40 @@ export class ChatGptSessionStore {
     }
     if (!this.refreshInFlight) {
       const oldRefreshToken = current.refreshToken;
-      this.refreshInFlight = this.refresh(clientId, oldRefreshToken, tokenEndpoint, this.generation);
+      const controller = new AbortController();
+      this.activeRefresh = controller;
+      this.refreshInFlight = this.refresh(clientId, oldRefreshToken, tokenEndpoint, this.generation, controller.signal);
     }
     return this.refreshInFlight;
   }
 
-  private async refresh(clientId: string, refreshToken: string, tokenEndpoint: string, generation: number): Promise<string> {
-    const controller = new AbortController();
+  private async refresh(clientId: string, refreshToken: string, tokenEndpoint: string, generation: number, signal: AbortSignal): Promise<string> {
     let terminalFailure = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const endpoint = trustedEndpoint(tokenEndpoint);
-      const fetchPromise = this.fetchImpl(endpoint, {
+      const response = await fetchBoundedHttpBody(this.fetchImpl, endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
         body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId, resource: 'https://api.openai.com/v1' }),
-        signal: controller.signal,
-      });
-      const response = await Promise.race([
-        fetchPromise,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            controller.abort();
-            reject(new Error('OAuth refresh timed out.'));
-          }, this.requestTimeoutMs);
-        }),
-      ]);
+      }, { timeoutMs: this.requestTimeoutMs, maxBodyBytes: 32 * 1024, signal });
       if (!response.ok) {
-        const payload = await response.clone().json().catch(() => null) as { error?: unknown } | null;
+        const payload = parseOAuthJson(response.body, 'OAuth token refresh was rejected.') as { error?: unknown } | null;
         const code = payload && typeof payload.error === 'string' ? payload.error : '';
         terminalFailure = ['invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused'].includes(code);
         if (terminalFailure && this.generation === generation && this.tokens?.refreshToken === refreshToken) this.clear();
         throw new Error('OAuth token refresh was rejected.');
       }
-      const payload = await readTokenResponse(response);
+      const payload = await readTokenResponse(new Response(response.body, { status: response.status, headers: response.headers }));
       if (this.generation !== generation || !this.tokens || this.tokens.refreshToken !== refreshToken) throw new Error('OAuth session changed during refresh.');
       if (!payload.refreshToken) throw new Error('OAuth refresh did not return a replacement refresh token.');
+      if (payload.scope !== undefined && this.tokens.scope) {
+        const refreshedScopes = new Set(payload.scope.split(/\s+/).filter(Boolean));
+        if (this.tokens.scope.split(/\s+/).filter(Boolean).some(scope => !refreshedScopes.has(scope))) {
+          terminalFailure = true;
+          this.clear();
+          throw new Error('OAuth refresh scope was reduced.');
+        }
+      }
       const refreshed = {
         ...payload,
         ...(payload.scope === undefined && this.tokens.scope ? { scope: this.tokens.scope } : {}),
@@ -189,16 +200,15 @@ export class ChatGptSessionStore {
         ? 'ChatGPT authorization expired or was revoked; reconnect the account.'
         : 'ChatGPT token refresh is temporarily unavailable. The current session was retained; retry later.');
     } finally {
-      if (timer) clearTimeout(timer);
-      controller.abort();
       if (this.generation === generation) this.refreshInFlight = undefined;
+      if (this.activeRefresh?.signal === signal) this.activeRefresh = undefined;
     }
   }
 
   /** Revokes the renewable refresh token; callers clear local state before awaiting discovery or network. */
   async revoke(clientId: string, revocationEndpoint: string, current: ChatGptRevocationSnapshot | undefined = this.takeForRevocation()): Promise<void> {
     if (!current) return;
-    let token = current.refreshToken;
+    const token = current.refreshToken;
     if (!token) {
       current.refreshToken = undefined;
       throw new Error('ChatGPT authorization was cleared locally, but no renewable token was available for remote revocation.');
@@ -209,24 +219,14 @@ export class ChatGptSessionStore {
         if (this.generation !== current.generation) throw new Error('ChatGPT authorization changed during revocation.');
         const controller = new AbortController();
         this.activeRevocations.add(controller);
-        let timer: ReturnType<typeof setTimeout> | undefined;
         let retryable = false;
         let responseReceived = false;
         try {
-          const aborted = new Promise<never>((_resolve, reject) => controller.signal.addEventListener('abort', () => reject(new Error('Revocation attempt aborted.')), { once: true }));
-          const timedRequest = new Promise<Response>((resolve, reject) => {
-            timer = setTimeout(() => {
-              controller.abort(new Error('Revocation attempt timed out.'));
-              reject(new Error('Revocation attempt timed out.'));
-            }, this.requestTimeoutMs);
-            void this.fetchImpl(endpoint, {
+          const response = await fetchBoundedHttpBody(this.fetchImpl, endpoint, {
               method: 'POST',
               headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-              body: new URLSearchParams({ token: token!, token_type_hint: 'refresh_token', client_id: clientId }),
-              signal: controller.signal,
-            }).then(resolve, reject);
-          });
-          const response = await Promise.race([timedRequest, aborted]);
+              body: new URLSearchParams({ token, token_type_hint: 'refresh_token', client_id: clientId }),
+            }, { timeoutMs: this.requestTimeoutMs, maxBodyBytes: 8 * 1024, signal: controller.signal });
           responseReceived = true;
           if (response.ok) return;
           retryable = response.status >= 500;
@@ -244,7 +244,6 @@ export class ChatGptSessionStore {
           }
           if (!retryable || attempt === this.maxRevocationAttempts) throw error;
         } finally {
-          if (timer) clearTimeout(timer);
           this.activeRevocations.delete(controller);
           controller.abort();
         }
@@ -254,7 +253,6 @@ export class ChatGptSessionStore {
     } catch {
       throw new Error('ChatGPT authorization was cleared locally, but remote revocation could not be confirmed.');
     } finally {
-      token = '';
       current.refreshToken = undefined;
     }
   }

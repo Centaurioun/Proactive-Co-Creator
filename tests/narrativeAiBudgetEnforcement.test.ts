@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AI_OPERATION_POLICIES, maxAttemptsWithinOperationBudget, reserveAggregateOperationUsage } from '../server/aiBudget.ts';
 import { runBudgetedJsonOperation, runWritingAssistant, type NarrativeAiClientLike } from '../server/narrative/narrativeAiService.ts';
 import { extractNarrativeChunk } from '../server/narrative/extractionService.ts';
+import { runWithAiProviderContext } from '../server/providers/requestContext.ts';
 
 const request = {
   projectId: 'synthetic-project', baseRevision: 1, sectionId: 'scene-1', sectionTitle: 'Scene 1',
@@ -77,6 +78,37 @@ describe('narrative AI budget enforcement', () => {
       },
     };
     await assert.rejects(() => runWritingAssistant(request, undefined, client), /timed out/i);
+    assert.equal(generated, false);
+  });
+
+  it('fails closed for ChatGPT plan narrative operations when only an estimated token count is available', async () => {
+    let generated = false;
+    const client: NarrativeAiClientLike = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10, source: 'estimate' }),
+        generateContent: async () => { generated = true; return { text: '{}' }; },
+      },
+    };
+    await assert.rejects(() => runWithAiProviderContext({
+      selection: { connectionId: 'chatgpt-plan', modelId: 'gpt-6.2-sol' }, operation: 'writing',
+    }, () => runBudgetedJsonOperation({ operation: 'writing', prompt: 'Synthetic prompt', parse: value => value, client })), /exact count.*Generation was not started/i);
+    assert.equal(generated, false);
+  });
+
+  it('fails closed for ChatGPT plan narrative extraction when only an estimated token count is available', async () => {
+    let generated = false;
+    const client = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10, source: 'estimate' }),
+        generateContent: async () => { generated = true; return { text: '{}' }; },
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    await assert.rejects(() => runWithAiProviderContext({
+      selection: { connectionId: 'chatgpt-plan', modelId: 'gpt-6.2-sol' }, operation: 'narrative-import',
+    }, () => extractNarrativeChunk({
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `e${Date.now().toString(16).padStart(63, '0')}`,
+      chunkId: 'chatgpt-plan-estimate', text: 'Synthetic narrative.', scope: 'complete', categories: [], instruction: '',
+    }, undefined, client)), /exact count.*Generation was not started/i);
     assert.equal(generated, false);
   });
 

@@ -126,20 +126,22 @@ async function createOAuthClient(req: Request): Promise<ChatGptOAuthClient> {
 }
 
 function authAdapter(): ChatGptResponsesAdapter {
-  registerChatGptAdapterFactory(() => {
+  registerChatGptAdapterFactory((requestedGeneration) => {
     const clientId = identityCache?.issuedClientId;
     if (!clientId || !chatGptSessionStore.snapshot().connected) throw new Error('ChatGPT authorization is required.');
+    const generation = requestedGeneration ?? chatGptSessionStore.getGeneration();
     return new ChatGptResponsesAdapter(
-      () => chatGptSessionStore.getAccessToken(clientId, TOKEN_ENDPOINT),
+      () => chatGptSessionStore.getAccessToken(clientId, TOKEN_ENDPOINT, generation),
       fetch,
-      (signal) => chatGptSessionStore.createRequestLease(signal),
+      (signal) => chatGptSessionStore.createRequestLease(signal, generation),
     );
   });
+  const generation = chatGptSessionStore.getGeneration();
   return new ChatGptResponsesAdapter(async () => {
     const clientId = identityCache?.issuedClientId;
     if (!clientId) throw new Error('ChatGPT authorization is required.');
-    return chatGptSessionStore.getAccessToken(clientId, TOKEN_ENDPOINT);
-  }, fetch, (signal) => chatGptSessionStore.createRequestLease(signal));
+    return chatGptSessionStore.getAccessToken(clientId, TOKEN_ENDPOINT, generation);
+  }, fetch, (signal) => chatGptSessionStore.createRequestLease(signal, generation));
 }
 
 export interface ProviderHubRouterOptions {
@@ -169,7 +171,6 @@ export function createProviderHubRouter(options: ProviderHubRouterOptions = {}):
       const requestGeneration = authGeneration;
       const models = await listProviderModels(connectionId as AiConnectionId);
       if (connectionId === 'chatgpt-plan' && (requestGeneration !== authGeneration || !chatGptSessionStore.snapshot().connected)) {
-        setChatGptModels([]);
         res.status(409).json({ error: { code: 'AUTH_CANCELLED', message: 'The ChatGPT connection changed while its model catalog was loading. Refresh connection status.' } });
         return;
       }

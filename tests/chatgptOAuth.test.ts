@@ -216,6 +216,21 @@ test('late refresh completion cannot reinstall credentials after disconnect', as
   assert.equal(store.snapshot().connected, false);
 });
 
+test('disconnect immediately aborts an in-flight refresh request', async () => {
+  let refreshSignal: AbortSignal | undefined;
+  const store = new ChatGptSessionStore({ now: fixedNow, refreshSkewMs: 1000, fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+    refreshSignal = init?.signal as AbortSignal;
+    refreshSignal.addEventListener('abort', () => reject(new Error('refresh aborted')), { once: true });
+  }) });
+  store.install({ accessToken: 'old', refreshToken: 'refresh-old', expiresAt: fixedNow() - 1, tokenType: 'Bearer' });
+  const pending = store.getAccessToken(CLIENT_ID, 'https://auth.openai.com/oauth/token');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  store.takeForRevocation();
+  assert.equal(refreshSignal?.aborted, true);
+  await assert.rejects(pending, /temporarily unavailable/i);
+  assert.equal(store.snapshot().connected, false);
+});
+
 test('new session aborts an older remote revocation and remains connected', async () => {
   let calls = 0;
   let resolveFetch!: (response: Response) => void;

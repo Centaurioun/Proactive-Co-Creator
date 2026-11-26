@@ -14,7 +14,7 @@ const PROVIDER_OPERATIONS: Record<AiConnectionId, AiOperation[]> = {
   'openai-api': TEXT_OPERATIONS,
 };
 
-export const CAPABILITY_POLICY_VERSION = '2026-11-25.1';
+export const CAPABILITY_POLICY_VERSION = '2026-11-26.1';
 export const SIWC_MODELS_DOCUMENTATION = 'https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference';
 export const OPENAI_REASONING_DOCUMENTATION = 'https://developers.openai.com/api/docs/guides/reasoning';
 export const GEMINI_THINKING_DOCUMENTATION = 'https://ai.google.dev/gemini-api/docs/thinking';

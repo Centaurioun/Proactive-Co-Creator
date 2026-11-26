@@ -75,7 +75,7 @@ test('OpenAI API responses keep the API billing path and do not set a ChatGPT pl
       { type: 'response.completed', response: {} },
     );
   }, undefined, 'openai-api');
-  const result = await adapter.generateText(request({ reasoningLevel: 'default' }));
+  const result = await adapter.generateText(request({ reasoningLevel: 'default', maxOutputTokens: 192 }));
   assert.equal(result.text, 'API result');
   assert.equal(adapter.billing, 'openai-api-key');
   assert.equal(sent?.url, 'https://api.openai.com/v1/responses');
@@ -84,6 +84,36 @@ test('OpenAI API responses keep the API billing path and do not set a ChatGPT pl
   assert.equal(body.store, false);
   assert.equal(body.stream, true);
   assert.equal(body.reasoning, undefined);
+  assert.equal(body.max_output_tokens, 192);
+});
+
+test('OpenAI API performs provider token preflight for the exact input and instructions', async () => {
+  let sent: { url: string; init: RequestInit } | undefined;
+  const adapter = new ChatGptResponsesAdapter('synthetic-api-key-for-test', async (input, init) => {
+    sent = { url: String(input), init: init ?? {} };
+    return Response.json({ object: 'response.input_tokens', input_tokens: 37 });
+  }, undefined, 'openai-api');
+  const schema = { type: 'object', properties: { accepted: { type: 'boolean' } } };
+  const count = await adapter.countTokens('gpt-6.2-sol', 'prompt text', undefined, 'system rules', { responseSchema: schema });
+  assert.deepEqual(count, { tokens: 37, source: 'provider-count' });
+  assert.equal(sent?.url, 'https://api.openai.com/v1/responses/input_tokens');
+  assert.equal(new Headers(sent?.init.headers).get('authorization'), 'Bearer synthetic-api-key-for-test');
+  const body = JSON.parse(String(sent?.init.body));
+  assert.equal(body.model, 'gpt-6.2-sol');
+  assert.deepEqual(body.input, [{ role: 'user', content: 'prompt text' }]);
+  assert.match(body.instructions, /^system rules/);
+  assert.match(body.instructions, /conforms to this response schema/);
+  assert.match(body.instructions, /"accepted":\{"type":"boolean"\}/);
+});
+
+test('OpenAI API blocks generation before transport when no provider output-token cap is supplied', async () => {
+  let calls = 0;
+  const adapter = new ChatGptResponsesAdapter('synthetic-api-key-for-test', async () => {
+    calls += 1;
+    return sse({ type: 'response.completed', response: {} });
+  }, undefined, 'openai-api');
+  await assert.rejects(adapter.generateText(request()), /provider-enforced output-token limit/i);
+  assert.equal(calls, 0);
 });
 
 test('removing an OpenAI API key aborts its in-flight response', async () => {
@@ -94,7 +124,7 @@ test('removing an OpenAI API key aborts its in-flight response', async () => {
     markStarted();
     init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
   }));
-  const pending = adapter.generateText(request());
+  const pending = adapter.generateText(request({ maxOutputTokens: 100 }));
   await started;
   setOpenAiApiKey(undefined);
   await assert.rejects(pending, /cancel/i);

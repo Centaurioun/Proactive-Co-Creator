@@ -100,9 +100,9 @@ test('model listing maps only SDK-reported supported actions and reasoning suppo
   assert.deepEqual(models[0].outputLimit, { state: 'supported', value: 2_000, evidence: models[0].outputLimit.state === 'supported' ? models[0].outputLimit.evidence : [] });
   assert.equal(models[0].operationCapabilities.story?.state, 'supported');
   assert.equal(models[0].operationCapabilities.analyze?.state, 'unknown');
-  assert.equal(models[0].capabilityPolicyVersion, '2026-11-25.1');
+  assert.equal(models[0].capabilityPolicyVersion, '2026-11-26.1');
   assert.equal(models[1].imageGeneration.state, 'supported');
-  assert.equal(models[1].operationCapabilities.image?.state, 'supported');
+  assert.equal(models[1].operationCapabilities.image?.state, 'unsupported');
   assert.equal(models[2].textGeneration.state, 'unknown');
   assert.equal(models[2].reasoning.state, 'unknown');
 });
@@ -174,6 +174,26 @@ test('generateText omits provider thinking config for default reasoning', async 
   });
 
   assert.equal(config?.thinkingConfig, undefined);
+});
+
+test('generateText preserves existing provider JSON format and thinking settings under default selection', async () => {
+  let config: Record<string, unknown> | undefined;
+  const adapter = createGeminiAdapter(baseInput({
+    clientFactory: () => clientWith({ generateContent: async ({ config: value }) => {
+      config = value;
+      return { text: '{"ok":true}' };
+    } }),
+  }));
+  await adapter.generateText({
+    operation: 'analyze', modelId: 'gemini-text', input: 'prompt', reasoningLevel: 'default',
+    maxInputBytes: 100, maxOutputBytes: 400, maxOutputTokens: 42, timeoutMs: 1_000,
+    responseMimeType: 'application/json', responseSchema: { type: 'OBJECT' },
+    thinkingConfig: { thinkingLevel: 'LOW' },
+  });
+  assert.equal(config?.maxOutputTokens, 42);
+  assert.equal(config?.responseMimeType, 'application/json');
+  assert.deepEqual(config?.responseSchema, { type: 'OBJECT' });
+  assert.deepEqual(config?.thinkingConfig, { thinkingLevel: 'LOW' });
 });
 
 test('generateImage uses SDK image generation when available and rejects if unavailable', async () => {

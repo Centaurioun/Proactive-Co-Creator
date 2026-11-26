@@ -1,5 +1,6 @@
 import { createPublicKey, verify as verifySignature } from 'node:crypto';
 import { createOAuthSecret, createPkcePair, readTokenResponse, type ChatGptTokenSet } from './sessionStore.ts';
+import { fetchBoundedHttpBody, parseOAuthJson } from '../../http.ts';
 
 export const CHATGPT_OAUTH_ISSUER = 'https://auth.openai.com/';
 const AUTH_ORIGIN = 'https://auth.openai.com';
@@ -69,21 +70,12 @@ function decodeJsonPart(part: string): Record<string, unknown> {
 }
 
 export async function discoverOpenId(fetchImpl: typeof fetch = fetch): Promise<OpenIdConfiguration> {
-  let response: Response;
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let response;
   try {
-    response = await Promise.race([
-      fetchImpl(DISCOVERY_URL, { headers: { accept: 'application/json' }, signal: controller.signal }),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => { controller.abort(); reject(new Error('OpenID discovery timed out.')); }, 5_000);
-      }),
-    ]);
+    response = await fetchBoundedHttpBody(fetchImpl, DISCOVERY_URL, { headers: { accept: 'application/json' } }, { timeoutMs: 5_000, maxBodyBytes: 64 * 1024 });
   } catch { throw new Error('OpenID discovery failed.'); }
-  finally { if (timer) clearTimeout(timer); controller.abort(); }
   if (!response.ok) throw new Error('OpenID discovery failed.');
-  let raw: unknown;
-  try { raw = await response.json(); } catch { throw new Error('OpenID discovery metadata is invalid.'); }
+  const raw = parseOAuthJson(response.body, 'OpenID discovery metadata is invalid.');
   if (!raw || typeof raw !== 'object') throw new Error('OpenID discovery metadata is invalid.');
   const meta = raw as Record<string, unknown>;
   if (meta.issuer !== CHATGPT_OAUTH_ISSUER) throw new Error('OpenID issuer did not match the trusted issuer.');
@@ -157,14 +149,14 @@ export class ChatGptOAuthClient {
     if (!clientId || clientId === DYNAMIC_CLIENT_ID || (flow.requestedClientId === DYNAMIC_CLIENT_ID && !/^oaiapp_[A-Za-z0-9_-]{4,128}$/.test(clientId)) || (flow.requestedClientId !== DYNAMIC_CLIENT_ID && input.clientId && input.clientId !== flow.requestedClientId)) {
       throw new Error('OAuth callback client registration is invalid.');
     }
-    let response: Response;
+    let response;
     try {
-      response = await this.fetchImpl(TOKEN_URL, {
+      response = await fetchBoundedHttpBody(this.fetchImpl, TOKEN_URL, {
         method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
         body: new URLSearchParams({ grant_type: 'authorization_code', code: input.code, redirect_uri: this.options.redirectUri, client_id: clientId, code_verifier: flow.verifier, resource: OPENAI_RESOURCE }),
-      });
+      }, { timeoutMs: 8_000, maxBodyBytes: 32 * 1024 });
     } catch { throw new Error('OAuth token exchange failed.'); }
-    const tokens = await readTokenResponse(response, this.now);
+    const tokens = await readTokenResponse(new Response(response.body, { status: response.status, headers: response.headers }), this.now);
     if (!tokens.idToken) throw new Error('OpenID token response did not include an ID token.');
     if (!tokens.refreshToken) throw new Error('ChatGPT authorization did not include a renewable session token.');
     const grantedScopes = new Set((tokens.scope ?? '').split(/\s+/).filter(Boolean));
@@ -176,19 +168,6 @@ export class ChatGptOAuthClient {
       fetch: this.fetchImpl, now: this.now,
     });
     return { tokens, claims, clientId };
-  }
-
-  async revoke(token: string): Promise<void> {
-    if (!token) return;
-    const metadata = await discoverOpenId(this.fetchImpl);
-    if (!metadata.revocation_endpoint) throw new Error('OpenID provider does not advertise token revocation.');
-    try {
-      const response = await this.fetchImpl(metadata.revocation_endpoint, {
-        method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-        body: new URLSearchParams({ token, client_id: this.options.clientId ?? DYNAMIC_CLIENT_ID }),
-      });
-      if (!response.ok) throw new Error();
-    } catch { throw new Error('OAuth token revocation failed.'); }
   }
 
   private pruneFlows(): void {
@@ -208,12 +187,11 @@ export async function verifyIdToken(idToken: string, options: {
   const alg = header.alg;
   if (!['RS256', 'ES256'].includes(String(alg)) || typeof header.kid !== 'string') throw new Error('OpenID token algorithm is not supported.');
   const metadata = await discoverOpenId(options.fetch ?? fetch);
-  let response: Response;
-  try { response = await (options.fetch ?? fetch)(metadata.jwks_uri, { headers: { accept: 'application/json' } }); }
+  let response;
+  try { response = await fetchBoundedHttpBody(options.fetch ?? fetch, metadata.jwks_uri, { headers: { accept: 'application/json' } }, { timeoutMs: 5_000, maxBodyBytes: 256 * 1024 }); }
   catch { throw new Error('OpenID signing keys could not be loaded.'); }
   if (!response.ok) throw new Error('OpenID signing keys could not be loaded.');
-  let raw: unknown;
-  try { raw = await response.json(); } catch { throw new Error('OpenID signing keys are invalid.'); }
+  const raw = parseOAuthJson(response.body, 'OpenID signing keys are invalid.');
   const keys = raw && typeof raw === 'object' && Array.isArray((raw as { keys?: unknown }).keys) ? (raw as { keys: unknown[] }).keys : [];
   const jwk = keys.find((item) => item && typeof item === 'object' && (item as Record<string, unknown>).kid === header.kid) as JsonWebKey | undefined;
   if (!jwk || jwk.use !== 'sig' || (jwk.alg && jwk.alg !== alg)) throw new Error('OpenID signing key is unavailable.');

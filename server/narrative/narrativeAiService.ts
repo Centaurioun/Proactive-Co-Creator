@@ -36,7 +36,7 @@ import { getAiProviderRequestContext } from '../providers/requestContext.ts';
 
 export interface NarrativeAiClientLike {
   models: {
-    countTokens?: (params: { model: string; contents: string; config?: { abortSignal?: AbortSignal } }) => Promise<{ totalTokens?: number; source?: 'provider-count' | 'estimate' }>;
+    countTokens?: (params: { model: string; contents: string; config?: { abortSignal?: AbortSignal; systemInstruction?: unknown; responseSchema?: unknown; responseMimeType?: string; thinkingConfig?: unknown } }) => Promise<{ totalTokens?: number; source?: 'provider-count' | 'estimate' }>;
     generateContent: (params: {
       model: string;
       contents: string;
@@ -147,6 +147,10 @@ export async function runBudgetedJsonOperation<T>(params: {
     }
     if (typeof countRes?.totalTokens !== 'number' || !Number.isSafeInteger(countRes.totalTokens) || countRes.totalTokens < 0) {
       throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; generation was not started.', 503, false);
+    }
+    const connectionId = getAiProviderRequestContext()?.selection.connectionId;
+    if ((connectionId === 'chatgpt-plan' || connectionId === 'openai-api') && countRes.source !== 'provider-count') {
+      throw new AppApiError('MODEL_UNSUPPORTED', 'This narrative operation requires provider token preflight; the selected OpenAI transport did not provide an exact count. Generation was not started.', 503, false);
     }
     const providerInputTokens = countRes.source === 'estimate' ? undefined : countRes.totalTokens;
     if (countRes.source === 'estimate') estimatedInputTokens = Math.max(estimatedInputTokens, countRes.totalTokens);

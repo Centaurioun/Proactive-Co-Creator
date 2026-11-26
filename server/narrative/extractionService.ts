@@ -56,6 +56,15 @@ const ambiguitySchema = {
     rationale: { type: Type.STRING }, evidence: evidenceSchema,
   }, required: ['id', 'title', 'detail', 'severity', 'certainty', 'rationale', 'evidence'],
 };
+const extractionResponseSchema = {
+  type: Type.OBJECT,
+  properties: {
+    findings: { type: Type.ARRAY, items: findingSchema },
+    entities: { type: Type.ARRAY, items: entitySchema },
+    relationships: { type: Type.ARRAY, items: relationshipSchema },
+    ambiguities: { type: Type.ARRAY, items: ambiguitySchema },
+  }, required: ['findings', 'entities', 'relationships', 'ambiguities'],
+};
 
 export async function extractNarrativeChunk(
   request: NarrativeExtractionRequest,
@@ -104,6 +113,10 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; extraction was not started.', 503, false);
     }
     const tokenSource = (tokenCount as { totalTokens?: number; source?: 'provider-count' | 'estimate' }).source;
+    const connectionId = getAiProviderRequestContext()?.selection.connectionId;
+    if ((connectionId === 'chatgpt-plan' || connectionId === 'openai-api') && tokenSource !== 'provider-count') {
+      throw new AppApiError('MODEL_UNSUPPORTED', 'Narrative extraction requires provider token preflight; the selected OpenAI transport did not provide an exact count. Generation was not started.', 503, false);
+    }
     const inputTokensForBudget = tokenSource === 'estimate'
       ? Math.max(estimateTokensFromText(prompt), tokenCount.totalTokens)
       : tokenCount.totalTokens;
@@ -126,15 +139,7 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         maxOutputTokens: Math.min(2048, AI_OPERATION_POLICIES['narrative-import'].maxOutputTokens),
         responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            findings: { type: Type.ARRAY, items: findingSchema },
-            entities: { type: Type.ARRAY, items: entitySchema },
-            relationships: { type: Type.ARRAY, items: relationshipSchema },
-            ambiguities: { type: Type.ARRAY, items: ambiguitySchema },
-          }, required: ['findings', 'entities', 'relationships', 'ambiguities'],
-        },
+        responseSchema: extractionResponseSchema,
       },
     });
     if (!response.text?.trim()) throw new AppApiError('INVALID_RESPONSE', 'Narrative analysis returned an empty response.', 502, false);

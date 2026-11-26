@@ -30,7 +30,7 @@ interface GeminiSdkClient {
     countTokens: (params: {
       model: string;
       contents: string;
-      config?: { abortSignal?: AbortSignal };
+      config?: { abortSignal?: AbortSignal; systemInstruction?: string; responseSchema?: unknown; responseMimeType?: string; thinkingConfig?: unknown };
     }) => Promise<{ totalTokens?: number }>;
     generateContent: (params: {
       model: string;
@@ -119,7 +119,9 @@ function toModelDescriptor(model: GeminiModelRecord): AiModelDescriptor | null {
       operationCapabilities[operation] = unknownCapability(`PCC operation ${operation} requires workflow-specific structured-output and budget qualification.`);
     }
   }
-  operationCapabilities.image = imageGeneration;
+  // PCC image generation uses the existing managed Gemini image route; the current
+  // preference contract does not support selecting image-operation overrides.
+  operationCapabilities.image = { state: 'unsupported', evidence };
 
   return {
     id,
@@ -288,12 +290,14 @@ export function createGeminiAdapter(input: GeminiAdapterFactoryInput): AiProvide
       }
     },
 
-    async countTokens(modelId: string, inputText: string, signal?: AbortSignal): Promise<AiTokenCount> {
+    async countTokens(modelId: string, inputText: string, signal?: AbortSignal, instructions?: string, _generation?: { responseSchema?: unknown; responseMimeType?: string; thinkingConfig?: unknown }): Promise<AiTokenCount> {
       try {
+        // Gemini Developer API countTokens accepts contents/systemInstruction only;
+        // response schema and other generation settings are not part of this count.
         const result = await client.models.countTokens({
           model: modelIdFromName(modelId),
           contents: inputText,
-          config: { abortSignal: signal },
+          config: { abortSignal: signal, ...(instructions ? { systemInstruction: instructions } : {}) },
         });
         const tokens = asOptionalCount(result.totalTokens);
         if (tokens === undefined) {
@@ -314,15 +318,17 @@ export function createGeminiAdapter(input: GeminiAdapterFactoryInput): AiProvide
       const timed = makeTimedSignal(request.signal, request.timeoutMs);
       const config: Record<string, unknown> = {
         abortSignal: timed.signal,
-        maxOutputTokens: Math.max(1, Math.floor(request.maxOutputBytes / 4)),
+        maxOutputTokens: Math.max(1, Math.min(request.maxOutputTokens ?? Number.MAX_SAFE_INTEGER, Math.floor(request.maxOutputBytes / 4))),
       };
       if (request.instructions) config.systemInstruction = request.instructions;
+      if (request.responseMimeType) config.responseMimeType = request.responseMimeType;
       if (request.responseSchema !== undefined) {
-        config.responseMimeType = 'application/json';
+        config.responseMimeType ??= 'application/json';
         config.responseSchema = request.responseSchema;
       }
       const thinkingConfig = reasoningConfig(request.reasoningLevel);
       if (thinkingConfig) config.thinkingConfig = thinkingConfig;
+      else if (request.thinkingConfig !== undefined) config.thinkingConfig = request.thinkingConfig;
 
       try {
         const response = await Promise.race([

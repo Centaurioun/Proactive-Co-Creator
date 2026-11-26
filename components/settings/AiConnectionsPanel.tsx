@@ -266,7 +266,7 @@ export default function AiConnectionsPanel() {
       const result = await requestJson<{ remoteRevocation: 'acknowledged' | 'not-confirmed' | 'endpoint-unavailable' | 'not-connected' }>('/chatgpt/disconnect', { method: 'POST' });
       const notices = {
         acknowledged: 'ChatGPT disconnected from PCC. OpenAI confirmed revocation of the renewable session token; this does not remove the entire app authorization from your ChatGPT account.',
-        'not-confirmed': 'ChatGPT disconnected from PCC. Remote revocation could not be confirmed.',
+        'not-confirmed': 'ChatGPT disconnected from PCC. Remote revocation could not be confirmed. To remove any remaining app authorization, review connected apps in ChatGPT Settings.',
         'endpoint-unavailable': 'ChatGPT disconnected from PCC. To remove remaining account access, review connected apps in ChatGPT Settings.',
         'not-connected': 'ChatGPT is not connected.',
       };

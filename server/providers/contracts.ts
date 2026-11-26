@@ -69,6 +69,11 @@ export interface AiProviderRequest {
   reasoningLevel?: AiReasoningLevel;
   maxInputBytes: number;
   maxOutputBytes: number;
+  /** Provider-enforced hard generation ceiling when the billing transport supports it. */
+  maxOutputTokens?: number;
+  /** Existing provider-native generation settings that must survive routing. */
+  responseMimeType?: string;
+  thinkingConfig?: unknown;
   timeoutMs: number;
   signal?: AbortSignal;
   responseSchema?: unknown;
@@ -93,7 +98,7 @@ export interface AiProviderAdapter {
   readonly family: AiProviderFamily;
   readonly billing: AiBillingPath;
   listModels(signal?: AbortSignal): Promise<AiModelDescriptor[]>;
-  countTokens(modelId: string, input: string, signal?: AbortSignal): Promise<AiTokenCount>;
+  countTokens(modelId: string, input: string, signal?: AbortSignal, instructions?: string, generation?: Pick<AiProviderRequest, 'responseSchema' | 'responseMimeType' | 'thinkingConfig'>): Promise<AiTokenCount>;
   generateText(request: AiProviderRequest): Promise<AiProviderTextResult>;
   generateImage?(request: AiProviderRequest): Promise<unknown>;
 }

@@ -1,5 +1,5 @@
 import type { AiConnectionDescriptor, AiConnectionId, AiModelDescriptor, AiProviderAdapter, AiProviderSelection } from './contracts.ts';
-import type { AiOperation } from '../aiBudget.ts';
+import { AI_OPERATION_POLICIES, type AiOperation } from '../aiBudget.ts';
 import { createGeminiAdapter } from './geminiAdapter.ts';
 import { ChatGptResponsesAdapter } from './chatgptResponses.ts';
 import { chatGptSessionStore } from '../auth/chatgpt/runtime.ts';
@@ -24,7 +24,52 @@ let managedGeminiModels: AiModelDescriptor[] = [];
 let chatGptModels: AiModelDescriptor[] = [];
 let openAiApiModels: AiModelDescriptor[] = [];
 const observed = new Map<AiConnectionId, number>();
-const activeOpenAiRequests = new Set<AbortController>();
+interface CredentialAuthorityState { generation: number; active: Set<AbortController> }
+const credentialAuthorities = new Map<AiConnectionId, CredentialAuthorityState>([
+  ['gemini-personal', { generation: 0, active: new Set() }],
+  ['openai-api', { generation: 0, active: new Set() }],
+]);
+
+function authorityState(connectionId: AiConnectionId): CredentialAuthorityState {
+  let state = credentialAuthorities.get(connectionId);
+  if (!state) { state = { generation: 0, active: new Set() }; credentialAuthorities.set(connectionId, state); }
+  return state;
+}
+
+function invalidateCredentialAuthority(connectionId: AiConnectionId): void {
+  const state = authorityState(connectionId);
+  state.generation += 1;
+  for (const controller of state.active) controller.abort(new AppApiError('CANCELLED', 'Provider credential change cancelled this operation.', 499, false));
+  state.active.clear();
+}
+
+function beginCredentialRequest(connectionId: AiConnectionId, parentSignal?: AbortSignal, expectedGeneration = authorityState(connectionId).generation) {
+  const state = authorityState(connectionId);
+  if (state.generation !== expectedGeneration || parentSignal?.aborted) {
+    throw new AppApiError('CANCELLED', 'The provider credential changed before this operation could start.', 499, false);
+  }
+  const controller = new AbortController();
+  const abortParent = () => controller.abort(parentSignal?.reason);
+  parentSignal?.addEventListener('abort', abortParent, { once: true });
+  state.active.add(controller);
+  let released = false;
+  return {
+    generation: expectedGeneration,
+    signal: controller.signal,
+    assertCurrent: () => {
+      if (state.generation !== expectedGeneration || controller.signal.aborted) {
+        throw new AppApiError('CANCELLED', 'The provider credential changed; the stale result was discarded.', 499, false);
+      }
+    },
+    release: () => {
+      if (released) return;
+      released = true;
+      parentSignal?.removeEventListener('abort', abortParent);
+      state.active.delete(controller);
+      controller.abort();
+    },
+  };
+}
 
 export function getPreferences(): ProviderPreferences {
   return structuredClone(preferences);
@@ -35,6 +80,7 @@ export function setPreferences(value: ProviderPreferences): void {
 }
 
 export function setPersonalGeminiKey(value: string | undefined): void {
+  invalidateCredentialAuthority('gemini-personal');
   personalGeminiKey = value;
   personalGeminiVerified = false;
   personalGeminiModels = [];
@@ -43,8 +89,7 @@ export function setPersonalGeminiKey(value: string | undefined): void {
 export function hasPersonalGeminiKey(): boolean { return Boolean(personalGeminiKey); }
 
 export function setOpenAiApiKey(value: string | undefined): void {
-  for (const controller of activeOpenAiRequests) controller.abort(new Error('OpenAI API key changed.'));
-  activeOpenAiRequests.clear();
+  invalidateCredentialAuthority('openai-api');
   openAiApiKey = value;
   openAiApiVerified = false;
   openAiApiModels = [];
@@ -53,26 +98,13 @@ export function setOpenAiApiKey(value: string | undefined): void {
 export function hasOpenAiApiKey(): boolean { return Boolean(openAiApiKey); }
 
 export function createOpenAiApiAdapter(fetchImpl: typeof fetch = fetch): ChatGptResponsesAdapter {
-  return new ChatGptResponsesAdapter(() => {
-    if (!openAiApiKey) throw new AppApiError('AUTH_ERROR', 'Add an OpenAI API key for this server session before using OpenAI API billing.', 401, false);
-    return openAiApiKey;
-  }, fetchImpl, (parentSignal) => {
-    const controller = new AbortController();
-    const abortFromParent = () => controller.abort(parentSignal?.reason);
-    if (parentSignal?.aborted) abortFromParent();
-    else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
-    activeOpenAiRequests.add(controller);
-    let released = false;
-    return {
-      signal: controller.signal,
-      release: () => {
-        if (released) return;
-        released = true;
-        parentSignal?.removeEventListener('abort', abortFromParent);
-        activeOpenAiRequests.delete(controller);
-        controller.abort();
-      },
-    };
+  const keySnapshot = openAiApiKey;
+  const credentialGeneration = authorityState('openai-api').generation;
+  return new ChatGptResponsesAdapter(keySnapshot ?? (() => {
+    throw new AppApiError('AUTH_ERROR', 'Add an OpenAI API key for this server session before using OpenAI API billing.', 401, false);
+  }), fetchImpl, (parentSignal) => {
+    const lease = beginCredentialRequest('openai-api', parentSignal, credentialGeneration);
+    return { signal: lease.signal, release: lease.release };
   }, 'openai-api');
 }
 
@@ -86,37 +118,52 @@ export function getCachedProviderModel(connectionId: AiConnectionId, modelId: st
   return model ? structuredClone(model) : undefined;
 }
 
-export async function listProviderModels(connectionId: AiConnectionId, signal?: AbortSignal): Promise<AiModelDescriptor[]> {
+export async function listProviderModels(connectionId: AiConnectionId, signal?: AbortSignal, adapterFactory?: (id: AiConnectionId) => AiProviderAdapter): Promise<AiModelDescriptor[]> {
   if (connectionId === 'gemini-managed') {
     managedGeminiModels = await createGeminiAdapter({ connectionId, managedClientFactory: () => getGeminiClient() as never }).listModels(signal);
     return managedGeminiModels;
   }
   if (connectionId === 'gemini-personal') {
     if (!personalGeminiKey) throw new AppApiError('MISSING_API_KEY', 'Enter a Gemini API key for this session before refreshing its model list.', 503, false);
-    const models = await createGeminiAdapter({ connectionId, personalApiKey: personalGeminiKey }).listModels(signal);
-    personalGeminiVerified = true;
-    personalGeminiModels = models;
-    return models;
+    const keySnapshot = personalGeminiKey;
+    const lease = beginCredentialRequest(connectionId, signal);
+    try {
+      const models = await (adapterFactory?.(connectionId) ?? createGeminiAdapter({ connectionId, personalApiKey: keySnapshot })).listModels(lease.signal);
+      lease.assertCurrent();
+      personalGeminiVerified = true;
+      personalGeminiModels = structuredClone(models);
+      return structuredClone(models);
+    } finally { lease.release(); }
   }
   if (connectionId === 'chatgpt-plan') {
     if (!chatGptSessionStore.snapshot().connected) throw new AppApiError('AUTH_ERROR', 'Connect a ChatGPT account before refreshing its model list.', 401, false);
-    const adapter = createChatGptAdapter();
+    const generation = chatGptSessionStore.getGeneration();
+    const adapter = adapterFactory?.(connectionId) ?? createChatGptAdapter(generation);
     const models = await adapter.listModels(signal);
+    if (chatGptSessionStore.getGeneration() !== generation || !chatGptSessionStore.snapshot().connected) {
+      throw new AppApiError('CANCELLED', 'The ChatGPT session changed; its stale model catalog was discarded.', 499, false);
+    }
     setChatGptModels(models);
     return models;
   }
   if (!openAiApiKey) throw new AppApiError('MISSING_API_KEY', 'Enter an OpenAI API key for this session before refreshing its model list.', 503, false);
-  const models = await createOpenAiApiAdapter().listModels(signal);
-  openAiApiVerified = true;
-  openAiApiModels = models;
-  return models;
+  const keySnapshot = openAiApiKey;
+  const lease = beginCredentialRequest(connectionId, signal);
+  try {
+    const models = await (adapterFactory?.(connectionId) ?? createOpenAiApiAdapter()).listModels(lease.signal);
+    lease.assertCurrent();
+    if (openAiApiKey !== keySnapshot) throw new AppApiError('CANCELLED', 'The OpenAI API key changed; its stale model catalog was discarded.', 499, false);
+    openAiApiVerified = true;
+    openAiApiModels = structuredClone(models);
+    return structuredClone(models);
+  } finally { lease.release(); }
 }
 
-let chatGptAdapterFactory: (() => ChatGptResponsesAdapter) | undefined;
-export function registerChatGptAdapterFactory(factory: () => ChatGptResponsesAdapter): void { chatGptAdapterFactory = factory; }
-export function createChatGptAdapter(): ChatGptResponsesAdapter {
+let chatGptAdapterFactory: ((expectedGeneration?: number) => ChatGptResponsesAdapter) | undefined;
+export function registerChatGptAdapterFactory(factory: (expectedGeneration?: number) => ChatGptResponsesAdapter): void { chatGptAdapterFactory = factory; }
+export function createChatGptAdapter(expectedGeneration?: number): ChatGptResponsesAdapter {
   if (!chatGptAdapterFactory) throw new AppApiError('AUTH_ERROR', 'ChatGPT account authorization is not available in this process.', 503, false);
-  return chatGptAdapterFactory();
+  return chatGptAdapterFactory(expectedGeneration);
 }
 
 export function connectionDescriptors(localPersonalConnectionsAvailable: boolean): AiConnectionDescriptor[] {
@@ -144,47 +191,78 @@ export function providerHubStatus(localPersonalConnectionsAvailable: boolean) {
 
 export interface LegacyAiClientLike {
   models: {
-    countTokens(params: { model: string; contents: unknown; config?: { abortSignal?: AbortSignal } }): Promise<{ totalTokens?: number; source?: 'provider-count' | 'estimate' }>;
+    countTokens(params: { model: string; contents: unknown; config?: { abortSignal?: AbortSignal; systemInstruction?: unknown; responseSchema?: unknown; responseMimeType?: string; thinkingConfig?: unknown } }): Promise<{ totalTokens?: number; source?: 'provider-count' | 'estimate' }>;
     generateContent(params: { model: string; contents: unknown; config?: Record<string, unknown> }): Promise<{ text?: string; usageMetadata?: Record<string, unknown> }>;
     generateImages?(params: { model: string; prompt: string; config?: Record<string, unknown> }): Promise<unknown>;
   };
 }
 
 /** Creates the legacy SDK-shaped boundary without changing any public AI route schemas. */
-export function createLegacyAiClient(selection: AiProviderSelection, operation: AiOperation, personalKey: string | undefined, getManagedClient: () => LegacyAiClientLike): LegacyAiClientLike {
+export function createLegacyAiClient(selection: AiProviderSelection, operation: AiOperation, personalKey: string | undefined, getManagedClient: () => LegacyAiClientLike, adapterFactory?: (id: AiConnectionId) => AiProviderAdapter): LegacyAiClientLike {
   if (selection.connectionId === 'gemini-managed' && !selection.modelId && !selection.reasoningLevel) return getManagedClient();
-  const adapter: AiProviderAdapter = selection.connectionId.startsWith('gemini-')
+  const credentialGeneration = authorityState(selection.connectionId).generation;
+  const chatGptGeneration = selection.connectionId === 'chatgpt-plan' ? chatGptSessionStore.getGeneration() : undefined;
+  const adapter: AiProviderAdapter = adapterFactory?.(selection.connectionId) ?? (selection.connectionId.startsWith('gemini-')
     ? createGeminiAdapter({ connectionId: selection.connectionId as 'gemini-managed' | 'gemini-personal', personalApiKey: personalKey, managedClientFactory: () => getManagedClient() as never })
-    : selection.connectionId === 'chatgpt-plan' ? createChatGptAdapter() : createOpenAiApiAdapter();
+    : selection.connectionId === 'chatgpt-plan' ? createChatGptAdapter(chatGptGeneration) : createOpenAiApiAdapter());
+  const withCredentialAuthority = async <T>(signal: AbortSignal | undefined, work: (requestSignal: AbortSignal) => Promise<T>): Promise<T> => {
+    const lease = beginCredentialRequest(selection.connectionId, signal, credentialGeneration);
+    try {
+      if (chatGptGeneration !== undefined && chatGptSessionStore.getGeneration() !== chatGptGeneration) {
+        throw new AppApiError('CANCELLED', 'The ChatGPT session changed; its stale operation was discarded.', 499, false);
+      }
+      const result = await work(lease.signal);
+      lease.assertCurrent();
+      if (chatGptGeneration !== undefined && chatGptSessionStore.getGeneration() !== chatGptGeneration) {
+        throw new AppApiError('CANCELLED', 'The ChatGPT session changed; its stale result was discarded.', 499, false);
+      }
+      return result;
+    } finally { lease.release(); }
+  };
 
   return {
     models: {
       async countTokens(params) {
         const contents = typeof params.contents === 'string' ? params.contents : JSON.stringify(params.contents);
-        const result = await adapter.countTokens(selection.modelId ?? params.model, contents, params.config?.abortSignal);
+        const instructions = typeof params.config?.systemInstruction === 'string' ? params.config.systemInstruction : undefined;
+        const result = await withCredentialAuthority(params.config?.abortSignal, requestSignal => adapter.countTokens(selection.modelId ?? params.model, contents, requestSignal, instructions, {
+          responseSchema: params.config?.responseSchema,
+          responseMimeType: params.config?.responseMimeType,
+          thinkingConfig: params.config?.thinkingConfig,
+        }));
         return { totalTokens: result.tokens, source: result.source };
       },
       async generateContent(params) {
         const contents = typeof params.contents === 'string' ? params.contents : JSON.stringify(params.contents);
         const config = params.config ?? {};
-        const result = await adapter.generateText({
+        if (config.maxOutputTokens !== undefined && (!Number.isSafeInteger(config.maxOutputTokens) || Number(config.maxOutputTokens) <= 0)) {
+          throw new AppApiError('VALIDATION_ERROR', 'The generation output-token cap must be a positive integer.', 400, false);
+        }
+        const maxOutputTokens = Math.min(
+          typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : AI_OPERATION_POLICIES[operation].maxOutputTokens,
+          AI_OPERATION_POLICIES[operation].maxOutputTokens,
+        );
+        const result = await withCredentialAuthority(config.abortSignal instanceof AbortSignal ? config.abortSignal : undefined, requestSignal => adapter.generateText({
           operation,
           modelId: selection.modelId ?? params.model,
           input: contents,
           instructions: typeof config.systemInstruction === 'string' ? config.systemInstruction : undefined,
           responseSchema: config.responseSchema,
+          responseMimeType: typeof config.responseMimeType === 'string' ? config.responseMimeType : undefined,
+          thinkingConfig: config.thinkingConfig,
           reasoningLevel: selection.reasoningLevel ?? 'default',
           maxInputBytes: 512 * 1024,
-          maxOutputBytes: typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens * 4 : 128 * 1024,
+          maxOutputBytes: 128 * 1024,
+          maxOutputTokens,
           timeoutMs: 120_000,
-          signal: config.abortSignal instanceof AbortSignal ? config.abortSignal : undefined,
-        });
+          signal: requestSignal,
+        }));
         observed.set(selection.connectionId, (observed.get(selection.connectionId) ?? 0) + 1);
         return { text: result.text, usageMetadata: result.usage?.source === 'provider-observed' ? { promptTokenCount: result.usage.inputTokens, candidatesTokenCount: result.usage.outputTokens } : undefined };
       },
       async generateImages(params) {
         if (!adapter.generateImage) throw new AppApiError('MODEL_UNSUPPORTED', 'The selected connection cannot generate images.', 422, false);
-        return adapter.generateImage({ operation: 'image', modelId: selection.modelId ?? params.model, input: params.prompt, maxInputBytes: 64 * 1024, maxOutputBytes: 8 * 1024 * 1024, timeoutMs: 120_000 });
+        return withCredentialAuthority(undefined, requestSignal => adapter.generateImage!({ operation: 'image', modelId: selection.modelId ?? params.model, input: params.prompt, maxInputBytes: 64 * 1024, maxOutputBytes: 8 * 1024 * 1024, timeoutMs: 120_000, signal: requestSignal }));
       },
     },
   };

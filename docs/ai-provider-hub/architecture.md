@@ -27,6 +27,14 @@
 - UI states distinguish acknowledged renewable-token revocation, unavailable endpoint, unconfirmed revocation, and already-disconnected. Acknowledgement does not mean the entire PCC app authorization was removed from the user's ChatGPT account; the user may remove that separately in ChatGPT Settings.
 - No live credentials, account actions, or real revocation calls are used in qualification.
 
+## Budget and capability corrections
+
+- `openai-api` narrative operations call the official `/v1/responses/input_tokens` endpoint before generation and include the exact input and the same constrained-JSON instruction sent with the Responses request. Failure, malformed counts, or missing provider count blocks generation. OpenAI API generation also requires `max_output_tokens`; no ChatGPT-plan inference is sent to the API billing route.
+- The SIWC profile does not expose an official token-count route. PCC marks the local estimate as an estimate and fails closed for narrative paths that require provider-authoritative preflight. Byte bounds remain transport safeguards and are not presented as token or spend limits.
+- Gemini `models.countTokens` is provider-reported input counting, not a count of all generation settings or response schemas. Existing per-operation budgets and actual generation ceilings remain independent; no response-schema byte size is converted into a token/spend claim.
+- Gemini capability data is exact model-slug account catalog data. `generateContent` establishes only text modality; workflow-specific structured operations and reasoning levels remain unknown without corresponding evidence. Gemini image availability in the provider catalog is distinct from a PCC-selectable image override: the current application route uses managed Gemini and does not support per-operation image overrides.
+- A late catalog result is accepted only for the credential/session generation that requested it. Credential changes cancel active model-list and inference requests and stale results cannot repopulate caches or clear a newer session's cache.
+
 All route schemas, operation budgets, output schemas, project/revision identities, AI Ticket Authority, stale-result gates, and explicit proposal acceptance remain authoritative. Provider choice is request metadata only and cannot mutate manuscript or canon data.
 
 ## Operation-to-provider capability matrix (planned supported surface)
@@ -35,7 +43,7 @@ All route schemas, operation budgets, output schemas, project/revision identitie
 |---|---|---|---|---|
 | analyze, clarify, polish, batch-edit, story | Existing default preserved | Text-capable after key validation | Text/JSON only after local account authorization; operation budgets retained | Disabled by default; text/JSON only after explicit local configuration |
 | narrative-import, diagnostics, sync, writing, opportunities, import-enhance | Existing default preserved | Text/JSON after key validation | Text/JSON with strict local schema validation and streaming completion | Disabled by default; text/JSON with strict validation |
-| image | Existing Gemini image route | Gemini image route | Unsupported | Unsupported until separately qualified |
+| image | Existing managed Gemini image route | Not selectable through PCC image routing | Unsupported | Unsupported until separately qualified |
 
 Discovery is connection-specific. A model listing is availability metadata, not proof of operation compatibility, quota, billing eligibility, or reasoning support. Unverified capability remains labelled unverified.
 
@@ -60,8 +68,12 @@ Accepted post-merge CI run `45685803398` completed successfully for Node 22.13.0
 
 - `npm run typecheck`: passed on the implementation candidate.
 - `npm run lint`: passed on the implementation candidate.
-- `npm test`: 359/359 passed, including synthetic OpenAI API key/model/Responses tests and ChatGPT disconnect/revocation race regressions.
-- `npm run build`: passed with Vite 8.3.8. Output included the existing 1,027.38 kB main JS chunk and 1,050.95 kB PDF worker; the existing >500 kB chunk advisory remains.
+- `npm test`: 373/373 passed on the locally integrated correction candidate; `npm run typecheck`, `npm run lint`, and `npm run build` also passed. No live provider or account credentials were used.
+- `npm run build`: passed with Vite 8.3.8. Output included a 1,027.46 kB main JS chunk and 1,050.95 kB PDF worker; the existing >500 kB chunk advisory remains.
 - Isolated local browser: AI Settings rendered the OpenAI API key connection, separate billing disclosure, session-only storage disclosure, explicit catalog refresh and the unchanged Gemini Managed default. No key was entered and no provider request was issued.
 - All provider requests, model discovery and revocation in automated tests use deterministic mocks. This is not live-account qualification.
 - No GitHub hosted CI result is available until the reviewed local candidate is published as the authorized draft PR.
+
+### Principal Architect corrections — local qualification
+
+The correction candidate adds deterministic loopback HTTP tests for body-read timeouts, redirect rejection, per-credential generation invalidation, stale catalog rejection after reconnect, exact OpenAI API preflight for JSON constraints, Gemini generation-config preservation, and operation-aligned image capability reporting. Local qualification passed: 373/373 unit tests, typecheck, lint, production build, and `git diff --check`. This result identifies the tested local tree, not a hosted CI run. Exact commit identity and hosted CI are recorded in the delivery record after publication.
