@@ -45,7 +45,7 @@ All four workers were spawned as GPT-6 Luna / Medium from the exact verified bas
 - Browser checks on an isolated Chromium session and keyless local server: E2E-A through E2E-I passed; Stage0 J01–J12 and audit/performance phases passed; narrative mutations passed. These are synthetic local checks, not hosted or provider qualification.
 - Updated browser qualification passed Q06 cancellation, the genuine same-origin two-page/shared-IndexedDB lease race, AI ownership (five scenarios), and project lifecycle (five scenarios). The Q06 root cause was the fixture stubbing retired `/api/ai/capabilities` but not the current `/api/ai/provider-hub/status` identity contract; the fixture was repaired without production changes. No assertions were weakened. These scenarios used synthetic APIs and a keyless server.
 - Independent review reported no other material issue in the inspected source paths. It was a technical review, not formal acceptance.
-- Exact-head hosted CI run [45777723720](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45777723720) passed all three Node verification jobs and Chromium E2E smoke on `d70541eb893aa543696b4cb5f3d71b1891e591a8`. The ledger-only follow-up commit changes the final documentation tree; CI will be rerun on the resulting final HEAD.
+- Exact-head hosted CI run [45778112918](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/45778112918) passed all three Node verification jobs and Chromium E2E smoke on `2282bb054257f1711e256aa620bdfe8a22a3aee1`. The closing ledger commit is documentation-only; final-head verification is linked in the PR description.
 
 ## Current limitations
 
