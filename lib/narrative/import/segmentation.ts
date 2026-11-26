@@ -103,6 +103,38 @@ export function estimateNarrativeInputTokens(text: string): number {
   return Math.ceil(estimate);
 }
 
+const adaptiveGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+function estimateNarrativeInputTokensRaw(text: string): number {
+  let estimate = 0;
+  for (const character of text) estimate += character.codePointAt(0)! <= 0x7f ? 0.25 : 1;
+  return estimate;
+}
+
+function findAdaptiveBudgetEnd(text: string, start: number, budget: number): { end: number; boundaries: Set<number> } {
+  let estimate = 0;
+  let end = start;
+  const boundaries = new Set<number>();
+  for (const part of adaptiveGraphemeSegmenter.segment(text.slice(start))) {
+    const cost = estimateNarrativeInputTokensRaw(part.segment);
+    if (estimate + cost > budget) break;
+    estimate += cost;
+    end = start + part.index + part.segment.length;
+    boundaries.add(end);
+  }
+  return { end, boundaries };
+}
+
+function previousAdaptiveGraphemeBoundary(text: string, start: number, end: number, target: number): number {
+  let previous = start;
+  for (const part of adaptiveGraphemeSegmenter.segment(text.slice(start, end))) {
+    const boundary = start + part.index;
+    if (boundary > target) break;
+    if (boundary > start) previous = boundary;
+  }
+  return previous > start ? previous : end;
+}
+
 export function planAdaptiveNarrativeSourceAnalysis(
   text: string,
   blocks: SourceBlock[],
@@ -123,24 +155,18 @@ export function planAdaptiveNarrativeSourceAnalysis(
   const chunks: SourceChunk[] = [];
   let start = 0;
   while (start < text.length && chunks.length < maxChunks) {
-    let end = start;
-    let estimate = 0;
-    for (let cursor = start; cursor < text.length;) {
-      const codePoint = text.codePointAt(cursor) ?? 0;
-      const width = codePoint > 0xffff ? 2 : 1;
-      const cost = codePoint <= 0x7f ? 0.25 : 1;
-      if (end > start && estimate + cost > payloadTokenBudget) break;
-      estimate += cost;
-      end += width;
-      cursor += width;
-      if (estimate >= payloadTokenBudget) break;
-    }
-    if (end <= start) end = Math.min(text.length, start + 1);
+    const budget = findAdaptiveBudgetEnd(text, start, payloadTokenBudget);
+    let end = budget.end;
+    // A single grapheme can exceed a deliberately tiny budget. Do not split it
+    // or emit an oversized request; the returned plan remains honestly partial.
+    if (end <= start) break;
     if (end < text.length) {
       const minBoundary = start + Math.floor((end - start) * 0.55);
-      const paragraph = text.lastIndexOf('\n\n', end);
-      if (paragraph >= minBoundary) end = paragraph + 2;
-      else {
+      const paragraph = text.lastIndexOf('\n\n', end - 2);
+      const paragraphEnd = paragraph + 2;
+      if (paragraph >= minBoundary && paragraphEnd > start && budget.boundaries.has(paragraphEnd)) {
+        end = paragraphEnd;
+      } else {
         let low = 0;
         let high = validBlocks.length;
         while (low < high) {
@@ -148,17 +174,22 @@ export function planAdaptiveNarrativeSourceAnalysis(
           if (validBlocks[middle].end <= end) low = middle + 1;
           else high = middle;
         }
-        const structural = validBlocks[low - 1]?.end;
-        if (structural !== undefined) end = structural;
+        for (let index = low - 1; index >= 0; index -= 1) {
+          const structural = validBlocks[index].end;
+          if (structural <= start) break;
+          if (structural >= minBoundary && budget.boundaries.has(structural)) {
+            end = structural;
+            break;
+          }
+        }
       }
     }
     const chunkText = text.slice(start, end);
     chunks.push({ id: `chunk-${chunks.length + 1}`, index: chunks.length, start, end, text: chunkText });
     if (end === text.length) break;
     const overlap = Math.min(250, Math.max(1, Math.floor((end - start) * 0.1)));
-    let next = Math.max(start + 1, end - overlap);
-    if (next < text.length && next > 0 && text.charCodeAt(next) >= 0xdc00 && text.charCodeAt(next) <= 0xdfff &&
-      text.charCodeAt(next - 1) >= 0xd800 && text.charCodeAt(next - 1) <= 0xdbff) next -= 1;
+    const next = previousAdaptiveGraphemeBoundary(text, start, end, Math.max(start + 1, end - overlap));
+    if (next <= start) throw new Error('Adaptive narrative segmentation failed to make forward progress.');
     start = next;
   }
   const complete = text.length === 0 || chunks.at(-1)?.end === text.length;
