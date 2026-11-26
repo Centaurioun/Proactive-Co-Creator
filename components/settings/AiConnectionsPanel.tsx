@@ -562,6 +562,7 @@ export default function AiConnectionsPanel() {
                   <div>
                     <label htmlFor="preferred-chatgpt-model" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-200">Preferred ChatGPT text model</label>
                     <select id="preferred-chatgpt-model" className={inputClass} disabled={busy || !chatGptCatalogSelectable || chatGptTextModels.length === 0} value={preferredChatGptModelId ?? ''} onChange={event => void saveChatGptModelPreference(event.target.value)}>
+                      {!preferredChatGptModelId && <option value="">Choose a model from your account catalog</option>}
                       {preferredChatGptModelId && !chatGptTextModels.some(model => model.id === preferredChatGptModelId) && <option value={preferredChatGptModelId}>Saved model unavailable or no longer verified · refresh or choose again</option>}
                       {chatGptTextModels.length === 0 && <option value="">No verified text models in the current catalog</option>}
                       {chatGptTextModels.map(model => <option key={model.id} value={model.id}>{model.displayName} · {model.id}</option>)}
