@@ -4,8 +4,7 @@
  */
 
 import type { CreativeProject } from '../../shared/types.ts';
-import { IDB_NAME, IDB_STORE, type DurableWriteOptions, type StorageSaveResult } from './constants.ts';
-import { IMPORT_CHECKPOINT_STORE } from '../narrative/import/analysisCheckpoints.ts';
+import { IDB_NAME, IDB_STORE, IMPORT_CHECKPOINT_STORE, type DurableWriteOptions, type StorageSaveResult } from './constants.ts';
 import { evaluateCasConflict, mergeIntentIds } from './casPolicy.ts';
 
 export function getIndexedDb(): { factory?: IDBFactory; error?: string } {

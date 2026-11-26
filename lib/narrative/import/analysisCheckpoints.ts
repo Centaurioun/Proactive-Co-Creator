@@ -1,8 +1,8 @@
 import type { VerifiedExtraction } from './proposalValidator.ts';
 import { NarrativeExtractionSchema } from '../../../shared/importSchemas.ts';
-import { IDB_NAME, IDB_STORE } from '../../storage/constants.ts';
+import { IDB_NAME, IDB_STORE, IMPORT_CHECKPOINT_STORE } from '../../storage/constants.ts';
 
-export const IMPORT_CHECKPOINT_STORE = 'analysis-checkpoints';
+export { IMPORT_CHECKPOINT_STORE };
 export const IMPORT_CHECKPOINT_SCHEMA = 3;
 export const MAX_IMPORT_CHECKPOINTS = 8;
 const MAX_IMPORT_CHECKPOINT_SEGMENTS = 20;
