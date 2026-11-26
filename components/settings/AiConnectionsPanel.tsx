@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { invalidateAiProviderRequests } from '../../services/apiClient';
+import { isEligibleTextModel, modelsForConnection } from '../../lib/providerCatalogView';
+import type { AiReasoningLevel as ReasoningLevel } from '../../server/providers/contracts';
 
 type AiConnectionId = 'gemini-managed' | 'gemini-personal' | 'chatgpt-plan' | 'openai-api';
-type ReasoningLevel = 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'extra-high';
 type ConnectionState =
   | 'available' | 'unconfigured' | 'connecting' | 'connected' | 'authorization-required'
   | 'expired' | 'unsupported-environment' | 'rate-limited' | 'quota-exhausted' | 'failed';
@@ -96,7 +97,6 @@ export default function AiConnectionsPanel() {
   const [apiKey, setApiKey] = useState('');
   const [openAiApiKey, setOpenAiApiKeyInput] = useState('');
   const [preferences, setPreferences] = useState<ProviderPreferences | null>(null);
-  const [modelOptions, setModelOptions] = useState<AiModelDescriptor[]>([]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -116,8 +116,6 @@ export default function AiConnectionsPanel() {
         }
       }
       setPreferences(saved);
-      const selected = next.connections.find(item => item.id === saved.defaultConnectionId);
-      setModelOptions(selected?.models ?? []);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load AI connection status.');
     } finally {
@@ -129,17 +127,21 @@ export default function AiConnectionsPanel() {
 
   const connections = useMemo(() => status?.connections ?? [], [status?.connections]);
   const defaultConnection = connections.find(item => item.id === preferences?.defaultConnectionId);
+  const modelOptions = modelsForConnection(connections, preferences?.defaultConnectionId);
 
   async function refreshModels(connectionId: AiConnectionId) {
+    setBusy(true);
+    setError('');
     try {
       const result = await requestJson<{ models: AiModelDescriptor[] }>(`/models?connectionId=${encodeURIComponent(connectionId)}`);
       invalidateAiProviderRequests();
-      setModelOptions(result.models);
-      setStatus(current => current ? ({ ...current, connections: current.connections.map(item => item.id === connectionId ? { ...item, models: result.models, state: 'connected' } : item) }) : current);
+      setStatus(current => current ? ({ ...current, connections: current.connections.map(item => item.id === connectionId && ['available', 'connected'].includes(item.state) ? { ...item, models: result.models, state: 'connected' } : item) }) : current);
       return result.models;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load models.');
       return [];
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -173,16 +175,16 @@ export default function AiConnectionsPanel() {
   async function changeDefaultConnection(connectionId: AiConnectionId) {
     const models = await refreshModels(connectionId);
     if (!preferences) return;
-    const modelId = models.find(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported' && Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true))?.id;
+    const modelId = models.find(isEligibleTextModel)?.id;
     if (!modelId) {
       setError('No model has a verified PCC operation for this connection. Refresh its catalog or choose another connection.');
       return;
     }
-    await savePreferences({ ...preferences, defaultConnectionId: connectionId, defaultTextModelId: modelId });
+    await savePreferences({ ...preferences, defaultConnectionId: connectionId, defaultTextModelId: modelId, defaultReasoningLevel: 'default' });
   }
 
   const selectedModel = modelOptions.find(model => model.id === (preferences?.defaultTextModelId ?? defaultConnection?.selectedModelId));
-  const eligibleDefaultModels = modelOptions.filter(model => model.availability.state === 'supported' && model.textGeneration.state === 'supported' && Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true));
+  const eligibleDefaultModels = modelOptions.filter(isEligibleTextModel);
   const supportedReasoning = selectedModel?.reasoning.state === 'supported'
     ? ['default', ...(selectedModel.reasoning.value ?? [])] as ReasoningLevel[]
     : ['default'] as ReasoningLevel[];
@@ -330,7 +332,27 @@ export default function AiConnectionsPanel() {
               </div>
               {connection.message && <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">{connection.message}</p>}
               <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">Observed requests: {typeof observed === 'number' ? observed : 'Not available'}</p>
-              <button type="button" className={`${buttonClass} mt-2`} disabled={busy || !['available', 'connected'].includes(connection.state)} onClick={() => void refreshModels(connection.id)}>Refresh model catalog</button>
+              <button type="button" className={`${buttonClass} mt-2`} disabled={loading || busy || !['available', 'connected'].includes(connection.state)} onClick={() => void refreshModels(connection.id)}>Refresh model catalog</button>
+
+              {['available', 'connected'].includes(connection.state) && (connection.id === 'gemini-managed' || status.localPersonalConnectionsAvailable) && (
+                <details className="mt-3 space-y-2 rounded border border-gray-200 p-2 dark:border-gray-700">
+                  <summary className="cursor-pointer text-sm font-medium">Model catalog ({connection.models.length})</summary>
+                  {connection.models.length === 0 ? <p className="text-xs text-gray-600 dark:text-gray-300">No models in the current catalog. Refresh the catalog to check account availability.</p> : (
+                    <ul aria-label={CONNECTION_LABELS[connection.id] + ' model catalog'} className="max-h-80 space-y-2 overflow-y-auto">
+                      {connection.models.map(model => (
+                        <li key={model.id} className="rounded border border-gray-200 p-2 text-xs dark:border-gray-700">
+                          <p className="break-words text-sm font-medium">{model.displayName}</p>
+                          <p className="break-all text-gray-600 dark:text-gray-300">{model.id}</p>
+                          <p>Catalog availability: {model.availability.state}</p>
+                          <p>Text operation eligibility: {isEligibleTextModel(model) ? 'At least one supported PCC operation' : 'Unavailable for active PCC text routing'}</p>
+                          <p>Reasoning registry: {model.reasoning.state === 'supported' ? ['default', ...(model.reasoning.value ?? [])].join(', ') : 'Default only (explicit reasoning unverified or unsupported)'}</p>
+                          {connection.id === 'chatgpt-plan' && <p className="text-gray-600 dark:text-gray-300">Registry metadata is informational; SIWC execution has not been live-qualified. PCC inference remains blocked by the current subscription budget policy.</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </details>
+              )}
 
               {connection.id === 'gemini-personal' && status.localPersonalConnectionsAvailable && <div className="mt-3 space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700">
                 <form onSubmit={saveGeminiKey} className="space-y-2">
@@ -383,12 +405,12 @@ export default function AiConnectionsPanel() {
             <div>
               <label htmlFor="default-ai-connection" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Default connection</label>
               <select id="default-ai-connection" className={inputClass} value={preferences.defaultConnectionId} disabled={busy} onChange={event => void changeDefaultConnection(event.target.value as AiConnectionId)}>
-                {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model => Object.values(model.operationCapabilities).some(capability => capability.state === 'supported' && capability.value === true))))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
+                {connections.filter(item => item.state !== 'unsupported-environment' && (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(isEligibleTextModel)))).map(item => <option key={item.id} value={item.id}>{CONNECTION_LABELS[item.id]}</option>)}
               </select>
             </div>
             <div>
               <label htmlFor="default-ai-model" className="mb-1 block text-sm font-medium text-gray-800 dark:text-gray-100">Default text model</label>
-              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : defaultConnection?.selectedModelId ?? '')} disabled={busy || (preferences.defaultConnectionId !== 'gemini-managed' && eligibleDefaultModels.length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' ? undefined : event.target.value, ...(selectedModel?.reasoning.state === 'supported' && !(selectedModel.reasoning.value ?? []).includes(preferences.defaultReasoningLevel ?? 'default') ? { defaultReasoningLevel: 'default' } : {}) })}>
+              <select id="default-ai-model" className={inputClass} value={preferences.defaultTextModelId ?? (preferences.defaultConnectionId === 'gemini-managed' ? '__provider_default__' : defaultConnection?.selectedModelId ?? '')} disabled={busy || (preferences.defaultConnectionId !== 'gemini-managed' && eligibleDefaultModels.length === 0)} onChange={event => void savePreferences({ ...preferences, defaultTextModelId: event.target.value === '__provider_default__' ? undefined : event.target.value, defaultReasoningLevel: 'default' })}>
                 {preferences.defaultConnectionId === 'gemini-managed' && <option value="__provider_default__">Gemini provider default</option>}
                 {eligibleDefaultModels.length === 0 && preferences.defaultConnectionId !== 'gemini-managed' && <option value="">No verified PCC operations available</option>}
                 {eligibleDefaultModels.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}

@@ -14,7 +14,7 @@ import {
 } from '../../lib/narrative/import/appendApply';
 import { findPossibleIdentityMatches } from '../../lib/narrative/import/identityResolver';
 import { deduplicateChunkProposals, verifyExtractionEvidence, type VerifiedExtraction } from '../../lib/narrative/import/proposalValidator';
-import { MAX_IMPORT_CHUNKS, calculateProcessedCoverage, segmentNarrativeSource, type SourceChunk } from '../../lib/narrative/import/segmentation';
+import { calculateProcessedCoverage, planNarrativeSourceAnalysis, type SourceChunk } from '../../lib/narrative/import/segmentation';
 import { countNarrativeWords, MAX_RETAINED_ORIGINAL_BYTES, parseNarrativeSource, type ParsedNarrativeSource } from '../../lib/narrative/import/sourceParser';
 import { manuscriptSections } from '../../lib/narrative/manuscriptModel';
 import {
@@ -168,6 +168,7 @@ export default function ImportWorkflow({
     source && segmentationComplete && failedChunks.length === 0 && completedChunkIds.size === chunks.length && chunks.length > 0 && !busy
   );
   const hasIncompleteCoverage = Boolean(source && (!segmentationComplete || failedChunks.length > 0 || completedChunkIds.size !== chunks.length));
+  const initialAnalysisPlan = useMemo(() => source && !busy ? planNarrativeSourceAnalysis(source.text, source.blocks, Math.max(0, MAX_EXTRACTION_CALLS - callsUsed)) : null, [source, busy, callsUsed]);
   const canAnalyze = Boolean(
     aiConfigured && source && !busy && sourceError === '' && (!parsedHasFileRetentionGap || confirmExtractedOnly) && (scope !== 'selective' || categories.length > 0)
   );
@@ -333,8 +334,9 @@ export default function ImportWorkflow({
     };
     if (!retry || !analysisConfiguration) setAnalysisConfiguration(runConfiguration);
     const planned = retry ? failedChunks : (() => {
-      const segmented = segmentNarrativeSource(source.text, source.blocks, smallerChunks ? 8_000 : undefined,
-        smallerChunks ? 250 : undefined, MAX_IMPORT_CHUNKS);
+      const segmented = smallerChunks
+        ? planNarrativeSourceAnalysis(source.text, source.blocks, callBudget - callsUsed, 8_000, 250)
+        : initialAnalysisPlan ?? planNarrativeSourceAnalysis(source.text, source.blocks, callBudget - callsUsed);
       setChunks(segmented.chunks); setSegmentationComplete(segmented.complete);
       setCompletedChunkIds(new Set()); setResults([]); setFailedChunks([]); setRejectedEvidenceCount(0);
       return segmented.chunks;
@@ -663,7 +665,15 @@ export default function ImportWorkflow({
 
           <label className="block text-sm" htmlFor="import-instructions">Optional import-specific guidance (cannot override faithful extraction)</label>
           <textarea id="import-instructions" className="min-h-20 w-full rounded border p-2 dark:bg-gray-950" maxLength={1000} value={instruction} onChange={(event) => { resetAnalysis(); setInstruction(event.target.value); }} />
-          <p className="text-sm">Analysis sends selected source segments to the app’s configured Gemini model. No analysis request is made until Analyze source.</p>
+          <p className="text-sm">Analysis sends selected source segments through the configured narrative-import AI route. No analysis request is made until Analyze source.</p>
+          {initialAnalysisPlan && (
+            <div className="space-y-1 rounded border border-gray-200 p-3 text-sm dark:border-gray-700" aria-label="Local analysis plan">
+              <p className="font-medium">Automatic analysis plan</p>
+              <p>{initialAnalysisPlan.chunks.length} planned source segment(s) · up to {initialAnalysisPlan.scheduledRequests} extraction request(s) in this pass.</p>
+              {!initialAnalysisPlan.completeWithinCallBudget && <p className="text-amber-800 dark:text-amber-200">The current limits permit only partial source coverage: {initialAnalysisPlan.unplannedChars.toLocaleString()} source character units remain outside this pass. The original manuscript is preserved.</p>}
+              <p className="text-xs text-gray-600 dark:text-gray-300">Local plan using existing segmentation and call ceilings. Provider preflight may reject a segment; this is not a token, quota, cost or completion guarantee.</p>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             <button type="button" className={workspaceButton} disabled={!source || busy || creating || (parsedHasFileRetentionGap && !confirmExtractedOnly)} onClick={() => { resetAnalysis(); setSourceOnlyMode(true); }}>Continue with source only</button>
             <button type="button" className={workspaceButton} disabled={!canAnalyze || callsUsed >= MAX_EXTRACTION_CALLS} onClick={() => void startAnalysis(false)}>Analyze source</button>

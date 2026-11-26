@@ -72,3 +72,20 @@ export function calculateProcessedCoverage(chunks: SourceChunk[]): Array<{ start
   }
   return merged;
 }
+
+/** Local-only preview of the existing extraction plan. It does not authorize provider calls. */
+export function planNarrativeSourceAnalysis(
+  text: string,
+  blocks: SourceBlock[],
+  remainingCalls: number,
+  maxChars = IMPORT_CHUNK_CHARS,
+  overlap = IMPORT_OVERLAP_CHARS,
+) {
+  if (!Number.isSafeInteger(remainingCalls) || remainingCalls < 0) throw new Error('Invalid extraction call budget.');
+  const segmented = segmentNarrativeSource(text, blocks, maxChars, overlap, MAX_IMPORT_CHUNKS);
+  const scheduledRequests = Math.min(remainingCalls, segmented.chunks.length);
+  const coveredChars = calculateProcessedCoverage(segmented.chunks.slice(0, scheduledRequests))
+    .reduce((total, span) => total + span.end - span.start, 0);
+  const unplannedChars = text.length - coveredChars;
+  return { ...segmented, scheduledRequests, unplannedChars, completeWithinCallBudget: unplannedChars === 0 && segmented.complete };
+}
