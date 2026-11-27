@@ -43,7 +43,7 @@ Exported through the UI and inspected the actual downloaded files:
 
 ## Known scope limits
 
-- PDF extraction reads selectable text; image-only pages are not OCR’d.
+- PDF extraction reads selectable text; image-only pages are not OCR’d. Text order can be approximate for columns, tables, unusual layouts and ligatures. PDF.js logged a standard-font configuration warning for the synthetic PDF, although its text extraction passed.
 - EPUB extraction is text based and can report partial or unsupported spine content. This synthetic EPUB contained only supported XHTML chapters.
 - DOCX extraction preserves paragraph text and recognized heading styles; it does not promise complete Word layout/media reconstruction. The parser rejects unsafe or unsupported ZIP layouts.
 - EPUB coverage is conditional; only a complete synthetic EPUB case was exercised in the UI. Existing EPUB parser tests separately cover unsupported and partial cases.
