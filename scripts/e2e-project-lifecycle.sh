@@ -69,8 +69,10 @@ async (bootstrap) => {
             return save.call(this, key, value);
           };
         });
+        await page.goto(base, { waitUntil: 'networkidle' });
+      } else {
+        await page.goto(base, { waitUntil: 'networkidle' });
       }
-      await page.goto(base, { waitUntil: 'networkidle' });
       if (kind === 'write-recovery') {
         const editor = page.getByPlaceholder('Start writing here…');
         const saved = () => page.getByText('Saved', { exact: true }).waitFor();

@@ -35,6 +35,20 @@ async (page) => {
   await context.route('**/api/ai/capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true }),
   }));
+  await context.route('**/api/ai/provider-hub/status', route => route.fulfill({ json: {
+    localPersonalConnectionsAvailable: false,
+    capabilityPolicyVersion: 'qa-synthetic-policy-v1',
+    credentialAuthorityIds: { 'gemini-managed': 'qa-synthetic-managed' },
+    connections: [{ id: 'gemini-managed', family: 'gemini', billing: 'host-managed-gemini', state: 'available',
+      selectedModelId: 'qa-synthetic-model', models: [{ id: 'qa-synthetic-model', displayName: 'Synthetic Import Model',
+        availability: { state: 'supported', value: true, evidence: [] },
+        textGeneration: { state: 'supported', value: true, evidence: [] },
+        structuredOutput: { state: 'supported', value: true, evidence: [] },
+        reasoning: { state: 'supported', value: ['default'], evidence: [] },
+        operationCapabilities: { 'narrative-import': { state: 'supported', value: true, evidence: [] } },
+        capabilityPolicyVersion: 'qa-synthetic-policy-v1' }]}],
+    preferences: { defaultConnectionId: 'gemini-managed' }, usage: { observedByConnection: {}, quota: { state: 'unknown' } },
+  } }));
   await context.route('**/api/narrative/import/extract', async route => {
     extractionCalls += 1;
     const request = route.request().postDataJSON();

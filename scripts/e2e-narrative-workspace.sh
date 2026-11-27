@@ -17,7 +17,11 @@ async (page) => {
   await context.route('**/api/**', async route => {
     const url = route.request().url();
     apiCalls.push(url);
-    if (!url.endsWith('/api/ai/capabilities')) paidApiCalls.push(url);
+    const request = route.request();
+    const path = new URL(url).pathname;
+    const isNonInferenceRead = request.method() === 'GET' &&
+      (path === '/api/ai/capabilities' || path === '/api/ai/provider-hub/status');
+    if (!isNonInferenceRead) paidApiCalls.push(`${request.method()} ${url}`);
     await route.abort();
   });
   const first = await context.newPage();
