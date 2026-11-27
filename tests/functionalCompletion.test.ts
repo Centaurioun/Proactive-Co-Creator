@@ -37,6 +37,7 @@ import {
   applyManuscriptSyncPatch,
   applyModelSyncProposal,
   computeSyncFreshness,
+  recordSyncReviewCheckpoint,
   validateManuscriptPatchBinding,
 } from '../lib/narrative/sync/syncProposals.ts';
 import {
@@ -558,6 +559,15 @@ describe('Package C — Diagnostics, readiness separation, intentional dispositi
 });
 
 describe('Package D — Bidirectional Manuscript <-> Model sync proposals & patches', () => {
+  it('marks a sync review checkpoint unsaved without advancing the content revision', () => {
+    const { project } = makeProjectWithManuscript('Checkpoint persistence', 'A synthetic scene.');
+    const checked = recordSyncReviewCheckpoint(project, 'model-to-manuscript', 'Synthetic review complete.', 1234);
+
+    assert.equal(checked.revision, project.revision);
+    assert.equal(checked.persistedRevision, undefined, 'same-revision narrative metadata must be flushed before a later exact-base apply');
+    assert.equal(checked.narrative?.syncState?.lastReviewedRevision, project.revision);
+  });
+
   it('computes freshness, applies non-destructive model proposals, and enforces exact manuscript patch binding', () => {
     const { project, undoState } = makeProjectWithManuscript(
       'Sync Novel',

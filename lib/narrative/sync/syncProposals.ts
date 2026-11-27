@@ -87,6 +87,7 @@ export function recordSyncReviewCheckpoint(
   const ensured = ensureNarrativeEnvelope(project);
   return {
     ...ensured,
+    persistedRevision: undefined,
     narrative: {
       ...ensured.narrative!,
       syncState: {
