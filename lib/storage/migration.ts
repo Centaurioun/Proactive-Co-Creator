@@ -384,7 +384,13 @@ function migrateSnapshotPayload(
   };
 
   snapshot = syncStoryBibleWithSceneEntity(snapshot);
-  snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot);
+  const decisionProjectionTime =
+    typeof obj.updatedAt === 'number' && Number.isFinite(obj.updatedAt)
+      ? obj.updatedAt
+      : typeof obj.createdAt === 'number' && Number.isFinite(obj.createdAt)
+        ? obj.createdAt
+        : now;
+  snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot, decisionProjectionTime);
   if (!snapshot.refinedPrompt.trim()) {
     snapshot.refinedPrompt = synthesizeRefinedPrompt(snapshot);
   }

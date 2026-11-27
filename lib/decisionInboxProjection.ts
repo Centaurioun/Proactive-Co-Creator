@@ -255,14 +255,17 @@ function appendRetainedDecisions(ctx: ProjectionContext): void {
   }
 }
 
-export function buildDecisionInboxFromSnapshot(snapshot: ProjectSnapshot): DecisionItem[] {
+export function buildDecisionInboxFromSnapshot(
+  snapshot: ProjectSnapshot,
+  now: number = Date.now()
+): DecisionItem[] {
   const ctx: ProjectionContext = {
     snapshot,
     existingById: new Map(snapshot.decisions.map((d) => [d.id, d])),
     items: [],
     emittedIds: new Set<string>(),
     pendingClarTargetKeys: new Set<string>(),
-    now: Date.now(),
+    now,
   };
 
   appendClarificationDecisions(ctx);

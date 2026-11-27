@@ -204,6 +204,55 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
     assert.deepEqual((await loadProjectsFromIndexedDb()).map(project => project.id).sort(), [existing.id, local.id]);
   });
 
+  it('S1: decisions derived while migrating a schema 3 record keep the observed base persistable', async () => {
+    const raw = structuredClone(createSampleProject(1000));
+    raw.id = 'migration-derived-decisions-base';
+    const preservedDecisionId = raw.snapshot.decisions[0].id;
+    raw.snapshot.decisions = [{ ...raw.snapshot.decisions[0], createdAt: 4321 }];
+    const rawJson = JSON.stringify(raw);
+    fakeIdb.records.set(raw.id, structuredClone(raw));
+
+    const originalNow = Date.now;
+    let now = 5000;
+    Date.now = () => ++now;
+    try {
+      const firstRead = await loadProjectsFromIndexedDbDetailed();
+      const base = firstRead.projects.find(project => project.id === raw.id)!;
+      const firstDecisionTimestamps = base.snapshot.decisions.map(({ id, createdAt }) => [id, createdAt]);
+      assert.ok(firstDecisionTimestamps.length > 0, 'Migration derives pending decisions from the canonical snapshot.');
+      assert.equal(
+        base.snapshot.decisions.find(({ id }) => id === preservedDecisionId)?.createdAt,
+        4321,
+        'Migration preserves createdAt for an existing decision with the same identity.'
+      );
+      assert.equal(JSON.stringify(fakeIdb.records.get(raw.id)), rawJson, 'Reading and migrating does not rewrite the raw IDB record.');
+
+      const candidate = {
+        ...base,
+        revision: base.revision + 1,
+        persistedRevision: base.revision,
+        updatedAt: ++now,
+        snapshot: { ...base.snapshot, freeformNotes: 'Synthetic first edit after reload.' },
+      };
+      const saved = await persistProjectDurably(candidate, {
+        expectedBaseProject: base,
+        expectedPersistedRevision: base.revision,
+      });
+
+      assert.equal(saved.saved, true, saved.error ?? 'A save based on the unchanged raw IndexedDB record should commit.');
+      const secondRead = await loadProjectsFromIndexedDbDetailed();
+      const afterCommit = secondRead.projects.find(project => project.id === raw.id)!;
+      assert.deepEqual(
+        afterCommit.snapshot.decisions.map(({ id, createdAt }) => [id, createdAt]),
+        firstDecisionTimestamps,
+        'Once written, the derived decisions retain their timestamps across reload.'
+      );
+      assert.equal(afterCommit.snapshot.freeformNotes, 'Synthetic first edit after reload.');
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   it('S1: a reload restores history without writing over a newer cross-tab commit', async () => {
     const base = { ...createSampleProject(), id: 'reload-observed-base' };
     const revision2 = { ...base, revision: 2, persistedRevision: 2, undoHistory: {
