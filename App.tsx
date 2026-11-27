@@ -149,6 +149,7 @@ function App() {
   const restorePendingRef = useRef(false);
 
   const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
+  const [showPlanInspector, setShowPlanInspector] = useState<boolean>(true);
   const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [showInfoModal, setShowInfoModal] = useState<boolean>(false);
@@ -674,6 +675,7 @@ function App() {
     target?: 'revision-history' | 'project-management' | 'export-content'
   ) => {
     if (!allowNavigation()) return;
+    setShowPlanInspector(true);
     setRightPanelTab(panel);
     setMobileTab('inspector');
     if (target) setHistoryTarget((previous) => ({ id: target, sequence: (previous?.sequence ?? 0) + 1 }));
@@ -684,6 +686,7 @@ function App() {
     if (!allowNavigation()) return;
     setWorkspaceMode('plan');
     if (section === 'story-bible') {
+      setShowPlanInspector(true);
       setRightPanelTab('story-bible');
       setMobileTab('inspector');
     } else if (section === 'history') {
@@ -1060,6 +1063,8 @@ function App() {
           pendingDecisionCount={pendingDecisionCount}
           mobileTab={mobileTab}
           onMobileTabChange={setMobileTab}
+          showInspector={showPlanInspector}
+          onToggleInspector={() => setShowPlanInspector((value) => !value)}
           entities={snapshot.entities}
           relationships={snapshot.relationships}
           selectedEntityId={selectedEntityId}
@@ -1073,6 +1078,7 @@ function App() {
             setSelectedEntityId(null);
           }}
           onOpenInspectorTab={(tab: PlanInspectorDestination) => {
+            setShowPlanInspector(true);
             setRightPanelTab(tab);
             setMobileTab('inspector');
           }}

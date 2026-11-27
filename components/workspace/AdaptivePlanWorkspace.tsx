@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import type { Entity, Relationship } from '../../shared/types';
 
 export type PlanMobileTab = 'decisions' | 'graph' | 'inspector' | 'output';
@@ -14,6 +14,8 @@ export interface AdaptivePlanWorkspaceProps {
   pendingDecisionCount: number;
   mobileTab: PlanMobileTab;
   onMobileTabChange: (tab: PlanMobileTab) => void;
+  showInspector: boolean;
+  onToggleInspector: () => void;
   entities: Entity[];
   relationships: Relationship[];
   selectedEntityId: string | null;
@@ -60,6 +62,8 @@ const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
   pendingDecisionCount,
   mobileTab,
   onMobileTabChange,
+  showInspector,
+  onToggleInspector,
   entities,
   relationships,
   selectedEntityId,
@@ -76,8 +80,8 @@ const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
   graphControls,
 }) => {
   const [showInbox, setShowInbox] = useState(false);
-  const [showInspector, setShowInspector] = useState(true);
   const [entityQuery, setEntityQuery] = useState('');
+  const moreViewsRef = useRef<HTMLDetailsElement>(null);
 
   const visibleEntities = useMemo(() => {
     const query = entityQuery.trim().toLocaleLowerCase();
@@ -98,6 +102,7 @@ const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
   }, [relationships, entityQuery]);
 
   const openInspector = (tab: PlanInspectorDestination) => {
+    if (moreViewsRef.current) moreViewsRef.current.open = false;
     onOpenInspectorTab(tab);
     onMobileTabChange('inspector');
   };
@@ -123,7 +128,7 @@ const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
           <button type="button" className={tabButtonClass} aria-expanded={showInbox} onClick={() => setShowInbox((value) => !value)}>
             Inbox <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-900 dark:bg-amber-950 dark:text-amber-200">{pendingDecisionCount}</span>
           </button>
-          <button type="button" className={tabButtonClass} aria-expanded={showInspector} onClick={() => setShowInspector((value) => !value)}>
+          <button type="button" className={tabButtonClass} aria-expanded={showInspector} onClick={onToggleInspector}>
             Context
           </button>
           <button type="button" className={tabButtonClass} aria-expanded={outputExpanded} onClick={onToggleOutput}>
@@ -132,7 +137,7 @@ const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
           <span aria-hidden="true" className="mx-0.5 hidden h-5 border-l border-pcc-line sm:block dark:border-pcc-dark-line" />
           <button type="button" className={`${tabButtonClass} hidden sm:inline-flex`} onClick={() => openInspector('story-bible')}>Story Bible</button>
           <button type="button" className={`${tabButtonClass} hidden sm:inline-flex`} onClick={() => openInspector('opportunities')}>Opportunities</button>
-          <details className="relative hidden sm:block">
+          <details ref={moreViewsRef} className="relative hidden sm:block">
             <summary className={`${tabButtonClass} flex cursor-pointer list-none items-center`}>More views</summary>
             <div className="absolute right-0 z-20 mt-1 grid min-w-40 gap-1 rounded-lg border border-pcc-line bg-pcc-surface p-1.5 shadow-lg dark:border-pcc-dark-line dark:bg-pcc-dark-surface">
               <button type="button" className={`${tabButtonClass} text-left`} onClick={() => openInspector('timeline')}>Timeline</button>
