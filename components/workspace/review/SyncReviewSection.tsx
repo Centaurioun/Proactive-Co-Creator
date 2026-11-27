@@ -24,7 +24,7 @@ export interface SyncReviewResultState {
 interface SyncReviewSectionProps {
   project: CreativeProject;
   sectionCount: number;
-  aiConfigured: boolean;
+  syncAvailability: { eligible: boolean; reason?: string };
   syncFreshness: { statusLabel: string; coverageNote: string };
   syncDirection: 'manuscript-to-model' | 'model-to-manuscript';
   setSyncDirection: (direction: 'manuscript-to-model' | 'model-to-manuscript') => void;
@@ -50,7 +50,7 @@ interface SyncReviewSectionProps {
 export const SyncReviewSection: React.FC<SyncReviewSectionProps> = ({
   project,
   sectionCount,
-  aiConfigured,
+  syncAvailability,
   syncFreshness,
   syncDirection,
   setSyncDirection,
@@ -105,7 +105,7 @@ export const SyncReviewSection: React.FC<SyncReviewSectionProps> = ({
       </p>
       <button
         type="button"
-        disabled={syncBusy || !aiConfigured || !syncBudget.withinLimit || sectionCount === 0}
+        disabled={syncBusy || !syncAvailability.eligible || !syncBudget.withinLimit || sectionCount === 0}
         onClick={onRunSyncAnalysis}
         className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-45"
       >
@@ -115,6 +115,7 @@ export const SyncReviewSection: React.FC<SyncReviewSectionProps> = ({
             ? 'Analyze Manuscript Changes'
             : 'Generate Scoped Manuscript Patches'}
       </button>
+      {!syncAvailability.eligible && <p role="status" className="text-xs text-amber-800 dark:text-amber-300">AI sync is unavailable: {syncAvailability.reason ?? 'not currently eligible.'}</p>}
       {syncError && <p role="alert" className="text-xs text-red-700 dark:text-red-300">{syncError}</p>}
       {syncMessage && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{syncMessage}</p>}
 

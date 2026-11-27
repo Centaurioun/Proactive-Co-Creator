@@ -11,10 +11,17 @@ read -r -d '' scenario <<'JS' || true
 async (bootstrap) => {
   const base = new URL(bootstrap.url()).origin;
   const failures = [];
+  const scenarioEvidence = [];
   for (const kind of ['delete', 'append', 'archive', 'backup-retry', 'write-recovery']) {
     const context = await bootstrap.context().browser().newContext();
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
+    const browserEvidence = { pageErrors: [], consoleErrors: [], failedRequests: [], apiRequests: [], apiResponses: [] };
+    page.on('pageerror', error => browserEvidence.pageErrors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error') browserEvidence.consoleErrors.push(message.text()); });
+    page.on('requestfailed', request => browserEvidence.failedRequests.push({ url: request.url(), error: request.failure()?.errorText }));
+    page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) browserEvidence.apiRequests.push({ method: request.method(), path: new URL(request.url()).pathname }); });
+    page.on('response', response => { if (new URL(response.url()).pathname.startsWith('/api/')) browserEvidence.apiResponses.push({ status: response.status(), path: new URL(response.url()).pathname }); });
     const projectHub = () => page.getByRole('banner').getByRole('button', { name: 'Projects', exact: true }).click();
     const open = (name) => name === 'Projects' ? projectHub() : page.getByRole('navigation', { name: 'Narrative workspace' })
       .getByRole('button', { name, exact: true }).click();
@@ -41,7 +48,17 @@ async (bootstrap) => {
       if (path === '/api/ai/provider-hub/status') return route.fulfill({ json: {
         capabilityPolicyVersion: 'qa-synthetic-policy-v1',
         credentialAuthorityIds: { 'gemini-managed': 'qa-synthetic-authority' },
-        connections: [{ id: 'gemini-managed', selectedModelId: 'qa-synthetic-model', models: [{ id: 'qa-synthetic-model', operationCapabilities: {} }] }],
+        preferences: { defaultConnectionId: 'gemini-managed' },
+        connections: [{ id: 'gemini-managed', family: 'gemini', billing: 'host-managed-gemini', state: 'available', selectedModelId: 'qa-synthetic-model', models: [{
+          id: 'qa-synthetic-model', displayName: 'Synthetic managed model',
+          availability: { state: 'supported', value: true, evidence: [] },
+          textGeneration: { state: 'supported', value: true, evidence: [] },
+          structuredOutput: { state: 'supported', value: true, evidence: [] },
+          reasoning: { state: 'supported', value: ['default'], evidence: [] },
+          operationCapabilities: { 'narrative-import': { state: 'supported', value: true, evidence: [] } },
+          capabilityPolicyVersion: 'qa-synthetic-policy-v1',
+        }] }],
+        usage: { observedByConnection: {}, quota: { state: 'unknown' } },
       } });
       if (path === '/api/narrative/import/extract') {
         return route.fulfill({ json: { extraction: { entities: [], relationships: [], findings: [], ambiguities: [] } } });
@@ -69,8 +86,10 @@ async (bootstrap) => {
             return save.call(this, key, value);
           };
         });
+        await page.goto(base, { waitUntil: 'networkidle' });
+      } else {
+        await page.goto(base, { waitUntil: 'networkidle' });
       }
-      await page.goto(base, { waitUntil: 'networkidle' });
       if (kind === 'write-recovery') {
         const editor = page.getByPlaceholder('Start writing here…');
         const saved = () => page.getByText('Saved', { exact: true }).waitFor();
@@ -132,7 +151,13 @@ async (bootstrap) => {
             return deleteOriginal.apply(this, args);
           };
         });
+        let deletionConfirmation = '';
+        page.once('dialog', async (dialog) => {
+          deletionConfirmation = dialog.message();
+          await dialog.accept();
+        });
         await page.getByRole('button', { name: 'Delete project Doomed project' }).click();
+        if (!deletionConfirmation.includes('Doomed project')) throw new Error('Project deletion did not request confirmation.');
         await page.waitForFunction(() => Boolean(window.releaseDeletion));
         await create('Created during deletion');
         await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('proactive_co_creator_projects_v2') || '{}'))
@@ -227,15 +252,21 @@ async (bootstrap) => {
         if (projectOptions.includes('Archived B')) throw new Error('Failed archive project appeared in the list.');
       }
     } catch (error) {
-      failures.push(kind + ': ' + error.message + '\nPAGE_TEXT=' + await page.locator('body').innerText().catch(() => 'unavailable'));
+      failures.push(kind + ': ' + error.message + '\n' + JSON.stringify({
+        url: page.url(), title: await page.title().catch(() => 'unavailable'),
+        pageText: await page.locator('body').innerText().catch(() => 'unavailable'),
+        rootState: await page.locator('#root').evaluate(root => ({ childCount: root.childElementCount, htmlLength: root.innerHTML.length, text: root.textContent?.slice(0, 1200) })).catch(() => 'unavailable'),
+        browserEvidence,
+      }, null, 2));
     } finally {
+      scenarioEvidence.push({ kind, ...browserEvidence });
       await context.close();
     }
   }
   if (failures.length) throw new Error(failures.join('\n'));
-  return 'PROJECT_LIFECYCLE_PASS';
+  return JSON.stringify({ status: 'PROJECT_LIFECYCLE_PASS', scenarios: scenarioEvidence });
 }
 JS
 output="$(playwright-cli -s="$session" run-code "$scenario" 2>&1)" || { echo "$output" >&2; exit 1; }
 echo "$output"
-[[ "$output" == *'"PROJECT_LIFECYCLE_PASS"'* ]]
+printf '%s' "$output" | node scripts/qa/validate-e2e-result.mjs --status PROJECT_LIFECYCLE_PASS --scenarios delete,append,archive,backup-retry,write-recovery

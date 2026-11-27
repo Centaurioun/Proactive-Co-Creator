@@ -259,7 +259,7 @@ test('explicit ChatGPT selection without a verified catalog model fails before p
       body: JSON.stringify({}),
     });
     assert.equal(response.status, 422);
-    assert.match((await response.text()), /select a model|model list/i);
+    assert.match((await response.text()), /qualified only for the explicitly enabled local Story operation/i);
   });
 });
 

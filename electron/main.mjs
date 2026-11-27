@@ -2,11 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
+import { persistEncryptedSession, readEncryptedSession } from './sessionPersistence.mjs';
 import {
   chatGptSessionStore,
   createApp,
-  setChatGptCatalogPersistenceHandler,
-  setChatGptModels,
   setPreferences,
   setPreferencesPersistenceHandler,
 } from '../dist-electron/server.mjs';
@@ -58,52 +57,26 @@ function writeJsonSafe(filePath, value) {
 function initDesktopPersistence() {
   const userDataDir = app.getPath('userData');
   const sessionFile = path.join(userDataDir, 'chatgpt-session.enc');
-  const catalogFile = path.join(userDataDir, 'chatgpt-models.json');
   const prefsFile = path.join(userDataDir, 'provider-preferences.json');
 
-  // 1. Restore ChatGPT OAuth session (encrypted via macOS Keychain / Electron safeStorage)
+  // Restore encrypted OAuth state only. If unavailable, reconnect explicitly.
   try {
-    if (fs.existsSync(sessionFile)) {
-      const raw = fs.readFileSync(sessionFile);
-      const jsonText = safeStorage.isEncryptionAvailable()
-        ? safeStorage.decryptString(raw)
-        : raw.toString('utf8');
-      const savedTokens = JSON.parse(jsonText);
-      if (savedTokens && typeof savedTokens.accessToken === 'string') {
-        chatGptSessionStore.install(savedTokens);
-      }
-    }
+    const savedTokens = readEncryptedSession(sessionFile, safeStorage);
+    if (savedTokens) chatGptSessionStore.install(savedTokens);
+    else if (fs.existsSync(sessionFile)) console.warn('PCC: encrypted ChatGPT session could not be restored; reconnect explicitly.');
   } catch {
-    // Corrupted or unreadable session file; user can reconnect cleanly
+    console.warn('PCC: saved ChatGPT session is invalid; reconnect explicitly.');
   }
-
   chatGptSessionStore.setPersistenceHandler((tokens) => {
-    try {
-      if (!tokens) {
-        if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
-        return;
-      }
-      fs.mkdirSync(userDataDir, { recursive: true });
-      const payload = JSON.stringify(tokens);
-      const data = safeStorage.isEncryptionAvailable()
-        ? safeStorage.encryptString(payload)
-        : Buffer.from(payload, 'utf8');
-      fs.writeFileSync(sessionFile, data, { mode: 0o600 });
-    } catch {
-      // Non-fatal persistence error
+    if (!persistEncryptedSession(sessionFile, tokens, safeStorage)) {
+      console.warn('PCC: secure ChatGPT session persistence unavailable; session may need reauthorization after restart.');
     }
   });
 
-  // 2. Restore cached ChatGPT model catalog
-  const savedCatalog = readJsonSafe(catalogFile);
-  if (Array.isArray(savedCatalog) && savedCatalog.length > 0) {
-    setChatGptModels(savedCatalog);
-  }
-  setChatGptCatalogPersistenceHandler((models) => {
-    writeJsonSafe(catalogFile, models);
-  });
+  // Do not restore a persisted model descriptor as current account verification.
+  // The user can explicitly refresh the catalog once per new server process.
 
-  // 3. Restore provider preferences (defaulting to chatgpt-plan in desktop mode)
+  // Restore provider preferences (defaulting to chatgpt-plan in desktop mode)
   const savedPrefs = readJsonSafe(prefsFile);
   if (savedPrefs && typeof savedPrefs.defaultConnectionId === 'string') {
     setPreferences(savedPrefs);

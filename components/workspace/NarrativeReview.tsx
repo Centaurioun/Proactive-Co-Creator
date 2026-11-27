@@ -49,7 +49,9 @@ import { EvidenceAuditSection } from './review/EvidenceAuditSection';
 interface Props {
   project: CreativeProject;
   checks: ConsistencyIssue[];
-  aiConfigured?: boolean;
+  diagnosticsAvailability?: { eligible: boolean; reason?: string };
+  syncAvailability?: { eligible: boolean; reason?: string };
+  autoAnalysisDiagnosticsAvailability?: { eligible: boolean; reason?: string };
   openChecks: () => void;
   openHistory: () => void;
   openOutput: () => void;
@@ -96,7 +98,9 @@ const DEFAULT_AUTO_PREFS: NonNullable<NarrativeRecords['automationPreferences']>
 export default function NarrativeReview({
   project,
   checks,
-  aiConfigured = false,
+  diagnosticsAvailability = { eligible: false, reason: 'AI diagnostics are unavailable.' },
+  syncAvailability = { eligible: false, reason: 'AI manuscript sync is unavailable.' },
+  autoAnalysisDiagnosticsAvailability = { eligible: false, reason: 'Semantic auto-analysis is unavailable.' },
   openChecks,
   openHistory,
   openOutput,
@@ -220,8 +224,8 @@ export default function NarrativeReview({
   );
 
   const runSemanticDiagnostics = () => {
-    if (!aiConfigured) {
-      setDiagError('Server Gemini API key is not configured. Use Run Local Checks or configure server AI credentials.');
+    if (!diagnosticsAvailability.eligible) {
+      setDiagError(`${diagnosticsAvailability.reason ?? 'AI diagnostics are unavailable.'} Use Run Local Checks.`);
       return;
     }
     if (!onRunSemanticDiagnostics) return;
@@ -279,8 +283,8 @@ export default function NarrativeReview({
   };
 
   const requestAiFixesForIssue = (issue: NarrativeIssue) => {
-    if (!aiConfigured) {
-      setFixError('Server Gemini API key is not configured. Deterministic local fixes remain available above.');
+    if (!diagnosticsAvailability.eligible) {
+      setFixError(`${diagnosticsAvailability.reason ?? 'AI diagnostics are unavailable.'} Deterministic local fixes remain available above.`);
       return;
     }
     setFixError('');
@@ -343,8 +347,8 @@ export default function NarrativeReview({
       setSyncError('Add or import at least one Working Manuscript section before running sync.');
       return;
     }
-    if (!aiConfigured) {
-      setSyncError('Server Gemini API key is not configured. Manuscript ↔ Model AI sync requires server credentials.');
+    if (!syncAvailability.eligible) {
+      setSyncError(syncAvailability.reason ?? 'AI manuscript sync is unavailable.');
       return;
     }
     const context = captureProposalReviewContext(project);
@@ -411,7 +415,7 @@ export default function NarrativeReview({
           sections={sections}
           readiness={readiness}
           issues={issues}
-          aiConfigured={aiConfigured}
+          diagnosticsAvailability={diagnosticsAvailability}
           diagScope={diagScope}
           setDiagScope={setDiagScope}
           diagTargetId={diagTargetId}
@@ -452,7 +456,7 @@ export default function NarrativeReview({
         <SyncReviewSection
           project={project}
           sectionCount={sections.length}
-          aiConfigured={aiConfigured}
+          syncAvailability={syncAvailability}
           syncFreshness={syncFreshness}
           syncDirection={syncDirection}
           setSyncDirection={setSyncDirection}
@@ -470,7 +474,7 @@ export default function NarrativeReview({
 
         {onUpdateAutomationPreferences && (
           <AutoAnalysisSettingsSection
-            aiConfigured={aiConfigured}
+            autoAnalysisDiagnosticsAvailability={autoAnalysisDiagnosticsAvailability}
             autoPrefs={autoPrefs}
             autoAnalysisCallsUsed={autoAnalysisCallsUsed}
             onUpdateAutomationPreferences={onUpdateAutomationPreferences}

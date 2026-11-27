@@ -1,0 +1,646 @@
+{
+  "commitUnderTest": "03bd1644ddb2330102ec89f2a9cd9afbb23b3a57",
+  "verificationEnvironment": {
+    "server": "http://127.0.0.1:4322",
+    "configured": false,
+    "data": "synthetic fixtures"
+  },
+  "targetedE2EResults": {
+    "projectLifecycle": {
+      "status": "PROJECT_LIFECYCLE_PASS",
+      "scenarioCount": 5,
+      "scenarios": [
+        {
+          "kind": "delete",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            }
+          ]
+        },
+        {
+          "kind": "append",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/import/extract"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/import/extract"
+            }
+          ]
+        },
+        {
+          "kind": "archive",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            }
+          ]
+        },
+        {
+          "kind": "backup-retry",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/health"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/health"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            }
+          ]
+        },
+        {
+          "kind": "write-recovery",
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            }
+          ]
+        }
+      ]
+    },
+    "aiOwnership": {
+      "status": "AI_OWNERSHIP_PASS",
+      "scenarioCount": 6,
+      "scenarios": [
+        {
+          "kind": "switch",
+          "routeCalls": 1,
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ]
+        },
+        {
+          "kind": "edit",
+          "routeCalls": 1,
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ]
+        },
+        {
+          "kind": "pause",
+          "routeCalls": 1,
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ]
+        },
+        {
+          "kind": "supersede",
+          "routeCalls": 2,
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/diagnostics/analyze"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/diagnostics/analyze"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/diagnostics/analyze"
+            }
+          ]
+        },
+        {
+          "kind": "batch",
+          "routeCalls": 2,
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "POST",
+              "path": "/api/batch-edit"
+            },
+            {
+              "method": "POST",
+              "path": "/api/batch-edit"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/batch-edit"
+            },
+            {
+              "status": 200,
+              "path": "/api/batch-edit"
+            }
+          ]
+        },
+        {
+          "kind": "fixes",
+          "routeCalls": 2,
+          "diagnosticFixRevision": {
+            "before": 2,
+            "after": 4
+          },
+          "diagnosticAnalyzeCalls": 1,
+          "diagnosticFixCalls": 1,
+          "pageErrors": [],
+          "consoleErrors": [],
+          "apiRequests": [
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "method": "GET",
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/diagnostics/analyze"
+            },
+            {
+              "method": "POST",
+              "path": "/api/narrative/diagnostics/suggest-fixes"
+            }
+          ],
+          "apiResponses": [
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/capabilities"
+            },
+            {
+              "status": 200,
+              "path": "/api/ai/provider-hub/status"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/diagnostics/analyze"
+            },
+            {
+              "status": 200,
+              "path": "/api/narrative/diagnostics/suggest-fixes"
+            }
+          ]
+        }
+      ]
+    },
+    "stage2StrictMode": {
+      "status": "STAGE2_STRICT_MODE_PASS",
+      "scenario": "strict-mode-late-response",
+      "enhancementCalls": 2
+    },
+    "productionCi": {
+      "runId": 46044652860,
+      "headSha": "5acfbef3c96a8c1787a3553bda0478a2ea80faa9",
+      "conclusion": "success",
+      "verifyMatrix": {
+        "nodeVersions": [
+          "22.13.0",
+          "22.x",
+          "24.x"
+        ],
+        "typecheck": "success",
+        "lint": "success",
+        "tests": "success",
+        "productionBuild": "success"
+      },
+      "browserE2E": {
+        "baseUrl": "http://127.0.0.1:3000",
+        "startedAt": "2026-11-27T17:50:21.221Z",
+        "passed": true,
+        "scenarios": [
+          {
+            "id": "E2E-A",
+            "status": "PASS",
+            "durationMs": 4127,
+            "apiHits": 4,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-B",
+            "status": "PASS",
+            "durationMs": 3706,
+            "apiHits": 4,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-C",
+            "status": "PASS",
+            "durationMs": 2977,
+            "apiHits": 4,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-D",
+            "status": "PASS",
+            "durationMs": 1914,
+            "apiHits": 2,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-E",
+            "status": "PASS",
+            "durationMs": 5894,
+            "apiHits": 4,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-F",
+            "status": "PASS",
+            "durationMs": 4366,
+            "apiHits": 4,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-G",
+            "status": "PASS",
+            "durationMs": 2464,
+            "apiHits": 2,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-H+I",
+            "status": "PASS",
+            "durationMs": 10228,
+            "apiHits": 2,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-J",
+            "status": "PASS",
+            "durationMs": 1813,
+            "apiHits": 2,
+            "pageErrors": [],
+            "consoleErrors": []
+          },
+          {
+            "id": "E2E-K",
+            "status": "PASS",
+            "durationMs": 1804,
+            "apiHits": 1,
+            "pageErrors": [],
+            "consoleErrors": [
+              "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+            ]
+          }
+        ],
+        "finishedAt": "2026-11-27T17:51:00.961Z",
+        "summary": [
+          "E2E-A: PASS",
+          "E2E-B: PASS",
+          "E2E-C: PASS",
+          "E2E-D: PASS",
+          "E2E-E: PASS",
+          "E2E-F: PASS",
+          "E2E-G: PASS",
+          "E2E-H: PASS",
+          "E2E-I: PASS",
+          "E2E-J: PASS",
+          "E2E-K: PASS"
+        ]
+      }
+    }
+  },
+  "finalCandidateSHA": "5acfbef3c96a8c1787a3553bda0478a2ea80faa9"
+}

@@ -1,5 +1,6 @@
-import type { AiCapability, AiConnectionId, AiModelDescriptor, AiReasoningLevel, ProviderPreferences } from '../server/providers/contracts';
+import type { AiCapability, AiConnectionId, AiModelDescriptor, AiProviderSelection, AiReasoningLevel, ProviderPreferences } from '../server/providers/contracts';
 import type { AiOperation } from '../server/aiBudget';
+import { GEMINI_MODELS } from '../server/models';
 
 export const PROVIDER_PREFERENCE_OPERATIONS = [
   ['analyze', 'Analysis'],
@@ -141,4 +142,129 @@ export function isEligibleTextModel(model: EligibilityDescriptor): boolean {
 /** A saved preference needs verified text capability, not an enabled operation. */
 export function isSelectableTextPreferenceModel(model: Pick<EligibilityDescriptor, 'availability' | 'textGeneration'>): boolean {
   return model.availability.state === 'supported' && model.textGeneration.state === 'supported';
+}
+
+/** A local status refresh can confirm an in-memory explicit catalog refresh,
+ * never promote a disk cache or another credential authority to fresh. */
+export function catalogVerificationFingerprint(
+  status: {
+    capabilityPolicyVersion: string;
+    credentialAuthorityIds: Partial<Record<AiConnectionId, string>>;
+    connections: readonly { id: string; state: string; models: unknown[] }[];
+  },
+  connectionId: AiConnectionId,
+): string | undefined {
+  const connection = status.connections.find(item => item.id === connectionId);
+  const authority = status.credentialAuthorityIds[connectionId];
+  if (!authority || !status.capabilityPolicyVersion || !connection ||
+      !['available', 'connected'].includes(connection.state)) return undefined;
+  return JSON.stringify([connectionId, authority, status.capabilityPolicyVersion, connection.models]);
+}
+
+/** UI-only early rejection. Final admission remains on the server.
+ * Image retains the existing managed-Gemini route; Story has its own preflight. */
+export function chatGptOperationBlockReason(
+  operation: AiOperation,
+  preferences?: ProviderPreferences,
+): string | undefined {
+  if (operation === 'story' || operation === 'image') return undefined;
+  const selectedConnection = preferences?.operationOverrides?.[operation]?.connectionId ?? preferences?.defaultConnectionId;
+  return selectedConnection === 'chatgpt-plan'
+    ? 'ChatGPT plan is currently qualified only for local Story with GPT-6 Luna and Default reasoning. Choose a compatible connection explicitly for ' + operation + ' in AI Settings.'
+    : undefined;
+}
+
+
+export interface OperationEligibility {
+  eligible: boolean;
+  connectionId: AiConnectionId;
+  modelId?: string;
+  reasoningLevel?: AiReasoningLevel;
+  reason?: string;
+}
+
+/** Resolves the UI's effective route and explains catalog eligibility. This is
+ * advisory only; request admission remains enforced by the server. */
+export function resolveOperationEligibility(
+  status: {
+    connections: readonly {
+      id: AiConnectionId;
+      state: string;
+      selectedModelId?: string;
+      models: readonly {
+        id: string;
+        availability: { state: string };
+        textGeneration: { state: string };
+        reasoning?: { state: string; value?: unknown };
+        operationCapabilities: Partial<Record<AiOperation, { state: string; value?: unknown; reason?: string }>>;
+      }[];
+    }[];
+    preferences: {
+      defaultConnectionId: AiConnectionId;
+      defaultTextModelId?: string;
+      defaultReasoningLevel?: AiReasoningLevel;
+      operationOverrides?: Partial<Record<AiOperation, Partial<AiProviderSelection>>>;
+    };
+  },
+  operation: AiOperation,
+  chatGptStoryLocalActivation = false,
+): OperationEligibility {
+  const { preferences } = status;
+  const override = preferences.operationOverrides?.[operation];
+  const connectionId = override?.connectionId ?? preferences.defaultConnectionId;
+  const modelId = override?.modelId ?? preferences.defaultTextModelId ??
+    (connectionId === 'gemini-managed' ? status.connections.find(item => item.id === connectionId)?.selectedModelId : undefined);
+  const reasoningLevel = override?.reasoningLevel ?? preferences.defaultReasoningLevel ?? 'default';
+  const connection = status.connections.find(item => item.id === connectionId);
+  const fail = (reason: string): OperationEligibility => ({ eligible: false, connectionId, modelId, reasoningLevel, reason });
+  const managedGemini = connectionId === 'gemini-managed';
+  if (connectionId === 'chatgpt-plan' && operation !== 'story') {
+    return fail(`ChatGPT plan is qualified only for local Story; ${operation} is unsupported.`);
+  }
+  const connectionReady = managedGemini
+    ? connection?.state === 'available' || connection?.state === 'connected'
+    : connection?.state === 'connected';
+  if (!connection || !connectionReady) {
+    const state = connection?.state ?? 'unknown';
+    return fail(state === 'unconfigured'
+      ? `${connectionId} is not configured. Add its credentials in AI Settings.`
+      : state === 'authorization-required'
+        ? `${connectionId} requires authorization before using ${operation}. Authorize it in AI Settings.`
+        : state === 'available' && !managedGemini
+          ? `${connectionId} credentials are present; refresh its model catalog to verify and select a model for ${operation}.`
+          : `${connectionId} is ${state}; reconnect it before using ${operation}.`);
+  }
+  if (connectionId === 'chatgpt-plan') {
+    if (!chatGptStoryLocalActivation) return fail('ChatGPT Story is not activated for this local server process.');
+    if (modelId !== 'gpt-6-luna' || reasoningLevel !== 'default') return fail('ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning.');
+    const model = connection.models.find(item => item.id === modelId);
+    if (!model || !isChatGptStoryModelSelectable(model, reasoningLevel)) return fail('GPT-6 Luna is not currently verified as available for Story. Refresh the connected ChatGPT catalog.');
+    return { eligible: true, connectionId, modelId, reasoningLevel };
+  }
+  if (managedGemini && operation === 'image') return { eligible: true, connectionId, modelId, reasoningLevel };
+  // The host-managed route can use its provider default without a selected catalog
+  // model; personal/API connections require an explicit, verified model.
+  if (!modelId) return managedGemini && reasoningLevel === 'default'
+    ? { eligible: true, connectionId, reasoningLevel }
+    : fail('Choose a text model explicitly in AI Settings.');
+  const model = connection.models.find(item => item.id === modelId);
+  if (!model) return managedGemini && modelId === GEMINI_MODELS.text && reasoningLevel === 'default'
+    ? { eligible: true, connectionId, modelId, reasoningLevel }
+    : fail(`Model ${modelId} is not present in the ${connectionId} catalog. Refresh the catalog or choose another model.`);
+  if (model.availability.state !== 'supported') return fail(model.availability.state === 'unknown'
+    ? `Availability of ${modelId} is unknown; refresh the catalog to verify it.`
+    : `${modelId} is unavailable for this connection.`);
+  if (operation !== 'image' && reasoningLevel !== 'default' &&
+      (model.reasoning?.state !== 'supported' || !Array.isArray(model.reasoning.value) || !model.reasoning.value.includes(reasoningLevel))) {
+    return fail(`Reasoning level ${reasoningLevel} is not verified for ${modelId}; choose Default or a supported level.`);
+  }
+  const capability = model.operationCapabilities[operation];
+  if (capability?.state !== 'supported' || capability.value !== true) {
+    return fail(capability?.state === 'unknown'
+      ? capability.reason ?? `Support for ${operation} on ${modelId} is unknown.`
+      : capability?.state === 'unsupported'
+        ? `${modelId} does not support ${operation}.`
+        : `Support for ${operation} on ${modelId} is not verified; refresh the catalog.`);
+  }
+  return { eligible: true, connectionId, modelId, reasoningLevel };
 }

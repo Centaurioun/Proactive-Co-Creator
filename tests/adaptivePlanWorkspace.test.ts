@@ -50,6 +50,8 @@ test('adaptive plan keeps decision inbox, graph, inspector and generated output 
       pendingDecisionCount: 2,
       mobileTab: 'graph',
       onMobileTabChange: () => undefined,
+      showInspector: true,
+      onToggleInspector: () => undefined,
       entities,
       relationships,
       selectedEntityId: 'mara',
@@ -82,6 +84,8 @@ test('narrative navigation exposes canonical status and epistemic distinctions',
       pendingDecisionCount: 1,
       mobileTab: 'inspector',
       onMobileTabChange: () => undefined,
+      showInspector: true,
+      onToggleInspector: () => undefined,
       entities,
       relationships,
       selectedEntityId: 'mara',
@@ -104,4 +108,33 @@ test('narrative navigation exposes canonical status and epistemic distinctions',
   assert.match(html, /Belief/);
   assert.match(html, /Proposed/);
   assert.match(html, /believes Orin left/);
+});
+
+test('plan workspace reflects a parent-requested closed inspector state', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(AdaptivePlanWorkspace, {
+      projectName: 'The Salt Atlas',
+      pendingDecisionCount: 0,
+      mobileTab: 'graph',
+      showInspector: false,
+      onMobileTabChange: () => undefined,
+      onToggleInspector: () => undefined,
+      entities: [],
+      relationships: [],
+      selectedEntityId: null,
+      selectedRelationshipId: null,
+      onSelectEntity: () => undefined,
+      onSelectRelationship: () => undefined,
+      decisionInbox: React.createElement('div'),
+      graphCanvas: React.createElement('div'),
+      contextualInspector: React.createElement('div'),
+      generatedOutput: React.createElement('div'),
+      onOpenInspectorTab: () => undefined,
+      outputExpanded: false,
+      onToggleOutput: () => undefined,
+    })
+  );
+
+  assert.match(html, /aria-expanded="false">\s*Context/);
+  assert.match(html, /xl:hidden/);
 });

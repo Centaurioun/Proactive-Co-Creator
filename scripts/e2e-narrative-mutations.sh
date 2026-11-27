@@ -52,6 +52,7 @@ async (bootstrap) => {
 
   const failures = [];
   for (const kind of ['preferences', 'alternative', 'local', 'semantic']) {
+    const aiRequests = [];
     const context = await bootstrap.context().browser().newContext();
     const page = await context.newPage();
     page.setDefaultTimeout(4000);
@@ -59,8 +60,22 @@ async (bootstrap) => {
     await context.route('**/api/**', route => {
       const path = new URL(route.request().url()).pathname;
       if (path.endsWith('/capabilities')) return route.fulfill({ json: { configured: true } });
-      if (path.endsWith('/diagnostics/analyze')) return route.fulfill({ json: response });
-      if (path.endsWith('/writing/assist')) return route.fulfill({ json: { proposals: [proposal] } });
+      if (path.endsWith('/provider-hub/status')) return route.fulfill({ json: {
+        localPersonalConnectionsAvailable: true,
+        capabilityPolicyVersion: 'ai04-synthetic-openai-v1',
+        credentialAuthorityIds: { 'gemini-managed': 'synthetic', 'gemini-personal': 'synthetic', 'openai-api': 'synthetic', 'chatgpt-plan': 'synthetic' },
+        preferences: { defaultConnectionId: 'openai-api', defaultTextModelId: 'gpt-6.2-sol', defaultReasoningLevel: 'default' },
+        connections: [{
+          id: 'openai-api', state: 'connected', selectedModelId: 'gpt-6.2-sol', models: [{
+            id: 'gpt-6.2-sol', displayName: 'Synthetic OpenAI API Model',
+            availability: { state: 'supported', value: true }, textGeneration: { state: 'supported', value: true },
+            reasoning: { state: 'supported', value: ['default'] },
+            operationCapabilities: Object.fromEntries(['analyze', 'clarify', 'polish', 'story', 'batch-edit', 'narrative-import', 'diagnostics', 'sync', 'writing', 'opportunities', 'import-enhance'].map(operation => [operation, operation === 'diagnostics' && kind === 'local' ? { state: 'unsupported' } : { state: 'supported', value: true }])),
+          }],
+        }],
+      } });
+      if (path.endsWith('/diagnostics/analyze')) { aiRequests.push(path); return route.fulfill({ json: response }); }
+      if (path.endsWith('/writing/assist')) { aiRequests.push(path); return route.fulfill({ json: { proposals: [proposal] } }); }
       if (path.endsWith('/health')) return route.continue();
       throw new Error('Unexpected API path ' + path);
     });
@@ -81,6 +96,8 @@ async (bootstrap) => {
         if (!saved.saved) throw new Error('Fixture could not be persisted: ' + saved.error);
       }, projectId);
       await page.goto(base);
+      await page.waitForTimeout(500);
+      if (aiRequests.length) throw new Error('AI inference started before a direct user action: ' + JSON.stringify(aiRequests));
       if (kind === 'alternative') {
         await openMode(page, 'Write');
         await page.getByText(/AI Writing Assistant \(Selection-Aware/).click();
@@ -93,8 +110,14 @@ async (bootstrap) => {
           await page.getByRole('checkbox', { name: 'Enable bounded auto-analysis' }).check();
           await page.getByRole('button', { name: 'Pause auto-analysis' }).click();
         } else if (kind === 'local') {
+          if (!await page.getByRole('button', { name: 'Analyze Consistency with AI' }).isDisabled()) {
+            throw new Error('The synthetic provider should be ineligible for diagnostics in the local-check scenario.');
+          }
           await page.getByRole('button', { name: 'Run Local Checks' }).click();
         } else {
+          if (await page.getByRole('button', { name: 'Analyze Consistency with AI' }).isDisabled()) {
+            throw new Error('Eligible OpenAI API diagnostics control remained disabled.');
+          }
           await page.getByRole('button', { name: 'Analyze Consistency with AI' }).click();
           await page.getByText(/Recorded 1 semantic finding/).waitFor();
         }

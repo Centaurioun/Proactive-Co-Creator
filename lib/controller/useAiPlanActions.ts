@@ -14,7 +14,9 @@ import {
   refinePromptWithAllUpdates,
   requestBatchEditInterpretation,
   type AiProviderSelection,
+  type ProviderHubStatus,
 } from '../../services/apiClient';
+import type { AiOperation } from '../../server/aiBudget';
 import { MAX_PROMPT_CHARS, validateEffectivePromptLength } from '../../shared/schemas';
 import type {
   AiPolishProposal,
@@ -36,9 +38,9 @@ import {
 } from '../projectController';
 import { resolveProviderPrompt } from '../promptBuilder';
 import { sameProjectVersion } from './projectListSync';
+import { resolveOperationEligibility, type OperationEligibility } from '../providerCatalogView';
 import {
   readSafeStoryProviderSelection,
-  resolveStoryProviderPreflight,
 } from './storyProviderSelection';
 
 export type StoryProviderUsage = {
@@ -48,10 +50,42 @@ export type StoryProviderUsage = {
 };
 export type StoryProviderUsageRecord = { storyText: string; usage: StoryProviderUsage };
 
+const UI_AI_OPERATIONS: readonly AiOperation[] = [
+  'analyze', 'clarify', 'polish', 'batch-edit', 'story', 'image', 'narrative-import',
+  'writing', 'diagnostics', 'sync', 'opportunities', 'import-enhance',
+];
+
 export function getReadableErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ClientApiError) return error.message;
   if (error instanceof Error && error.message) return error.message;
   return fallback;
+}
+
+export interface ProviderHubStatusRefreshCoordinator {
+  invalidate(): void;
+  refresh(
+    load: () => Promise<ProviderHubStatus>,
+    publish: (status: ProviderHubStatus) => void,
+    failClosed: () => void
+  ): Promise<void>;
+}
+
+export function createProviderHubStatusRefreshCoordinator(): ProviderHubStatusRefreshCoordinator {
+  let generation = 0;
+  return {
+    invalidate() {
+      generation += 1;
+    },
+    async refresh(load, publish, failClosed) {
+      const requestGeneration = ++generation;
+      try {
+        const status = await load();
+        if (requestGeneration === generation) publish(status);
+      } catch {
+        if (requestGeneration === generation) failClosed();
+      }
+    },
+  };
 }
 
 export interface UseAiPlanActionsDeps {
@@ -90,9 +124,12 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
     setGalleryErrors,
   } = deps;
 
-  const [aiConfigured, setAiConfigured] = useState<boolean>(false);
+  const [providerHubStatus, setProviderHubStatus] = useState<ProviderHubStatus | null>(null);
+  const providerHubStatusRefreshRef = useRef<ProviderHubStatusRefreshCoordinator | null>(null);
+  if (providerHubStatusRefreshRef.current == null) {
+    providerHubStatusRefreshRef.current = createProviderHubStatusRefreshCoordinator();
+  }
   const [chatGptStoryLocalActivation, setChatGptStoryLocalActivation] = useState(false);
-  const chatGptStoryLocalActivationRef = useRef(false);
   const [storyProviderSelection, setStoryProviderSelection] = useState<AiProviderSelection>(
     readSafeStoryProviderSelection
   );
@@ -103,23 +140,57 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
   >({});
   const appliedBatchProposalIdsRef = useRef<Set<string>>(new Set());
 
+  const refreshProviderHubStatus = useCallback(async () => {
+    await providerHubStatusRefreshRef.current!.refresh(async () => {
+      const response = await fetch('/api/ai/provider-hub/status');
+      if (!response.ok) throw new Error('Provider status unavailable');
+      return await response.json() as ProviderHubStatus;
+    }, setProviderHubStatus, () => setProviderHubStatus(null));
+  }, []);
+
+  const operationAvailability = useMemo(() => {
+    const result = {} as Record<AiOperation, OperationEligibility>;
+    for (const operation of UI_AI_OPERATIONS) {
+      result[operation] = providerHubStatus
+        ? resolveOperationEligibility(providerHubStatus, operation, chatGptStoryLocalActivation)
+        : { eligible: false, connectionId: 'gemini-managed', reason: 'AI connection status is not verified. Open AI Settings and refresh status.' };
+    }
+    return result;
+  }, [providerHubStatus, chatGptStoryLocalActivation]);
+  const storyBlockReason = operationAvailability.story.eligible
+    ? null
+    : operationAvailability.story.reason ?? 'The selected Story connection is not eligible.';
+
   useEffect(() => {
     let cancelled = false;
     void fetchAiCapabilities()
       .then((cap) => {
         if (!cancelled) {
-          setAiConfigured(Boolean(cap.configured));
           setChatGptStoryLocalActivation(cap.chatGptStoryLocalActivation === true);
-          chatGptStoryLocalActivationRef.current = cap.chatGptStoryLocalActivation === true;
         }
       })
       .catch(() => {
-        if (!cancelled) setAiConfigured(false);
+        if (!cancelled) setChatGptStoryLocalActivation(false);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void refreshProviderHubStatus();
+    });
+    window.addEventListener('pcc:provider-hub-status-changed', refreshProviderHubStatus);
+    window.addEventListener('pcc:ai-preferences-changed', refreshProviderHubStatus);
+    return () => {
+      cancelled = true;
+      providerHubStatusRefreshRef.current!.invalidate();
+      window.removeEventListener('pcc:provider-hub-status-changed', refreshProviderHubStatus);
+      window.removeEventListener('pcc:ai-preferences-changed', refreshProviderHubStatus);
+    };
+  }, [refreshProviderHubStatus]);
 
   useEffect(() => {
     const refreshStorySelection = () => {
@@ -137,6 +208,12 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
   const handleRefreshClarifications = useCallback(
     async (preserveDrafts?: Record<string, string>) => {
       const originProject = activeProjectRef.current;
+      if (!operationAvailability.clarify.eligible) {
+        const reason = operationAvailability.clarify.reason ?? 'AI clarification is unavailable.';
+        setClarificationErrors((prev) => ({ ...prev, [originProject.id]: reason }));
+        setStatusNotification(reason);
+        return;
+      }
       const originSnap = originProject.snapshot;
       const promptDecision = resolveProviderPrompt(originProject, originSnap.mode);
       if (!promptDecision.ok) {
@@ -207,6 +284,7 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
     [
       activeProjectRef,
       aiTicketAuthorityRef,
+      operationAvailability,
       savedProjectsRef,
       setClarificationErrors,
       setProject,
@@ -244,9 +322,9 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
 
     const requestMode = originSnap.mode;
     if (requestMode === 'story') {
-      const preflight = resolveStoryProviderPreflight(chatGptStoryLocalActivationRef.current);
-      if (!preflight.ok) {
-        reportGenerationError('story', preflight.errorMessage);
+      const storyEligibility = operationAvailability.story;
+      if (!storyEligibility.eligible) {
+        reportGenerationError('story', storyEligibility.reason ?? 'The selected Story connection is not eligible.');
         return;
       }
     }
@@ -322,6 +400,7 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
   }, [
     activeProjectRef,
     aiTicketAuthorityRef,
+      operationAvailability,
     savedProjectsRef,
     setGalleryErrors,
     setProject,
@@ -334,6 +413,10 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
     const originProject = activeProjectRef.current;
     const authority = aiTicketAuthorityRef.current;
     if (authority.isActionLoading(originProject.id, 'polish')) return;
+    if (!operationAvailability.polish.eligible) {
+      setStatusNotification(operationAvailability.polish.reason ?? 'AI prompt refinement is unavailable.');
+      return;
+    }
 
     const promptDecision = resolveProviderPrompt(originProject, originProject.snapshot.mode);
     if (!promptDecision.ok) {
@@ -524,9 +607,10 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
   };
 
   return {
-    aiConfigured,
     chatGptStoryLocalActivation,
     storyProviderSelection,
+    storyBlockReason,
+    operationAvailability,
     lastStoryProviderUsage,
     activePolishProposal,
     polishValidation,

@@ -38,6 +38,7 @@ const StoryBody: React.FC<{
   isLoading: boolean;
   displayedStory: string | null;
   chatGptStoryBlocked: boolean;
+  chatGptStoryBlockReason: string;
   storyProviderSelection: { connectionId: string };
   storyProviderUsage: StoryProviderUsage | null;
   onGenerate: () => void;
@@ -45,6 +46,7 @@ const StoryBody: React.FC<{
   isLoading,
   displayedStory,
   chatGptStoryBlocked,
+  chatGptStoryBlockReason,
   storyProviderSelection,
   storyProviderUsage,
   onGenerate,
@@ -66,10 +68,14 @@ const StoryBody: React.FC<{
           type="button"
           onClick={onGenerate}
           disabled={chatGptStoryBlocked}
+          title={chatGptStoryBlocked ? chatGptStoryBlockReason : undefined}
           className="px-3.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 text-white rounded-md transition-colors"
         >
           Generate Story from Confirmed Plan
         </button>
+        {chatGptStoryBlocked && chatGptStoryBlockReason && (
+          <p className="text-xs text-amber-900 dark:text-amber-200" role="status">{chatGptStoryBlockReason}</p>
+        )}
       </div>
     );
   }
@@ -230,6 +236,7 @@ const GeneratedOutputView: React.FC<GeneratedOutputViewProps> = ({
           isLoading={isLoading}
           displayedStory={displayedStory}
           chatGptStoryBlocked={chatGptStoryBlocked}
+          chatGptStoryBlockReason={chatGptStoryBlockReason}
           storyProviderSelection={storyProviderSelection}
           storyProviderUsage={storyProviderUsage}
           onGenerate={onGenerate}

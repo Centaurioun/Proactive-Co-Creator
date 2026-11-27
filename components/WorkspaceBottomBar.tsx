@@ -26,6 +26,7 @@ interface WorkspaceBottomBarProps {
   revisionCount: number;
   isOutdated: boolean;
   compactOnMobile?: boolean;
+  storyBlockReason?: string | null;
 }
 
 const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
@@ -48,6 +49,7 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
   revisionCount,
   isOutdated,
   compactOnMobile = false,
+  storyBlockReason = null,
 }) => {
   return (
     <footer
@@ -153,7 +155,8 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
         <button
           type="button"
           onClick={onGenerate}
-          disabled={isGenerating}
+          disabled={isGenerating || (mode === 'story' && Boolean(storyBlockReason))}
+          title={mode === 'story' ? (storyBlockReason ?? undefined) : undefined}
           className="px-4 py-2 min-h-[38px] text-xs sm:text-sm font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white shadow-xs transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         >
           {isGenerating
@@ -164,6 +167,9 @@ const WorkspaceBottomBar: React.FC<WorkspaceBottomBarProps> = ({
               ? 'Generate Story'
               : 'Generate Images'}
         </button>
+        {mode === 'story' && storyBlockReason && (
+          <span className="sr-only" role="status">{storyBlockReason}</span>
+        )}
       </div>
     </footer>
   );

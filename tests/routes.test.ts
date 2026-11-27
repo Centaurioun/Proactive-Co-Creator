@@ -7,6 +7,7 @@ import { createApiRouter, createIpRateLimiter, type AiServiceHandlers, type ApiR
 import { CAPABILITY_POLICY_VERSION, describeChatGptModel } from '../server/providers/policy.ts';
 import { getAiProviderRequestContext } from '../server/providers/requestContext.ts';
 import { getChatGptModels, getCredentialAuthorityId, setChatGptModels } from '../server/providers/runtime.ts';
+import { GEMINI_MODELS } from '../server/models.ts';
 import { CHATGPT_STORY_SRB_V1, createChatGptStorySrbAuthority, type ChatGptStoryTransportResult } from '../server/providers/subscriptionResourceBudget.ts';
 import type { BeliefState } from '../shared/types.ts';
 
@@ -308,6 +309,17 @@ async function createSrbStoryTestSetup(modelId: string) {
       });
       assert.equal(unqualifiedReasoning.status, 422);
       assert.deepEqual(getCounts(), { transportCalls: 1, fallbackCalls: 0 });
+
+      const screenshotSelection = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-ai-reasoning': 'medium',
+        },
+        body: JSON.stringify({ prompt: 'Synthetic screenshot acceptance fixture.' }),
+      });
+      assert.equal(screenshotSelection.status, 422);
+      assert.deepEqual(getCounts(), { transportCalls: 1, fallbackCalls: 0 });
     } finally {
       await server.close();
       closeServer = null;
@@ -456,6 +468,39 @@ async function createSrbStoryTestSetup(modelId: string) {
     assert.equal(batchJson.operations[0].storyField, 'tone');
   });
 
+  it('admits only the configured managed Gemini default when the selected model is absent from the verified catalog', async () => {
+    let clarificationCalls = 0;
+    const server = await startTestServer(createStubHandlers({
+      generateClarificationsList: async () => {
+        clarificationCalls += 1;
+        return [];
+      },
+    }));
+    closeServer = server.close;
+    const request = (modelId: string) => fetch(`${server.baseUrl}/api/clarify`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: server.baseUrl,
+        'x-pcc-ai-connection': 'gemini-managed',
+        'x-pcc-ai-model': modelId,
+      },
+      body: JSON.stringify({ prompt: 'A safe prompt.', mode: 'story' }),
+    });
+    try {
+      const arbitrary = await request('unverified-gemini-model');
+      assert.equal(arbitrary.status, 422);
+      assert.equal(clarificationCalls, 0, 'an unverified model must be rejected before operation dispatch');
+
+      const configuredDefault = await request(GEMINI_MODELS.text);
+      assert.equal(configuredDefault.status, 200, await configuredDefault.clone().text());
+      assert.equal(clarificationCalls, 1, 'the exact managed default remains admitted without a catalog entry');
+    } finally {
+      await server.close();
+      closeServer = null;
+    }
+  });
+
   it('handles /api/generate/images and /api/generate/story and returns 404 for removed video routes', async () => {
     const srv = await startTestServer(createStubHandlers());
     closeServer = srv.close;
@@ -540,4 +585,31 @@ async function createSrbStoryTestSetup(modelId: string) {
     }
     assert.ok(limiter.size() <= 16);
   });
+});
+
+it('desktop ChatGPT blocks non-Story before the handler even with previously broad cached model metadata', async () => {
+  const previous = process.env.PCC_DESKTOP_MODE;
+  const originalModels = getChatGptModels();
+  process.env.PCC_DESKTOP_MODE = '1';
+  const model = describeChatGptModel({ id: 'gpt-6-luna', displayName: 'Luna' });
+  setChatGptModels([{ ...model, operationCapabilities: { ...model.operationCapabilities, analyze: model.textGeneration } }]);
+  let handlerCalls = 0;
+  let server: Awaited<ReturnType<typeof startTestServer>> | undefined;
+  try {
+    server = await startTestServer(createStubHandlers({
+      analyzeBeliefGraph: async () => { handlerCalls++; throw new Error('Unqualified handler invoked'); },
+    }), { chatGptStoryLocalActivation: true });
+    const response = await fetch(`${server.baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: server.baseUrl, 'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': 'gpt-6-luna', 'x-pcc-ai-reasoning': 'medium' },
+      body: JSON.stringify({ prompt: 'Synthetic test only.', mode: 'story' }),
+    });
+    assert.equal(response.status, 422, await response.clone().text());
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await server?.close();
+    setChatGptModels(originalModels);
+    if (previous === undefined) delete process.env.PCC_DESKTOP_MODE;
+    else process.env.PCC_DESKTOP_MODE = previous;
+  }
 });

@@ -6,6 +6,20 @@
 import React, { useState } from 'react';
 import type { CreativeProject } from '../../shared/types';
 
+export function confirmProjectDeletion(
+  projectId: string,
+  projectName: string,
+  confirm: (message: string) => boolean,
+  onDeleteProject: (projectId: string) => void,
+): boolean {
+  const accepted = confirm(
+    `Delete project “${projectName}”? This removes it from this browser. Export a backup first if you may need it later.`,
+  );
+  if (!accepted) return false;
+  onDeleteProject(projectId);
+  return true;
+}
+
 interface SavedProjectsSectionProps {
   currentProjectId: string;
   savedProjects: CreativeProject[];
@@ -63,7 +77,14 @@ const SavedProjectsSection: React.FC<SavedProjectsSectionProps> = ({
               {savedProjects.length > 1 && (
                 <button
                   type="button"
-                  onClick={() => onDeleteProject(proj.id)}
+                  onClick={() =>
+                    confirmProjectDeletion(
+                      proj.id,
+                      proj.name,
+                      (message) => window.confirm(message),
+                      onDeleteProject,
+                    )
+                  }
                   className="text-gray-400 hover:text-red-600 px-1.5 py-0.5 text-xs"
                   aria-label={`Delete project ${proj.name}`}
                 >

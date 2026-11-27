@@ -218,7 +218,10 @@ function normalizeStoryBibleEntries(
         typeof typedEntry.provenance === 'string'
           ? (typedEntry.provenance as DecisionProvenance)
           : 'imported',
-      updatedAt: typeof typedEntry.updatedAt === 'number' ? typedEntry.updatedAt : now,
+      updatedAt:
+        typeof typedEntry.updatedAt === 'number' && Number.isFinite(typedEntry.updatedAt)
+          ? typedEntry.updatedAt
+          : now,
       ...(typedEntry.epistemicKind === undefined
         ? {}
         : { epistemicKind: epistemicKindSchema.parse(typedEntry.epistemicKind) }),
@@ -299,17 +302,20 @@ function resolveMigratedRevisions(
   rawRevisions: unknown,
   logicalRev: number,
   snapshot: ProjectSnapshot,
-  now: number
+  now: number,
+  projectId: string,
 ): CreativeProject['revisions'] {
   if (Array.isArray(rawRevisions) && rawRevisions.length > 0) {
     return (rawRevisions as CreativeProject['revisions']).map((r, idx) => ({
       ...r,
+      timestamp:
+        typeof r.timestamp === 'number' && Number.isFinite(r.timestamp) ? r.timestamp : now,
       revisionNumber: r.revisionNumber ?? Math.max(1, logicalRev - idx),
     }));
   }
   return [
     {
-      id: makeStableId('rev'),
+      id: `rev_migrated_${projectId}_${logicalRev}`,
       revisionNumber: logicalRev,
       timestamp: now,
       label: 'Imported Revision',
@@ -384,7 +390,7 @@ function migrateSnapshotPayload(
   };
 
   snapshot = syncStoryBibleWithSceneEntity(snapshot);
-  snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot);
+  snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot, now);
   if (!snapshot.refinedPrompt.trim()) {
     snapshot.refinedPrompt = synthesizeRefinedPrompt(snapshot);
   }
@@ -409,13 +415,15 @@ function migrateSnapshotPayload(
       typeof obj.name === 'string' && obj.name.trim()
         ? obj.name.trim()
         : originalIdea.slice(0, 48),
-    createdAt: typeof obj.createdAt === 'number' ? obj.createdAt : now,
-    updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : now,
+    createdAt:
+      typeof obj.createdAt === 'number' && Number.isFinite(obj.createdAt) ? obj.createdAt : now,
+    updatedAt:
+      typeof obj.updatedAt === 'number' && Number.isFinite(obj.updatedAt) ? obj.updatedAt : now,
     revision: logicalRev,
     persistedRevision: persistedRev,
     snapshot,
     artifacts: migrateArtifacts(obj.artifacts, projectId, logicalRev, snapshot),
-    revisions: resolveMigratedRevisions(obj.revisions, logicalRev, snapshot, now),
+    revisions: resolveMigratedRevisions(obj.revisions, logicalRev, snapshot, now, projectId),
     undoHistory: resolveMigratedUndoHistory(obj.undoHistory),
     ...(Array.isArray(obj.recentIntentIds)
       ? {
@@ -514,7 +522,7 @@ function migrateLegacyProjectPayload(
   };
 
   snapshot = syncStoryBibleWithSceneEntity(snapshot);
-  snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot);
+  snapshot.decisions = buildDecisionInboxFromSnapshot(snapshot, now);
   snapshot.refinedPrompt = synthesizeRefinedPrompt(snapshot);
 
   const projectId = typeof obj.id === 'string' ? obj.id : makeStableId('proj');
@@ -573,7 +581,36 @@ export function migrateProjectPayload(raw: unknown): CreativeProject {
     throw new Error('Missing schema 4 project snapshot.');
   }
 
-  const now = Date.now();
+  const rawSnapshot = obj.snapshot && typeof obj.snapshot === 'object'
+    ? (obj.snapshot as Record<string, unknown>)
+    : undefined;
+  const rawStoryBible = rawSnapshot?.storyBible;
+  const nestedBibleTimes =
+    rawStoryBible && typeof rawStoryBible === 'object'
+      ? Object.values(rawStoryBible as Record<string, unknown>).flatMap((entry) =>
+          entry && typeof entry === 'object'
+            ? [(entry as Record<string, unknown>).updatedAt]
+            : []
+        )
+      : [];
+  const revisionTimes = Array.isArray(obj.revisions)
+    ? obj.revisions.map((revision) =>
+        revision && typeof revision === 'object'
+          ? (revision as Record<string, unknown>).timestamp
+          : undefined
+      )
+    : [];
+  const decisionTimes = Array.isArray(rawSnapshot?.decisions)
+    ? rawSnapshot.decisions.map((decision) =>
+        decision && typeof decision === 'object'
+          ? (decision as Record<string, unknown>).createdAt
+          : undefined
+      )
+    : [];
+  const now = [obj.updatedAt, obj.createdAt, ...revisionTimes, ...nestedBibleTimes, ...decisionTimes]
+    .find((timestamp): timestamp is number =>
+      typeof timestamp === 'number' && Number.isFinite(timestamp)
+    ) ?? 0;
   if (obj.snapshot && typeof obj.snapshot === 'object') {
     return migrateSnapshotPayload(obj, hasNarrative, now);
   }

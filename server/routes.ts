@@ -59,7 +59,6 @@ import { createProviderHubRouter, resolveClientSelection, type ProviderHubRouter
 import { getAiProviderRequestContext, runWithAiProviderContext } from './providers/requestContext.ts';
 import { CAPABILITY_POLICY_VERSION, assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
 import { getCachedProviderModel, getCredentialAuthorityId } from './providers/runtime.ts';
-import { chatGptSessionStore } from './auth/chatgpt/runtime.ts';
 import { createChatGptStorySrbAuthority } from './providers/subscriptionResourceBudget.ts';
 import { handleChatGptStoryGeneration, type ChatGptStorySrbInjection } from './providers/storyRouteHandler.ts';
 import { extractNarrativeChunk } from './narrative/extractionService.ts';
@@ -295,11 +294,15 @@ function admitProviderRequest(
       false,
     );
   }
-  const desktopChatGptFull = process.env.PCC_DESKTOP_MODE === '1' && selection.connectionId === 'chatgpt-plan';
-  const authorizedBoundedStory = !desktopChatGptFull && operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
+  const isChatGptPlan = selection.connectionId === 'chatgpt-plan';
+  const authorizedBoundedStory = isChatGptPlan && operation === 'story' &&
     (options.chatGptStorySrbTestInjection !== undefined || options.chatGptStoryLocalActivation === true);
-  if (authorizedBoundedStory && (selection.reasoningLevel ?? 'default') !== 'default') {
-    throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story uses Default reasoning only.', 422, false);
+  // Never derive execution authority from an environment mode or cached model descriptor.
+  if (isChatGptPlan && !authorizedBoundedStory) {
+    throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT plan is qualified only for the explicitly enabled local Story operation. Choose a compatible connection explicitly for other operations.', 422, false);
+  }
+  if (authorizedBoundedStory && (selection.modelId !== 'gpt-6-luna' || (selection.reasoningLevel ?? 'default') !== 'default')) {
+    throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning.', 422, false);
   }
   const providerPlanBinding = isNarrativeExtraction ? validateNarrativePlanBinding(req, selection) : undefined;
   if (!authorizedBoundedStory) assertProviderOperation(selection.connectionId, operation);
@@ -335,8 +338,7 @@ export function createApiRouter(
   const rateLimiter = createIpRateLimiter(windowMs, maxRequests);
 
   router.get('/health', (_req, res) => {
-    const desktopChatGptReady = process.env.PCC_DESKTOP_MODE === '1' && chatGptSessionStore.snapshot().connected;
-    res.json({ ok: true, configured: handlers.hasConfiguredGeminiKey() || desktopChatGptReady, models: GEMINI_MODELS });
+    res.json({ ok: true, configured: handlers.hasConfiguredGeminiKey(), models: GEMINI_MODELS });
   });
 
   router.use((req, res, next) => {

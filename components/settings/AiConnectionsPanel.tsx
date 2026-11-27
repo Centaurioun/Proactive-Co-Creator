@@ -7,6 +7,7 @@ import {
 import {
   buildDefaultConnectionPreferences,
   catalogPhasesForStatusRefresh,
+  catalogVerificationFingerprint,
   isCatalogSelectable,
   isModelSupportedForOperation,
   type CatalogRefreshPhase,
@@ -59,6 +60,10 @@ function readLocalStoredPreferences(fallback: ProviderPreferences): ProviderPref
   }
 }
 
+// Renderer-process memory only, not localStorage. Reopening the modal may
+// reuse proof only after a status check matches the same account authority.
+const verifiedCatalogs = new Map<AiConnectionId, string>();
+
 export default function AiConnectionsPanel() {
   const [status, setStatus] = useState<ProviderHubStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,7 +76,6 @@ export default function AiConnectionsPanel() {
   const [catalogPhases, setCatalogPhases] = useState<Partial<Record<AiConnectionId, CatalogRefreshPhase>>>({});
 
   const statusRef = useRef<ProviderHubStatus | null>(null);
-  const catalogPhasesRef = useRef<Partial<Record<AiConnectionId, CatalogRefreshPhase>>>({});
   const statusEpoch = useRef(0);
   const catalogEpochs = useRef(new Map<AiConnectionId, number>());
   const busyCountRef = useRef(0);
@@ -91,16 +95,13 @@ export default function AiConnectionsPanel() {
       | Partial<Record<AiConnectionId, CatalogRefreshPhase>>
       | ((prev: Partial<Record<AiConnectionId, CatalogRefreshPhase>>) => Partial<Record<AiConnectionId, CatalogRefreshPhase>>),
   ) => {
-    setCatalogPhases(prev => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      catalogPhasesRef.current = next;
-      return next;
-    });
+    setCatalogPhases(updater);
   }, []);
 
   const publishStatus = useCallback((next: ProviderHubStatus) => {
     statusRef.current = next;
     setStatus(next);
+    window.dispatchEvent(new Event('pcc:provider-hub-status-changed'));
   }, []);
 
   const refresh = useCallback(async (preserveFreshPhases = false) => {
@@ -108,9 +109,10 @@ export default function AiConnectionsPanel() {
     for (const id of catalogEpochs.current.keys()) {
       catalogEpochs.current.set(id, (catalogEpochs.current.get(id) ?? 0) + 1);
     }
+    if (!preserveFreshPhases) verifiedCatalogs.clear();
     const cachedStatus = statusRef.current;
     if (cachedStatus) {
-      updateCatalogPhases(catalogPhasesForStatusRefresh(cachedStatus.connections, catalogPhasesRef.current, preserveFreshPhases));
+      updateCatalogPhases(catalogPhasesForStatusRefresh(cachedStatus.connections, {}, false));
     }
     setLoading(true);
     setError('');
@@ -118,12 +120,20 @@ export default function AiConnectionsPanel() {
       const next = await requestJson<ProviderHubStatus>('/status');
       if (requestEpoch !== statusEpoch.current) return;
       publishStatus(next);
-      if (!cachedStatus || preserveFreshPhases) {
-        updateCatalogPhases(catalogPhasesForStatusRefresh(next.connections, catalogPhasesRef.current, preserveFreshPhases));
+      const phases = catalogPhasesForStatusRefresh(next.connections, {}, false);
+      for (const connection of next.connections) {
+        const fingerprint = catalogVerificationFingerprint(next, connection.id);
+        if (preserveFreshPhases && fingerprint !== undefined && verifiedCatalogs.get(connection.id) === fingerprint) {
+          phases[connection.id] = 'fresh';
+        } else {
+          verifiedCatalogs.delete(connection.id);
+        }
       }
+      updateCatalogPhases(phases);
       setPreferences(readLocalStoredPreferences(next.preferences));
     } catch (cause) {
       if (requestEpoch === statusEpoch.current) {
+        verifiedCatalogs.clear();
         setError(cause instanceof Error ? cause.message : 'Could not load AI connection status.');
       }
     } finally {
@@ -131,7 +141,7 @@ export default function AiConnectionsPanel() {
     }
   }, [publishStatus, updateCatalogPhases]);
 
-  useEffect(() => { void Promise.resolve().then(() => refresh(false)); }, [refresh]);
+  useEffect(() => { void Promise.resolve().then(() => refresh(true)); }, [refresh]);
 
   const connections = useMemo(() => status?.connections ?? [], [status?.connections]);
 
@@ -139,6 +149,7 @@ export default function AiConnectionsPanel() {
     const requestStatusEpoch = statusEpoch.current;
     const requestEpoch = (catalogEpochs.current.get(connectionId) ?? 0) + 1;
     catalogEpochs.current.set(connectionId, requestEpoch);
+    verifiedCatalogs.delete(connectionId);
     updateCatalogPhases(current => ({ ...current, [connectionId]: 'loading' }));
     beginBusy();
     setError('');
@@ -148,13 +159,16 @@ export default function AiConnectionsPanel() {
       const currentStatus = statusRef.current;
       const target = currentStatus?.connections.find(item => item.id === connectionId);
       if (!currentStatus || !target || !['available', 'connected'].includes(target.state)) return [];
-      publishStatus({
+      const updatedStatus: ProviderHubStatus = {
         ...currentStatus,
         connections: currentStatus.connections.map(item => item.id === connectionId
           ? { ...item, models: result.models, state: 'connected' }
           : item),
-      });
-      updateCatalogPhases(current => ({ ...current, [connectionId]: 'fresh' }));
+      };
+      publishStatus(updatedStatus);
+      const fingerprint = catalogVerificationFingerprint(updatedStatus, connectionId);
+      if (fingerprint !== undefined) verifiedCatalogs.set(connectionId, fingerprint);
+      updateCatalogPhases(current => ({ ...current, [connectionId]: fingerprint === undefined ? 'stale' : 'fresh' }));
       return result.models;
     } catch (cause) {
       if (requestStatusEpoch !== statusEpoch.current || catalogEpochs.current.get(connectionId) !== requestEpoch) return [];
@@ -409,7 +423,7 @@ export default function AiConnectionsPanel() {
             {status.usage.quota.state === 'known'
               ? <p className="mt-1 text-sm text-gray-700 dark:text-gray-200">Remaining quota: {typeof status.usage.quota.remaining === 'number' ? status.usage.quota.remaining : 'Not reported'}{status.usage.quota.resetsAt ? ` · resets ${new Date(status.usage.quota.resetsAt).toLocaleString()}` : ''}</p>
               : <p className="mt-1 text-sm text-gray-700 dark:text-gray-200">Quota is unknown. Provider limits are not available to this app.</p>}
-            <button type="button" className={`${SETTINGS_BUTTON_CLASS} mt-2`} disabled={loading || busy} onClick={() => void refresh(false)}>Refresh status</button>
+            <button type="button" className={`${SETTINGS_BUTTON_CLASS} mt-2`} disabled={loading || busy} onClick={() => void refresh(true)}>Refresh status</button>
           </section>
 
           {!status.localPersonalConnectionsAvailable && (
@@ -426,7 +440,7 @@ export default function AiConnectionsPanel() {
                   connections={connections}
                   preferences={preferences}
                   catalogPhases={catalogPhases}
-                  busy={busy}
+                  busy={busy || loading}
                   onChangeDefaultConnection={(id) => void changeDefaultConnection(id)}
                   onSavePreferences={(next) => void savePreferences(next)}
                   onSaveChatGptModelPreference={(modelId) => {
@@ -446,7 +460,7 @@ export default function AiConnectionsPanel() {
                   connections={connections}
                   preferences={preferences}
                   catalogPhases={catalogPhases}
-                  busy={busy}
+                  busy={busy || loading}
                   onChangeOverride={(operation, connectionId) => void changeOverride(operation, connectionId)}
                   onClearOverride={(operation) => void clearOverride(operation)}
                   onSelectOverrideModel={(operation, modelId) => void selectOverrideModel(operation, modelId)}

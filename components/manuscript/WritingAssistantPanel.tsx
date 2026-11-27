@@ -48,7 +48,7 @@ interface WritingAssistantPanelProps {
   section: ManuscriptSection | undefined;
   selectionStart: number;
   selectionEnd: number;
-  aiConfigured: boolean;
+  writingAvailability: { eligible: boolean; reason?: string };
   disabled: boolean;
   onReplaceOrInsert: (nextText: string, label: string) => void;
   onCreateSceneFromProposal: (title: string, text: string) => void;
@@ -67,7 +67,7 @@ export default function WritingAssistantPanel({
   section,
   selectionStart,
   selectionEnd,
-  aiConfigured,
+  writingAvailability,
   disabled,
   onReplaceOrInsert,
   onCreateSceneFromProposal,
@@ -169,8 +169,8 @@ export default function WritingAssistantPanel({
 
   const handleRun = async () => {
     if (!section || !requestPreview || !validatedSelection.ok || loading) return;
-    if (!aiConfigured) {
-      setError('Server Gemini API key is not configured. Writing Assistant requires server-side AI credentials.');
+    if (!writingAvailability.eligible) {
+      setError(writingAvailability.reason ?? 'Writing assistance is unavailable.');
       return;
     }
     if (missingRequiredSelection) {
@@ -263,9 +263,9 @@ export default function WritingAssistantPanel({
           Requests use only confirmed entities ({confirmedContext.confirmedEntities.length}), confirmed Story Bible fields ({Object.keys(confirmedContext.confirmedStoryBible).length}), and confirmed non-conflicting style notes ({confirmedContext.styleGuidance.length}). Unattributed beliefs and reported claims are excluded. Nothing edits your manuscript until you apply a proposal.
         </p>
 
-        {!aiConfigured && (
+        {!writingAvailability.eligible && (
           <p role="status" className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-            AI Writing Assistant is unavailable because the server Gemini API key is not configured. Manual editing, saving, and style notes remain fully available.
+            AI Writing Assistant is unavailable: {writingAvailability.reason ?? 'not currently eligible.'} Manual editing, saving, and style notes remain fully available.
           </p>
         )}
 
@@ -336,7 +336,7 @@ export default function WritingAssistantPanel({
               disabled ||
               loading ||
               !section ||
-              !aiConfigured ||
+              !writingAvailability.eligible ||
               !validatedSelection.ok ||
               !budgetDisclosure.withinLimit ||
               missingRequiredSelection ||

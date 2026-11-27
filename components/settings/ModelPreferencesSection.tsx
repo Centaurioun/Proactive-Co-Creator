@@ -50,6 +50,7 @@ export function ModelPreferencesSection({
       : isEligibleTextModel(model))
     : [];
   const supportedReasoning = supportedReasoningLevels(selectedModel?.reasoning);
+  const savedDefaultModel = modelOptions.find(model => model.id === preferences.defaultTextModelId);
 
   const chatGptConnection = connections.find(item => item.id === 'chatgpt-plan');
   const chatGptCatalogSelectable = isCatalogSelectable(chatGptConnection?.state ?? '', catalogPhases['chatgpt-plan']);
@@ -60,9 +61,10 @@ export function ModelPreferencesSection({
   const preferredChatGptReasoning = preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default';
 
   const selectableDefaultConnections = connections.filter(item =>
-    item.state !== 'unsupported-environment' &&
-    (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model =>
-      item.id === 'chatgpt-plan' ? isSelectableTextPreferenceModel(model) : isEligibleTextModel(model)))));
+    item.id === preferences.defaultConnectionId ||
+    (item.state !== 'unsupported-environment' &&
+      (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model =>
+        item.id === 'chatgpt-plan' ? isSelectableTextPreferenceModel(model) : isEligibleTextModel(model))))));
 
   return (
     <>
@@ -94,7 +96,7 @@ export function ModelPreferencesSection({
           {preferences.defaultConnectionId === 'gemini-managed' && <option value="__provider_default__">Gemini provider default</option>}
           {preferences.defaultConnectionId === 'chatgpt-plan' && !preferences.defaultTextModelId && <option value="">Choose a model explicitly</option>}
           {preferences.defaultTextModelId && !eligibleDefaultModels.some(model => model.id === preferences.defaultTextModelId) && (
-            <option value={preferences.defaultTextModelId}>Saved model unavailable · refresh or choose again</option>
+            <option value={preferences.defaultTextModelId}>{savedDefaultModel?.displayName ?? preferences.defaultTextModelId} · saved, {currentDefaultCatalog ? 'unavailable' : 'refresh to verify'}</option>
           )}
           {eligibleDefaultModels.length === 0 && preferences.defaultConnectionId !== 'gemini-managed' && (
             <option value="">{preferences.defaultConnectionId === 'chatgpt-plan' ? 'No verified text models available' : 'No verified PCC operations available'}</option>
@@ -118,7 +120,7 @@ export function ModelPreferencesSection({
         >
           {preferences.defaultConnectionId === 'chatgpt-plan' && !preferences.defaultReasoningLevel && <option value="">Choose a reasoning level explicitly</option>}
           {preferences.defaultConnectionId === 'chatgpt-plan' && preferences.defaultReasoningLevel && !supportedReasoning.includes(preferences.defaultReasoningLevel) && (
-            <option value={preferences.defaultReasoningLevel}>Saved reasoning unavailable · choose again</option>
+            <option value={preferences.defaultReasoningLevel}>{preferences.defaultReasoningLevel} · saved, {currentDefaultCatalog ? 'unavailable' : 'refresh to verify'}</option>
           )}
           {supportedReasoning.map(level => <option key={level} value={level}>{level}</option>)}
         </select>
@@ -127,8 +129,11 @@ export function ModelPreferencesSection({
             ChatGPT is selected as the default connection. Choose an account model and reasoning level explicitly; no model or reasoning fallback will be applied.
           </p>
         )}
-        {selectedModel?.reasoning.state !== 'supported' && (
-          <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">This model’s reasoning controls are unverified; provider default will be used.</p>
+        {!currentDefaultCatalog && preferences.defaultConnectionId !== 'gemini-managed' && (
+          <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">Saved preferences are retained. Refresh the connection’s model catalog to verify and change them; no model or reasoning is substituted.</p>
+        )}
+        {currentDefaultCatalog && selectedModel && selectedModel.reasoning.state !== 'supported' && (
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">Only provider Default reasoning is currently verified for this model.</p>
         )}
       </div>
 
@@ -163,10 +168,13 @@ export function ModelPreferencesSection({
               <select
                 id="preferred-chatgpt-reasoning"
                 className={SETTINGS_INPUT_CLASS}
-                disabled={busy || !preferredChatGptModel}
-                value={chatGptReasoningLevels.includes(preferredChatGptReasoning) ? preferredChatGptReasoning : 'default'}
+                disabled={busy || !chatGptCatalogSelectable || !preferredChatGptModel}
+                value={preferredChatGptReasoning}
                 onChange={event => onSaveChatGptReasoningPreference(event.target.value as AiReasoningLevel)}
               >
+                {!chatGptReasoningLevels.includes(preferredChatGptReasoning) && (
+                  <option value={preferredChatGptReasoning}>{preferredChatGptReasoning} · saved, refresh or choose again</option>
+                )}
                 {chatGptReasoningLevels.map(level => <option key={level} value={level}>{level}</option>)}
               </select>
             </div>

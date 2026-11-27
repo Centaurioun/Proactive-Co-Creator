@@ -52,7 +52,10 @@ async (page) => {
     });
     await targetPage.route('**/api/**', async (route) => {
       apiHits.push(route.request().url());
-      if (route.request().url().endsWith('/api/ai/capabilities')) return route.continue();
+      if (
+        route.request().url().endsWith('/api/ai/capabilities') ||
+        route.request().url().endsWith('/api/ai/provider-hub/status')
+      ) return route.continue();
       paidApiHits.push(route.request().url());
       await route.fulfill({
         status: 500,
@@ -510,7 +513,13 @@ async (page) => {
 
       await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan', exact: true }).click();
       await p.getByRole('tab', { name: 'History' }).click();
+      let deletionConfirmation = '';
+      p.once('dialog', async (dialog) => {
+        deletionConfirmation = dialog.message();
+        await dialog.accept();
+      });
       await p.getByRole('button', { name: 'Delete project Doomed Project' }).click();
+      assert(deletionConfirmation.includes('Doomed Project'), 'E2E-G project deletion did not request confirmation');
       await p.getByText(/Incomplete deletion warning/).first().waitFor({ state: 'visible' });
 
       const postState = await p.evaluate(() => ({
@@ -573,7 +582,103 @@ async (page) => {
     results.push('E2E-H: PASS', 'E2E-I: PASS');
   });
 
-  assert(results.length === 9, 'Expected 9 E2E results, got ' + results.length + ': ' + results.join(', '));
+  // E2E-J: long in-limit multiline seed remains editable and scrollable.
+  await runScenario('E2E-J', async (p, traps) => {
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('navigation', { name: 'Narrative workspace' })
+      .getByRole('button', { name: 'Plan', exact: true }).click();
+    const prompt = p.locator('#prompt-textarea:visible');
+    const initial = Array.from({ length: 135 }, (_, index) =>
+      `Synthetic line ${String(index + 1).padStart(3, '0')}: ${'x'.repeat(34)}`
+    ).join('\n');
+    await prompt.fill(initial);
+    const beforeEdit = await prompt.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      return {
+        value: element.value,
+        scrollTop: element.scrollTop,
+        scrollHeight: element.scrollHeight,
+        clientHeight: element.clientHeight,
+      };
+    });
+    assert(beforeEdit.value === initial, 'E2E-J multiline seed content changed during entry');
+    assert(beforeEdit.scrollHeight > beforeEdit.clientHeight && beforeEdit.scrollTop > 0,
+      'E2E-J long multiline seed did not expose an internal scroll area');
+    await prompt.press('End');
+    await prompt.pressSequentially('\nFinal line edited after scrolling.');
+    const afterEdit = await prompt.inputValue();
+    assert(afterEdit === `${initial}\nFinal line edited after scrolling.`,
+      'E2E-J could not edit the final prompt lines after scrolling');
+    assert(afterEdit.length < 8000, 'E2E-J fixture exceeded the compiled prompt limit');
+    const counter = p.getByText(/compiled chars/).first();
+    const counterText = await counter.innerText();
+    const counterColor = await counter.evaluate((element) => getComputedStyle(element).color);
+    assert(counterText.includes('/8,000 compiled chars') && counterColor !== 'rgb(220, 38, 38)',
+      'E2E-J in-limit prompt counter is missing or indicates an over-limit state: ' + counterText + ' / ' + counterColor);
+    assert(traps.pageErrors.length === 0, 'E2E-J pageErrors: ' + traps.pageErrors.join('; '));
+    assert(traps.paidApiHits.length === 0, 'E2E-J unexpected AI/API requests: ' + traps.paidApiHits.join(', '));
+    results.push('E2E-J: PASS');
+  });
+
+  // E2E-K: visible synthetic Story failure and user-owned recovery retry.
+  await runScenario('E2E-K', async (p, traps) => {
+    const storyCalls = [];
+    const apiEvidence = { requests: [], responses: [] };
+    p.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith('/api/')) apiEvidence.requests.push({ method: request.method(), path: url.pathname });
+    });
+    p.on('response', (response) => {
+      const url = new URL(response.url());
+      if (url.pathname.startsWith('/api/')) apiEvidence.responses.push({ status: response.status(), path: url.pathname });
+    });
+    await p.route('**/api/ai/provider-hub/status', (route) => route.fulfill({ json: {
+      capabilityPolicyVersion: 'qa-synthetic-policy-v1',
+      credentialAuthorityIds: { 'gemini-managed': 'qa-synthetic-authority' },
+      preferences: { defaultConnectionId: 'gemini-managed', defaultTextModelId: 'qa-synthetic-model', defaultReasoningLevel: 'default' },
+      connections: [{ id: 'gemini-managed', family: 'gemini', billing: 'host-managed-gemini', state: 'available', selectedModelId: 'qa-synthetic-model', models: [{
+        id: 'qa-synthetic-model', displayName: 'Synthetic managed model',
+        availability: { state: 'supported', value: true, evidence: [] },
+        textGeneration: { state: 'supported', value: true, evidence: [] },
+        structuredOutput: { state: 'supported', value: true, evidence: [] },
+        reasoning: { state: 'supported', value: ['default'], evidence: [] },
+        operationCapabilities: { story: { state: 'supported', value: true, evidence: [] } },
+        capabilityPolicyVersion: 'qa-synthetic-policy-v1',
+      }] }],
+      usage: { observedByConnection: {}, quota: { state: 'unknown' } },
+    } }));
+    await p.route('**/api/generate/story', async (route) => {
+      storyCalls.push(route.request().postDataJSON());
+      if (storyCalls.length === 1) return route.fulfill({ status: 503, json: {
+        error: { code: 'UPSTREAM_ERROR', message: 'Synthetic upstream unavailable.', retryable: true },
+      } });
+      return route.fulfill({ json: { story: 'Synthetic recovery story.' } });
+    });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await p.getByRole('navigation', { name: 'Narrative workspace' })
+      .getByRole('button', { name: 'Plan', exact: true }).click();
+    const generate = () => p.locator('footer').getByRole('button', { name: 'Generate Story', exact: true });
+    await generate().click();
+    const failure = p.getByRole('alert').filter({ hasText: /Generation Failed/i }).last();
+    await failure.waitFor({ state: 'visible' });
+    assert((await failure.innerText()).includes('Synthetic upstream unavailable.'),
+      'E2E-K synthetic provider error was not visible to the user');
+    await p.waitForTimeout(500);
+    assert(storyCalls.length === 1, 'E2E-K silently retried or fell back after the synthetic failure');
+    await generate().click();
+    await p.getByText('Synthetic recovery story.', { exact: true }).waitFor({ state: 'visible' });
+    assert(storyCalls.length === 2, 'E2E-K explicit retry did not make exactly one second request');
+    assert(apiEvidence.requests.filter((request) => request.path === '/api/generate/story').length === 2,
+      'E2E-K browser request count did not match the two user actions: ' + JSON.stringify(apiEvidence));
+    assert(apiEvidence.responses.some((response) => response.path === '/api/generate/story' && response.status === 503) &&
+      apiEvidence.responses.some((response) => response.path === '/api/generate/story' && response.status === 200),
+      'E2E-K expected 503 then 200 responses: ' + JSON.stringify(apiEvidence));
+    assert(traps.pageErrors.length === 0, 'E2E-K pageErrors: ' + traps.pageErrors.join('; '));
+    assert(traps.paidApiHits.length === 0, 'E2E-K unexpected real AI/API requests: ' + traps.paidApiHits.join(', '));
+    results.push('E2E-K: PASS');
+  });
+
+  assert(results.length === 11, 'Expected 11 E2E results, got ' + results.length + ': ' + results.join(', '));
   structured.finishedAt = new Date().toISOString();
   structured.passed = true;
   structured.summary = results;
@@ -640,11 +745,11 @@ if (data.artifactDiagnostic) {
     process.exit(1);
   }
   console.log("E2E_ARTIFACT_DIAGNOSTIC_PASS: screenshot, trace, and structured failure results captured.");
-} else if (!data.passed || !Array.isArray(data.summary) || data.summary.length !== 9) {
-  console.error("E2E_SMOKE_FAIL:", data.fatalError || "Not all 9 E2E scenarios passed", JSON.stringify(data.scenarios));
+} else if (!data.passed || !Array.isArray(data.summary) || data.summary.length !== 11) {
+  console.error("E2E_SMOKE_FAIL:", data.fatalError || "Not all 11 E2E scenarios passed", JSON.stringify(data.scenarios));
   process.exit(1);
 }
 console.log("E2E_RESULTS_VERIFIED:", data.summary.join(" | "));
 '
 
-echo "E2E_SMOKE_PASS: E2E-A through E2E-I verified on Chromium ($BASE_URL)"
+echo "E2E_SMOKE_PASS: E2E-A through E2E-K verified on Chromium ($BASE_URL)"

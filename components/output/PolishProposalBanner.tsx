@@ -12,6 +12,7 @@ interface PolishProposalBannerProps {
   polishStaleReason: string | null;
   isPolishingPrompt: boolean;
   onPolishPromptWithAi?: () => void;
+  polishAvailability: { eligible: boolean; reason?: string };
   onAcceptPolishProposal?: () => void;
   onRejectPolishProposal?: () => void;
 }
@@ -22,6 +23,7 @@ const PolishProposalBanner: React.FC<PolishProposalBannerProps> = ({
   polishStaleReason,
   isPolishingPrompt,
   onPolishPromptWithAi,
+  polishAvailability,
   onAcceptPolishProposal,
   onRejectPolishProposal,
 }) => {
@@ -52,7 +54,8 @@ const PolishProposalBanner: React.FC<PolishProposalBannerProps> = ({
             <button
               type="button"
               onClick={onPolishPromptWithAi}
-              disabled={isPolishingPrompt}
+              disabled={isPolishingPrompt || !polishAvailability.eligible}
+              title={!polishAvailability.eligible ? polishAvailability.reason : undefined}
               className="px-2.5 py-1 text-xs font-semibold rounded bg-amber-600 hover:bg-amber-700 text-white"
             >
               {isPolishingPrompt ? 'Re-polishing...' : 'Re-polish Current Prompt'}
@@ -83,6 +86,7 @@ const PolishProposalBanner: React.FC<PolishProposalBannerProps> = ({
           {polishStaleReason}
         </p>
       )}
+      {isPolishStale && !polishAvailability.eligible && <p role="status" className="text-xs text-amber-800 dark:text-amber-300">{polishAvailability.reason}</p>}
       <pre className="p-2 rounded bg-white dark:bg-gray-900 border border-indigo-200 dark:border-indigo-900 text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap font-mono max-h-28 overflow-y-auto">
         {polishProposal.polishedPrompt || polishProposal.proposedPrompt}
       </pre>

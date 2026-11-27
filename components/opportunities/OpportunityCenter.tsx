@@ -12,7 +12,7 @@ interface OpportunityCenterProps {
   projectId: string;
   projectRevision: number;
   proposals: OpportunityProposal[];
-  aiConfigured?: boolean;
+  opportunitiesAvailability?: { eligible: boolean; reason?: string };
   onCreate: (input: OpportunityProposalInput, expectedRevision: number) => void;
   onCreateBatch?: (inputs: OpportunityProposalInput[], expectedRevision: number) => void;
   onTransition: (id: string, status: OpportunityProposalStatus, expectedRevision: number) => void;
@@ -26,7 +26,7 @@ export default function OpportunityCenter({
   projectId,
   projectRevision,
   proposals,
-  aiConfigured = false,
+  opportunitiesAvailability = { eligible: false, reason: 'AI opportunity exploration is unavailable.' },
   onCreate,
   onCreateBatch,
   onTransition,
@@ -59,7 +59,7 @@ export default function OpportunityCenter({
           projectRevision={projectRevision}
           sections={sections}
           existingProposals={ordered}
-          aiConfigured={aiConfigured}
+          opportunitiesAvailability={opportunitiesAvailability}
           fieldClass={fieldClass}
           onCreate={onCreate}
           onCreateBatch={onCreateBatch}

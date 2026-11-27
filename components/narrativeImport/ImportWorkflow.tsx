@@ -67,7 +67,8 @@ export function buildSourceOnlyImportedProject(
 interface Props {
   existingProjects?: CreativeProject[];
   activeProjectId?: string;
-  aiConfigured?: boolean;
+  narrativeImportAvailability?: { eligible: boolean; reason?: string };
+  importEnhanceAvailability?: { eligible: boolean; reason?: string };
   onCreateProject: (project: CreativeProject) => Promise<void>;
   onAppendToExistingProject?: (params: {
     reviewedTarget: AppendTargetBase;
@@ -293,7 +294,8 @@ function filterMatchingCheckpoints(checkpoints: ImportCheckpoint[], parsed: Pars
 export default function ImportWorkflow({
   existingProjects = [],
   activeProjectId,
-  aiConfigured = true,
+  narrativeImportAvailability = { eligible: false, reason: 'Narrative import analysis is unavailable.' },
+  importEnhanceAvailability = { eligible: false, reason: 'Import enhancements are unavailable.' },
   onCreateProject,
   onAppendToExistingProject,
   onCancelImport,
@@ -409,7 +411,7 @@ export default function ImportWorkflow({
     [source, busy, callsUsed, providerPlanContext],
   );
   const canAnalyze = canStartImportAnalysis({
-    aiConfigured,
+    aiConfigured: narrativeImportAvailability.eligible,
     source,
     busy,
     sourceError,
@@ -667,7 +669,7 @@ export default function ImportWorkflow({
     if (!controller || stage2State.busy) return;
     await controller.run({
       request: enhanceRequestPreview,
-      aiConfigured,
+      aiConfigured: importEnhanceAvailability.eligible,
       identity: { sourceId, sourceVersion: 'v1', digest: source.digest },
       transport: requestImportEnhancements,
     });
@@ -847,7 +849,7 @@ export default function ImportWorkflow({
             callsUsed={callsUsed}
             checkpointRestored={checkpointRestored}
             failedChunks={failedChunks}
-            aiConfigured={aiConfigured}
+            narrativeImportAvailability={narrativeImportAvailability}
             progress={progress}
             cancelled={cancelled}
             requestError={requestError}
@@ -892,7 +894,7 @@ export default function ImportWorkflow({
             enhanceError={stage2State.error}
             enhancements={stage2State.proposals}
             acceptedEnhancementIds={stage2State.acceptedIds}
-            aiConfigured={aiConfigured}
+            importEnhanceAvailability={importEnhanceAvailability}
             destination={destination}
             existingProjects={existingProjects}
             targetProject={targetProject}
@@ -949,7 +951,7 @@ interface AnalysisConfigSectionProps {
   callsUsed: number;
   checkpointRestored: boolean;
   failedChunks: SourceChunk[];
-  aiConfigured: boolean;
+  narrativeImportAvailability: { eligible: boolean; reason?: string };
   progress: string;
   cancelled: boolean;
   requestError: string;
@@ -1095,10 +1097,10 @@ function AnalysisActionRow({
 }
 
 function AnalysisStatusNotices({
-  aiConfigured, busy, progress, callsUsed, cancelled, requestError,
+  narrativeImportAvailability, busy, progress, callsUsed, cancelled, requestError,
   showIncompletePrompt, allowIncomplete, onSetAllowIncomplete,
 }: {
-  aiConfigured: boolean;
+  narrativeImportAvailability: { eligible: boolean; reason?: string };
   busy: boolean;
   progress: string;
   callsUsed: number;
@@ -1110,7 +1112,7 @@ function AnalysisStatusNotices({
 }) {
   return (
     <>
-      {!aiConfigured && <p role="status">Analysis is unavailable because the server Gemini API key is not configured. Local source preview remains available.</p>}
+      {!narrativeImportAvailability.eligible && <p role="status">Analysis is unavailable: {narrativeImportAvailability.reason ?? 'not currently eligible.'} Local source preview remains available.</p>}
       {busy && <p role="status" aria-live="polite">{progress} · {callsUsed}/{MAX_EXTRACTION_CALLS} requests used</p>}
       {cancelled && <p className="text-sm">Analysis was cancelled. Completed segment results remain available for review.</p>}
       {requestError && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{requestError}</p>}
@@ -1128,7 +1130,7 @@ function AnalysisConfigSection(props: AnalysisConfigSectionProps) {
   const {
     source, strategy, scope, categories, instruction, checkpointMessage, checkpointCandidates,
     activeCheckpointId, initialAnalysisPlan, providerPlanContext, busy, creating, parsedHasFileRetentionGap,
-    confirmExtractedOnly, canAnalyze, callsUsed, checkpointRestored, failedChunks, aiConfigured,
+    confirmExtractedOnly, canAnalyze, callsUsed, checkpointRestored, failedChunks, narrativeImportAvailability,
     progress, cancelled, requestError, hasIncompleteCoverage, chunksLength, allowIncomplete,
     onSetStrategy, onSetScope, onToggleCategory, onChangeInstruction, onRestoreCheckpoint,
     onDeleteCheckpoint, onChooseSourceOnly, onStartAnalysis, onCancelAnalysis, onSetAllowIncomplete,
@@ -1160,7 +1162,7 @@ function AnalysisConfigSection(props: AnalysisConfigSectionProps) {
         onCancelAnalysis={onCancelAnalysis}
       />
       <AnalysisStatusNotices
-        aiConfigured={aiConfigured}
+        narrativeImportAvailability={narrativeImportAvailability}
         busy={busy}
         progress={progress}
         callsUsed={callsUsed}
