@@ -57,10 +57,43 @@ async function createMainWindow(origin) {
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url === 'about:blank') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          show: false,
+          webPreferences: {
+            contextIsolation: true,
+            sandbox: true,
+            nodeIntegration: false,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
+          },
+        },
+      };
+    }
     if (isSafeExternalUrl(url)) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };
+  });
+
+  win.webContents.on('did-create-window', (childWin) => {
+    const cleanupTimer = globalThis.setTimeout(() => {
+      if (!childWin.isDestroyed()) childWin.close();
+    }, 15_000);
+
+    childWin.on('closed', () => {
+      globalThis.clearTimeout(cleanupTimer);
+    });
+
+    childWin.webContents.on('will-navigate', (event, targetUrl) => {
+      event.preventDefault();
+      if (isSafeExternalUrl(targetUrl)) {
+        void shell.openExternal(targetUrl);
+      }
+      if (!childWin.isDestroyed()) childWin.close();
+    });
   });
 
   win.once('ready-to-show', () => {
