@@ -12,7 +12,7 @@ The arm64 Electron candidate launched from the produced bundle in isolated profi
 
 - Repository: `Centaurioun/Proactive-Co-Creator`, PR #23, branch `fix/macos-real-use-recovery-20261127`.
 - Starting source HEAD: `72c720e3b3b7e855f8cb9a7e118639fd13d1e46c` (tree `10b66aec10bdcf84b68480c254cc75183c952b5fa`).
-- Final product-source HEAD: `2cd66142c5f88a7ef9a3b1fe51c074df71d7744b` (tree `a68c0cb8e352952569d4dd26d7b8edbf50f4c56b`). This is the exact source used for the final build and CI run.
+- Final product-source HEAD: `2cd66142c5f88a7ef9a3b1fe51c074df71d7744b` (tree `a68c0cb8e352952569d4dd26d7b8edbf50f4c56b`). CI ran on this exact commit. The bundle was built from the equivalent product working-tree inputs after the deletion fix was applied and before that source diff was committed; see the build-input provenance below.
 - Qualification worktree: `/Users/yusuf/.codex/worktrees/pcc-mac-final-qualification-20261127`.
 - Node `v26.12.1`, npm `11.20.0`; macOS `27.0.1` (build `26A434`), arm64.
 - `package-lock.json` SHA-256: `a84e162321b23fa74524e34aa10a57556a17e21e11ef86580c0efb0b01ba738c` (unchanged).
@@ -68,7 +68,7 @@ These harness failures are retained as failures; manual native observations do n
 - DMG size: 151,418,814 bytes.
 - DMG SHA-256: `62b0a72371d32d61d77ef3f601ba1b9c0f34c359382929dd67a6417f0f2299e1`.
 - Packaged `app.asar` SHA-256: `fc13e521257ca506ec3ed1870dcee2d0eb5f3e47b161a2e6ec7007ab49afc76c`.
-- Latest DMG was produced by `npm run desktop:build`; its app bundle was verified against the packaged app content. Build emitted metadata/default-icon and duplicate dependency reference warnings in addition to the chunk warning.
+- Build-input provenance: the fixed `SavedProjectsSection.tsx` source was last modified at 18:38:40; app.asar was produced at 18:39:57 and the DMG at 18:40:05. The built app.asar contains the exact new confirmation copy (“This removes it from this browser…”). The later product commit `2cd6614` contains the same scoped source/test/harness diff that was present during the build. The subsequent `0f6fa49` closure commit changes only this report, confirmed by `git diff 2cd6614 0f6fa49 --name-only`; it does not change build inputs. The DMG was mounted read-only and its embedded app.asar SHA matches the candidate bundle. Build emitted metadata/default-icon and duplicate dependency reference warnings in addition to the chunk warning.
 - Signing: ad hoc/unsigned (`codesign` reported ad hoc, no team identity). Not notarized. `spctl` reported accepted only with `override=security disabled`; this is not a normal Gatekeeper acceptance result. No signing credentials or OS security settings were used.
 
 ## Native synthetic qualification
