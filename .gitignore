@@ -28,3 +28,7 @@ dist-ssr
 .backup-2026-11-16/
 .backup-2026-11-16-audit/
 
+
+dist-electron
+
+release

@@ -6,6 +6,8 @@ export default tseslint.config(
   {
     ignores: [
       'dist/**',
+      'dist-electron/**',
+      'release/**',
       'node_modules/**',
       '.venv/**',
       '.next/**',
@@ -18,6 +20,20 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ['electron/**/*.{mjs,cjs}', 'scripts/build-desktop-server.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        require: 'readonly',
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
   {
     files: ['**/*.{ts,tsx}'],
     plugins: {

@@ -13,7 +13,10 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "desktop:server": "node scripts/build-desktop-server.mjs",
+    "desktop:dev": "npm run build && npm run desktop:server && electron .",
+    "desktop:build": "npm run build && npm run desktop:server && electron-builder --mac dmg --arm64"
   },
   "dependencies": {
     "@google/genai": "^3.3.0",
@@ -33,6 +36,8 @@
     "@types/react-dom": "^19.3.0",
     "@typescript/native-compiler7": "npm:typescript@^7.0.2",
     "@vitejs/plugin-react": "^6.3.0",
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
     "eslint": "^10.15.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "tailwindcss": "^4.3.5",
@@ -40,5 +45,6 @@
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.74.0",
     "vite": "^8.3.8"
-  }
+  },
+  "main": "electron/main.mjs"
 }

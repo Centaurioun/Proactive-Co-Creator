@@ -1,0 +1,25 @@
+appId: com.centaurioun.proactive-co-creator
+productName: Proactive Co-Creator
+asar: true
+directories:
+  output: release
+files:
+  - dist/**
+  - dist-electron/**
+  - electron/**
+  - package.json
+  - "!**/.env*"
+  - "!**/.*"
+  - "!docs/**"
+  - "!tests/**"
+  - "!scripts/**"
+  - "!release/**"
+mac:
+  category: public.app-category.productivity
+  identity: null
+  target:
+    - target: dmg
+      arch:
+        - arm64
+dmg:
+  artifactName: Proactive Co-Creator.dmg
