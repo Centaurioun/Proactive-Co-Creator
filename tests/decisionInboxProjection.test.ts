@@ -9,6 +9,7 @@ import {
   buildDecisionInboxFromSnapshot,
   createSampleProject,
 } from '../lib/canonicalModel.ts';
+import { buildDecisionInboxFromSnapshot as projectDecisionInbox } from '../lib/decisionInboxProjection.ts';
 import type { Clarification, DecisionItem, Entity, ProjectSnapshot, Relationship } from '../shared/types.ts';
 
 function cloneSampleSnapshot(): ProjectSnapshot {
@@ -16,6 +17,23 @@ function cloneSampleSnapshot(): ProjectSnapshot {
 }
 
 describe('Decision Inbox Projection Characterization', () => {
+  it('uses the current authoring clock when new decisions are projected outside migration', () => {
+    const snapshot = cloneSampleSnapshot();
+    snapshot.decisions = [];
+    const originalNow = Date.now;
+    let now = 500;
+    Date.now = () => ++now;
+    try {
+      const first = projectDecisionInbox(snapshot);
+      const second = projectDecisionInbox(snapshot);
+      assert.ok(first.length > 0);
+      assert.ok(first.every(({ createdAt }) => createdAt === 501));
+      assert.ok(second.every(({ createdAt }) => createdAt === 502));
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   it('preserves 4-phase ordering: clarification -> attribute/story-bible -> relationship -> retained', () => {
     const snap = cloneSampleSnapshot();
     const retainedConflict: DecisionItem = {

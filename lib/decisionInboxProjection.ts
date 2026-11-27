@@ -60,6 +60,12 @@ function resolveClarificationStatus(
   return prev?.status && prev.status !== 'pending' ? prev.status : 'pending';
 }
 
+function resolveDecisionCreatedAt(prev: DecisionItem | undefined, now: number): number {
+  return typeof prev?.createdAt === 'number' && Number.isFinite(prev.createdAt)
+    ? prev.createdAt
+    : now;
+}
+
 function buildClarificationDecision(
   clar: Clarification,
   prev: DecisionItem | undefined,
@@ -82,7 +88,7 @@ function buildClarificationDecision(
     questionId: clar.id ?? clar.question,
     proposedValue: prev?.proposedValue ?? clar.options[0] ?? '',
     options: clar.options,
-    createdAt: prev?.createdAt ?? now,
+    createdAt: resolveDecisionCreatedAt(prev, now),
   };
 }
 
@@ -141,7 +147,7 @@ function buildAttributeDecision(
     currentValue: attr.confirmedValue ?? 'Unconfirmed',
     proposedValue: prev?.proposedValue ?? candidateVal,
     options: attr.value.map((v) => v.name),
-    createdAt: prev?.createdAt ?? now,
+    createdAt: resolveDecisionCreatedAt(prev, now),
   };
 }
 
@@ -205,7 +211,7 @@ function buildRelationshipDecision(
     currentValue: 'Unconfirmed',
     proposedValue: prev?.proposedValue ?? rel.label,
     options: Array.from(new Set([rel.label, ...(rel.alternatives?.map((a) => a.name) ?? [])])),
-    createdAt: prev?.createdAt ?? now,
+    createdAt: resolveDecisionCreatedAt(prev, now),
   };
 }
 

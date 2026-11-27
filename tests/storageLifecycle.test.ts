@@ -14,6 +14,7 @@ import {
   updateStoryBibleField,
 } from '../lib/canonicalModel.ts';
 import { ensureNarrativeEnvelope } from '../lib/narrative/diagnostics/engine.ts';
+import { intentOperationFingerprint } from '../lib/storage/casPolicy.ts';
 import { createUndoRedoState } from '../lib/historyEngine.ts';
 import {
   applyAsyncAnalysisCompletion,
@@ -240,6 +241,21 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
       });
 
       assert.equal(saved.saved, true, saved.error ?? 'A save based on the unchanged raw IndexedDB record should commit.');
+      const conflictingWriter = {
+        ...candidate,
+        snapshot: { ...candidate.snapshot, freeformNotes: 'Synthetic conflicting writer.' },
+      };
+      const concurrentAttempt = await persistProjectDurably(conflictingWriter, {
+        expectedBaseProject: base,
+        expectedPersistedRevision: base.revision,
+      });
+      assert.equal(concurrentAttempt.saved, false);
+      assert.equal(concurrentAttempt.conflictDetected, true);
+      assert.equal(
+        (fakeIdb.records.get(base.id) as unknown as CreativeProject).snapshot.freeformNotes,
+        'Synthetic first edit after reload.',
+        'A genuine newer durable write must remain intact when the stale base conflicts.'
+      );
       const secondRead = await loadProjectsFromIndexedDbDetailed();
       const afterCommit = secondRead.projects.find(project => project.id === raw.id)!;
       assert.deepEqual(
@@ -248,6 +264,84 @@ describe('Storage & Lifecycle Defect Reproduction & Regression Suite (Defects 1â
         'Once written, the derived decisions retain their timestamps across reload.'
       );
       assert.equal(afterCommit.snapshot.freeformNotes, 'Synthetic first edit after reload.');
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it('S1: identical schema 3 and 4 records with missing or invalid timestamps migrate deterministically', async () => {
+    const originalNow = Date.now;
+    let now = 9000;
+    Date.now = () => ++now;
+    try {
+      for (const schemaVersion of [SCHEMA_VERSION, 4]) {
+        const base = structuredClone(createSampleProject(1000));
+        const raw: Record<string, unknown> = {
+          ...base,
+          id: `missing-migration-times-v${schemaVersion}`,
+          schemaVersion,
+          createdAt: Number.NaN,
+          updatedAt: Number.POSITIVE_INFINITY,
+          revisions: base.revisions.map((revision) => ({ ...revision, timestamp: Number.NaN })),
+          snapshot: {
+            ...base.snapshot,
+            decisions: [{ ...base.snapshot.decisions[0], createdAt: Number.NaN }],
+            storyBible: Object.fromEntries(
+              Object.entries(base.snapshot.storyBible).map(([key, entry]) => [
+                key,
+                { ...entry, updatedAt: Number.NaN },
+              ]),
+            ) as typeof base.snapshot.storyBible,
+          },
+          ...(schemaVersion === 4
+            ? {
+                narrative: {
+                  versions: [], sectionVersions: [], audit: [], sources: [], claims: [], issues: [],
+                },
+          }
+            : {}),
+        };
+
+        const rawJsonBeforeMigration = JSON.stringify(raw);
+        const first = migrateProjectPayload(raw);
+        const second = migrateProjectPayload(raw);
+        assert.equal(JSON.stringify(raw), rawJsonBeforeMigration, 'Migration reads must not normalize the raw input in place.');
+        assert.equal(first.schemaVersion, schemaVersion);
+        assert.deepEqual(
+          first.snapshot.decisions.map(({ id, createdAt }) => [id, createdAt]),
+          second.snapshot.decisions.map(({ id, createdAt }) => [id, createdAt]),
+          `Schema ${schemaVersion} decision timestamps must be identical for repeated migration.`,
+        );
+        assert.ok(
+          first.snapshot.decisions.every(({ createdAt }) => createdAt === 0),
+          `Schema ${schemaVersion} must use the deterministic epoch fallback if no raw timestamp is valid.`,
+        );
+        assert.equal(first.snapshot.storyBible.genre.updatedAt, 0);
+        assert.equal(first.snapshot.storyBible.tone.updatedAt, 0);
+        assert.equal(first.createdAt, 0);
+        assert.equal(first.updatedAt, 0);
+        assert.ok(first.revisions.every(({ timestamp }) => timestamp === 0));
+        assert.equal(
+          intentOperationFingerprint(first),
+          intentOperationFingerprint(second),
+          `Schema ${schemaVersion} CAS fingerprints must not drift across migration reads.`,
+        );
+        assert.deepEqual(first.snapshot.decisions, second.snapshot.decisions);
+
+        fakeIdb.records.set(first.id, structuredClone(raw) as unknown as CreativeProject);
+        const candidate = {
+          ...first,
+          revision: first.revision + 1,
+          persistedRevision: first.revision,
+          updatedAt: 1,
+          snapshot: { ...first.snapshot, freeformNotes: `Stable v${schemaVersion} migration save.` },
+        };
+        const saved = await persistProjectDurably(candidate, {
+          expectedBaseProject: first,
+          expectedPersistedRevision: first.revision,
+        });
+        assert.equal(saved.saved, true, saved.error ?? `Schema ${schemaVersion} CAS save should pass.`);
+      }
     } finally {
       Date.now = originalNow;
     }
