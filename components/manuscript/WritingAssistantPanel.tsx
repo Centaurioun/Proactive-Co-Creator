@@ -170,7 +170,7 @@ export default function WritingAssistantPanel({
   const handleRun = async () => {
     if (!section || !requestPreview || !validatedSelection.ok || loading) return;
     if (!aiConfigured) {
-      setError('Server Gemini API key is not configured. Writing Assistant requires server-side AI credentials.');
+      setError('Server Gemini API key is not configured for the current Writing Assistant gate. ChatGPT plan is qualified only for local Story (GPT-6 Luna / Default).');
       return;
     }
     if (missingRequiredSelection) {
@@ -265,7 +265,7 @@ export default function WritingAssistantPanel({
 
         {!aiConfigured && (
           <p role="status" className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-            AI Writing Assistant is unavailable because the server Gemini API key is not configured. Manual editing, saving, and style notes remain fully available.
+            AI Writing Assistant is unavailable: the current gate requires server Gemini credentials. ChatGPT plan is qualified only for local Story (GPT-6 Luna / Default). Manual editing, saving, and style notes remain fully available.
           </p>
         )}
 

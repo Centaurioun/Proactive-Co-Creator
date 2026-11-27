@@ -159,3 +159,16 @@ export function catalogVerificationFingerprint(
       !['available', 'connected'].includes(connection.state)) return undefined;
   return JSON.stringify([connectionId, authority, status.capabilityPolicyVersion, connection.models]);
 }
+
+/** UI-only early rejection. Final admission remains on the server.
+ * Image retains the existing managed-Gemini route; Story has its own preflight. */
+export function chatGptOperationBlockReason(
+  operation: AiOperation,
+  preferences?: ProviderPreferences,
+): string | undefined {
+  if (operation === 'story' || operation === 'image') return undefined;
+  const selectedConnection = preferences?.operationOverrides?.[operation]?.connectionId ?? preferences?.defaultConnectionId;
+  return selectedConnection === 'chatgpt-plan'
+    ? 'ChatGPT plan is currently qualified only for local Story with GPT-6 Luna and Default reasoning. Choose a compatible connection explicitly for ' + operation + ' in AI Settings.'
+    : undefined;
+}

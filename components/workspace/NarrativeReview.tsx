@@ -221,7 +221,7 @@ export default function NarrativeReview({
 
   const runSemanticDiagnostics = () => {
     if (!aiConfigured) {
-      setDiagError('Server Gemini API key is not configured. Use Run Local Checks or configure server AI credentials.');
+      setDiagError('Server Gemini API key is not configured for the current diagnostics gate. ChatGPT plan is qualified only for local Story. Use Run Local Checks.');
       return;
     }
     if (!onRunSemanticDiagnostics) return;
@@ -280,7 +280,7 @@ export default function NarrativeReview({
 
   const requestAiFixesForIssue = (issue: NarrativeIssue) => {
     if (!aiConfigured) {
-      setFixError('Server Gemini API key is not configured. Deterministic local fixes remain available above.');
+      setFixError('Server Gemini API key is not configured for the current diagnostics gate. ChatGPT plan is qualified only for local Story. Deterministic local fixes remain available above.');
       return;
     }
     setFixError('');
@@ -344,7 +344,7 @@ export default function NarrativeReview({
       return;
     }
     if (!aiConfigured) {
-      setSyncError('Server Gemini API key is not configured. Manuscript ↔ Model AI sync requires server credentials.');
+      setSyncError('Server Gemini API key is not configured for the current sync gate. ChatGPT plan is qualified only for local Story, not manuscript/model sync.');
       return;
     }
     const context = captureProposalReviewContext(project);

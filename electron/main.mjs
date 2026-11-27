@@ -60,8 +60,13 @@ function initDesktopPersistence() {
   const prefsFile = path.join(userDataDir, 'provider-preferences.json');
 
   // Restore encrypted OAuth state only. If unavailable, reconnect explicitly.
-  const savedTokens = readEncryptedSession(sessionFile, safeStorage);
-  if (savedTokens) chatGptSessionStore.install(savedTokens);
+  try {
+    const savedTokens = readEncryptedSession(sessionFile, safeStorage);
+    if (savedTokens) chatGptSessionStore.install(savedTokens);
+    else if (fs.existsSync(sessionFile)) console.warn('PCC: encrypted ChatGPT session could not be restored; reconnect explicitly.');
+  } catch {
+    console.warn('PCC: saved ChatGPT session is invalid; reconnect explicitly.');
+  }
   chatGptSessionStore.setPersistenceHandler((tokens) => {
     if (!persistEncryptedSession(sessionFile, tokens, safeStorage)) {
       console.warn('PCC: secure ChatGPT session persistence unavailable; session may need reauthorization after restart.');

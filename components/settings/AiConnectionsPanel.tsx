@@ -76,7 +76,6 @@ export default function AiConnectionsPanel() {
   const [catalogPhases, setCatalogPhases] = useState<Partial<Record<AiConnectionId, CatalogRefreshPhase>>>({});
 
   const statusRef = useRef<ProviderHubStatus | null>(null);
-  const catalogPhasesRef = useRef<Partial<Record<AiConnectionId, CatalogRefreshPhase>>>({});
   const statusEpoch = useRef(0);
   const catalogEpochs = useRef(new Map<AiConnectionId, number>());
   const busyCountRef = useRef(0);
@@ -96,11 +95,7 @@ export default function AiConnectionsPanel() {
       | Partial<Record<AiConnectionId, CatalogRefreshPhase>>
       | ((prev: Partial<Record<AiConnectionId, CatalogRefreshPhase>>) => Partial<Record<AiConnectionId, CatalogRefreshPhase>>),
   ) => {
-    setCatalogPhases(prev => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      catalogPhasesRef.current = next;
-      return next;
-    });
+    setCatalogPhases(updater);
   }, []);
 
   const publishStatus = useCallback((next: ProviderHubStatus) => {

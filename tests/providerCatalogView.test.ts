@@ -108,3 +108,13 @@ test('catalog proof survives modal reopen only for matching credential authority
   assert.equal(catalogView.catalogVerificationFingerprint({ ...status, connections: [{ ...status.connections[0], state: 'expired' }] }, 'chatgpt-plan'), undefined);
   assert.equal(catalogView.catalogVerificationFingerprint({ ...status, credentialAuthorityIds: {} }, 'chatgpt-plan'), undefined);
 });
+
+test('unqualified ChatGPT operation preflight respects explicit overrides and never substitutes a provider', () => {
+  const prefs = { defaultConnectionId: 'chatgpt-plan' as const };
+  assert.match(catalogView.chatGptOperationBlockReason('analyze', prefs) ?? '', /only for local Story/);
+  assert.match(catalogView.chatGptOperationBlockReason('writing', prefs) ?? '', /writing/);
+  assert.equal(catalogView.chatGptOperationBlockReason('story', prefs), undefined);
+  assert.equal(catalogView.chatGptOperationBlockReason('image', prefs), undefined);
+  assert.equal(catalogView.chatGptOperationBlockReason('analyze', { ...prefs, operationOverrides: { analyze: { connectionId: 'gemini-personal' } } }), undefined);
+  assert.ok(catalogView.chatGptOperationBlockReason('clarify', { defaultConnectionId: 'gemini-managed', operationOverrides: { clarify: { connectionId: 'chatgpt-plan' } } }));
+});

@@ -58,7 +58,7 @@ const SemanticAnalysisPanel: React.FC<SemanticAnalysisPanelProps> = ({
     <h3 className="font-semibold">Analyze Consistency (AI Semantic Pass)</h3>
     {!aiConfigured && (
       <p role="status" className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-        Server Gemini API key is not configured. Local deterministic checks and local fixes remain fully functional.
+        Server Gemini API key is not configured for the current diagnostics gate. ChatGPT plan is qualified only for local Story (GPT-6 Luna / Default). Local deterministic checks and local fixes remain fully functional.
       </p>
     )}
     <div className="flex flex-wrap items-end gap-2">

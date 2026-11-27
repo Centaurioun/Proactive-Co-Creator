@@ -65,7 +65,8 @@ import {
 } from './lib/projectController';
 import { buildStartupAnalysisProviderInputs } from './lib/promptBuilder';
 import { deleteProjectCompletely, loadProjectsFromLocalStorage, type IndexedDbLoadStatus } from './lib/storageEngine';
-import { analyzePromptToBeliefGraph, generateClarifications } from './services/apiClient';
+import { analyzePromptToBeliefGraph, generateClarifications, readProviderPreferencesSnapshot } from './services/apiClient';
+import { chatGptOperationBlockReason } from './lib/providerCatalogView';
 import { MAX_PROMPT_CHARS, validateEffectivePromptLength } from './shared/schemas';
 import type {
   BatchEditProposalResult,
@@ -443,6 +444,24 @@ function App() {
       setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: providerInputs.reason }));
       setClarificationErrors((prev) => ({ ...prev, [originProject.id]: providerInputs.reason }));
       setStatusNotification(providerInputs.reason);
+      return;
+    }
+    // Reanalyze starts both analyze and clarify; reject unsupported
+    // selections before starting either request or the async loading slot.
+    try {
+      const { preferences } = readProviderPreferencesSnapshot();
+      const blocked = chatGptOperationBlockReason('analyze', preferences) ??
+        chatGptOperationBlockReason('clarify', preferences);
+      if (blocked) {
+        setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: blocked }));
+        setClarificationErrors((prev) => ({ ...prev, [originProject.id]: blocked }));
+        setStatusNotification(blocked);
+        return;
+      }
+    } catch (error) {
+      const message = getReadableErrorMessage(error, 'Could not verify AI provider preferences.');
+      setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: message }));
+      setStatusNotification(message);
       return;
     }
     if (providerInputs.warning) setStatusNotification(providerInputs.warning);
