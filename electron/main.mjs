@@ -1,7 +1,15 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, dialog, shell } from 'electron';
-import { createApp } from '../dist-electron/server.mjs';
+import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
+import {
+  chatGptSessionStore,
+  createApp,
+  setChatGptCatalogPersistenceHandler,
+  setChatGptModels,
+  setPreferences,
+  setPreferencesPersistenceHandler,
+} from '../dist-electron/server.mjs';
 import {
   isAllowedNavigationUrl,
   isSafeExternalUrl,
@@ -26,6 +34,84 @@ if (!gotLock) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
+  });
+}
+
+function readJsonSafe(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return undefined;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+function writeJsonSafe(filePath, value) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(value), { mode: 0o600 });
+  } catch {
+    // Non-fatal persistence error
+  }
+}
+
+function initDesktopPersistence() {
+  const userDataDir = app.getPath('userData');
+  const sessionFile = path.join(userDataDir, 'chatgpt-session.enc');
+  const catalogFile = path.join(userDataDir, 'chatgpt-models.json');
+  const prefsFile = path.join(userDataDir, 'provider-preferences.json');
+
+  // 1. Restore ChatGPT OAuth session (encrypted via macOS Keychain / Electron safeStorage)
+  try {
+    if (fs.existsSync(sessionFile)) {
+      const raw = fs.readFileSync(sessionFile);
+      const jsonText = safeStorage.isEncryptionAvailable()
+        ? safeStorage.decryptString(raw)
+        : raw.toString('utf8');
+      const savedTokens = JSON.parse(jsonText);
+      if (savedTokens && typeof savedTokens.accessToken === 'string') {
+        chatGptSessionStore.install(savedTokens);
+      }
+    }
+  } catch {
+    // Corrupted or unreadable session file; user can reconnect cleanly
+  }
+
+  chatGptSessionStore.setPersistenceHandler((tokens) => {
+    try {
+      if (!tokens) {
+        if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
+        return;
+      }
+      fs.mkdirSync(userDataDir, { recursive: true });
+      const payload = JSON.stringify(tokens);
+      const data = safeStorage.isEncryptionAvailable()
+        ? safeStorage.encryptString(payload)
+        : Buffer.from(payload, 'utf8');
+      fs.writeFileSync(sessionFile, data, { mode: 0o600 });
+    } catch {
+      // Non-fatal persistence error
+    }
+  });
+
+  // 2. Restore cached ChatGPT model catalog
+  const savedCatalog = readJsonSafe(catalogFile);
+  if (Array.isArray(savedCatalog) && savedCatalog.length > 0) {
+    setChatGptModels(savedCatalog);
+  }
+  setChatGptCatalogPersistenceHandler((models) => {
+    writeJsonSafe(catalogFile, models);
+  });
+
+  // 3. Restore provider preferences (defaulting to chatgpt-plan in desktop mode)
+  const savedPrefs = readJsonSafe(prefsFile);
+  if (savedPrefs && typeof savedPrefs.defaultConnectionId === 'string') {
+    setPreferences(savedPrefs);
+  } else {
+    setPreferences({ defaultConnectionId: 'chatgpt-plan' });
+  }
+  setPreferencesPersistenceHandler((prefs) => {
+    writeJsonSafe(prefsFile, prefs);
   });
 }
 
@@ -114,6 +200,9 @@ async function boot() {
   const port = resolveDesktopPort(process.env);
   process.env.PORT = String(port);
   process.env.NODE_ENV = 'production';
+  process.env.PCC_DESKTOP_MODE = '1';
+
+  initDesktopPersistence();
 
   try {
     desktopServer = await startDesktopServer({

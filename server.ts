@@ -9,6 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createApiRouter, type ApiRouterOptions } from './server/routes.ts';
+export { chatGptSessionStore } from './server/auth/chatgpt/runtime.ts';
+export { setChatGptModels, setChatGptCatalogPersistenceHandler, setPreferences, setPreferencesPersistenceHandler } from './server/providers/runtime.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

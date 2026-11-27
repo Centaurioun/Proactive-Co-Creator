@@ -83,8 +83,13 @@ export function getPreferences(): ProviderPreferences {
   return structuredClone(preferences);
 }
 
+let preferencesPersistenceHandler: ((value: ProviderPreferences) => void) | undefined;
+export function setPreferencesPersistenceHandler(handler: ((value: ProviderPreferences) => void) | undefined): void {
+  preferencesPersistenceHandler = handler;
+}
 export function setPreferences(value: ProviderPreferences): void {
   preferences = structuredClone(value);
+  preferencesPersistenceHandler?.(structuredClone(value));
 }
 
 export function setPersonalGeminiKey(value: string | undefined): void {
@@ -117,7 +122,14 @@ export function createOpenAiApiAdapter(fetchImpl: typeof fetch = fetch): ChatGpt
 }
 
 export function getChatGptModels(): AiModelDescriptor[] { return structuredClone(chatGptModels); }
-export function setChatGptModels(value: AiModelDescriptor[]): void { chatGptModels = structuredClone(value); }
+let chatGptCatalogPersistenceHandler: ((value: AiModelDescriptor[]) => void) | undefined;
+export function setChatGptCatalogPersistenceHandler(handler: ((value: AiModelDescriptor[]) => void) | undefined): void {
+  chatGptCatalogPersistenceHandler = handler;
+}
+export function setChatGptModels(value: AiModelDescriptor[]): void {
+  chatGptModels = structuredClone(value);
+  chatGptCatalogPersistenceHandler?.(structuredClone(value));
+}
 export function getCachedProviderModel(connectionId: AiConnectionId, modelId: string): AiModelDescriptor | undefined {
   const list = connectionId === 'gemini-managed' ? managedGeminiModels
     : connectionId === 'gemini-personal' ? personalGeminiModels
