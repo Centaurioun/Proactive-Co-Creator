@@ -61,7 +61,7 @@ interface Props {
   initialArtifactId?: string;
   onDismissAdoption?: () => void;
   focusedSectionId?: string;
-  aiConfigured?: boolean;
+  writingAvailability?: { eligible: boolean; reason?: string };
   onSaveWritingAlternative?: (alternative: {
     sectionId: string;
     action: WritingAssistAction;
@@ -108,7 +108,7 @@ export default function ManuscriptEditor({
   initialArtifactId,
   onDismissAdoption,
   focusedSectionId,
-  aiConfigured = false,
+  writingAvailability = { eligible: false, reason: 'Writing assistance is unavailable.' },
   onSaveWritingAlternative,
   onExportDraft,
 }: Props) {
@@ -398,7 +398,7 @@ export default function ManuscriptEditor({
                 section={selected}
                 selectionStart={selectionRange.start}
                 selectionEnd={selectionRange.end}
-                aiConfigured={aiConfigured}
+                writingAvailability={writingAvailability}
                 disabled={!enabled || saving || adopting}
                 onReplaceOrInsert={(nextText) => {
                   if (selected) update({ text: nextText });

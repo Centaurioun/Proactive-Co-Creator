@@ -118,3 +118,89 @@ test('unqualified ChatGPT operation preflight respects explicit overrides and ne
   assert.equal(catalogView.chatGptOperationBlockReason('analyze', { ...prefs, operationOverrides: { analyze: { connectionId: 'gemini-personal' } } }), undefined);
   assert.ok(catalogView.chatGptOperationBlockReason('clarify', { defaultConnectionId: 'gemini-managed', operationOverrides: { clarify: { connectionId: 'chatgpt-plan' } } }));
 });
+
+test('operation eligibility merges each override field over the default route independently', () => {
+  const model = (id: string, operation: string) => ({
+    id, displayName: id, availability: { state: 'supported', value: true, evidence: [] },
+    textGeneration: { state: 'supported', value: true, evidence: [] }, imageGeneration: { state: 'unknown', reason: 'n/a' },
+    structuredOutput: { state: 'unknown', reason: 'n/a' }, contextLimit: { state: 'unknown', reason: 'n/a' }, outputLimit: { state: 'unknown', reason: 'n/a' },
+    reasoning: { state: 'supported', value: ['default'], evidence: [] }, operationCapabilities: { [operation]: { state: 'supported', value: true, evidence: [] } }, capabilityPolicyVersion: 'test',
+  });
+  const status = { preferences: { defaultConnectionId: 'gemini-personal' as const, defaultTextModelId: 'default-model', defaultReasoningLevel: 'default' as const, operationOverrides: { analyze: { modelId: 'override-model' } } }, connections: [{ id: 'gemini-personal' as const, state: 'connected' as const, models: [model('default-model', 'clarify'), model('override-model', 'analyze')] }] };
+  assert.deepEqual(catalogView.resolveOperationEligibility(status, 'analyze'), { eligible: true, connectionId: 'gemini-personal', modelId: 'override-model', reasoningLevel: 'default' });
+});
+
+test('Gemini Personal and OpenAI API require connected state and supported per-model operation capability', () => {
+  const descriptor = (id: string, operation: string) => ({ id, displayName: id, availability: { state: 'supported' as const, value: true, evidence: [] }, textGeneration: { state: 'supported' as const, value: true, evidence: [] }, imageGeneration: { state: 'unsupported' as const, evidence: [] }, structuredOutput: { state: 'unknown' as const, reason: 'unknown' }, contextLimit: { state: 'unknown' as const, reason: 'unknown' }, outputLimit: { state: 'unknown' as const, reason: 'unknown' }, reasoning: { state: 'unknown' as const, reason: 'unknown' }, operationCapabilities: { [operation]: { state: 'supported' as const, value: true, evidence: [] } }, capabilityPolicyVersion: 'test' });
+  for (const id of ['gemini-personal', 'openai-api'] as const) {
+    const status = { preferences: { defaultConnectionId: id, defaultTextModelId: 'model' }, connections: [{ id, state: 'connected' as const, models: [descriptor('model', 'writing')] }] };
+    assert.equal(catalogView.resolveOperationEligibility(status, 'writing').eligible, true);
+  }
+});
+
+test('operation eligibility explains unconfigured, disconnected, and unknown capability states', () => {
+  const pref = { defaultConnectionId: 'openai-api' as const, defaultTextModelId: 'm' };
+  const model = { id: 'm', displayName: 'm', availability: { state: 'supported' as const, value: true, evidence: [] }, textGeneration: { state: 'supported' as const, value: true, evidence: [] }, imageGeneration: { state: 'unsupported' as const, evidence: [] }, structuredOutput: { state: 'unknown' as const, reason: 'unknown' }, contextLimit: { state: 'unknown' as const, reason: 'unknown' }, outputLimit: { state: 'unknown' as const, reason: 'unknown' }, reasoning: { state: 'unknown' as const, reason: 'unknown' }, operationCapabilities: { analyze: { state: 'unknown' as const, reason: 'No verified mapping for analyze.' } }, capabilityPolicyVersion: 'test' };
+  const resolve = (state: 'unconfigured' | 'expired' | 'connected') => catalogView.resolveOperationEligibility({ preferences: pref, connections: [{ id: 'openai-api' as const, state, models: [model] }] }, 'analyze');
+  assert.match(resolve('unconfigured').reason ?? '', /not configured/);
+  assert.match(resolve('expired').reason ?? '', /expired/);
+  assert.equal(resolve('connected').reason, 'No verified mapping for analyze.');
+});
+
+test('ChatGPT operations are Story-only, requiring local activation and exact Luna/Default selection', () => {
+  const luna = { id: 'gpt-6-luna', displayName: 'GPT-6 Luna', availability: { state: 'supported' as const, value: true, evidence: [] }, textGeneration: { state: 'supported' as const, value: true, evidence: [] }, imageGeneration: { state: 'unsupported' as const, evidence: [] }, structuredOutput: { state: 'unknown' as const, reason: 'unknown' }, contextLimit: { state: 'unknown' as const, reason: 'unknown' }, outputLimit: { state: 'unknown' as const, reason: 'unknown' }, reasoning: { state: 'supported' as const, value: ['default'] as const, evidence: [] }, operationCapabilities: {}, capabilityPolicyVersion: 'test' };
+  const base = { preferences: { defaultConnectionId: 'chatgpt-plan' as const, defaultTextModelId: 'gpt-6-luna', defaultReasoningLevel: 'default' as const }, connections: [{ id: 'chatgpt-plan' as const, state: 'connected' as const, models: [luna] }] };
+  assert.match(catalogView.resolveOperationEligibility(base, 'analyze', true).reason ?? '', /only for local Story/);
+  assert.match(catalogView.resolveOperationEligibility(base, 'story').reason ?? '', /not activated/);
+  assert.equal(catalogView.resolveOperationEligibility(base, 'story', true).eligible, true);
+  assert.match(catalogView.resolveOperationEligibility({ ...base, preferences: { ...base.preferences, defaultReasoningLevel: 'medium' } }, 'story', true).reason ?? '', /GPT-6 Luna with Default/);
+});
+
+test('managed Gemini accepts its available host route and provider default, while unconfigured stays blocked', () => {
+  const preferences = { defaultConnectionId: 'gemini-managed' as const };
+  const managed = { preferences, connections: [{ id: 'gemini-managed' as const, state: 'available' as const, selectedModelId: 'managed-default', models: [] }] };
+  assert.deepEqual(catalogView.resolveOperationEligibility(managed, 'analyze'), { eligible: true, connectionId: 'gemini-managed', modelId: 'managed-default', reasoningLevel: 'default' });
+  const providerDefault = { ...managed, connections: [{ ...managed.connections[0], selectedModelId: undefined }] };
+  assert.deepEqual(catalogView.resolveOperationEligibility(providerDefault, 'analyze'), { eligible: true, connectionId: 'gemini-managed', reasoningLevel: 'default' });
+  const unconfigured = { ...managed, connections: [{ ...managed.connections[0], state: 'unconfigured' as const }] };
+  assert.match(catalogView.resolveOperationEligibility(unconfigured, 'analyze').reason ?? '', /not configured/);
+});
+
+test('ChatGPT unsupported operations explain policy before disconnected state; unverified reasoning is blocked', () => {
+  const base = {
+    preferences: { defaultConnectionId: 'chatgpt-plan' as const, defaultTextModelId: 'gpt-6-luna' },
+    connections: [{ id: 'chatgpt-plan' as const, state: 'expired' as const, models: [] }],
+  };
+  assert.match(catalogView.resolveOperationEligibility(base, 'analyze').reason ?? '', /only for local Story/);
+  const openAi = {
+    preferences: { defaultConnectionId: 'openai-api' as const, defaultTextModelId: 'm', operationOverrides: { writing: { reasoningLevel: 'medium' as const } } },
+    connections: [{ id: 'openai-api' as const, state: 'connected' as const, models: [{
+      id: 'm', availability: { state: 'supported' }, textGeneration: { state: 'supported' },
+      reasoning: { state: 'unknown', reason: 'not verified' },
+      operationCapabilities: { writing: { state: 'supported', value: true } },
+    }] }],
+  };
+  assert.match(catalogView.resolveOperationEligibility(openAi, 'writing').reason ?? '', /not verified/);
+});
+
+test('non-default reasoning is accepted only when the selected model lists that verified level', () => {
+  const input = {
+    preferences: { defaultConnectionId: 'openai-api' as const, defaultTextModelId: 'm', operationOverrides: { writing: { reasoningLevel: 'medium' as const } } },
+    connections: [{ id: 'openai-api' as const, state: 'connected' as const, models: [{
+      id: 'm', availability: { state: 'supported' }, textGeneration: { state: 'supported' },
+      reasoning: { state: 'supported', value: ['medium'] },
+      operationCapabilities: { writing: { state: 'supported', value: true } },
+    }] }],
+  };
+  assert.equal(catalogView.resolveOperationEligibility(input, 'writing').eligible, true);
+});
+
+test('available API credentials prompt catalog verification, distinct from missing credentials or authorization', () => {
+  const preferences = { defaultConnectionId: 'openai-api' as const, defaultTextModelId: 'm' };
+  const resolveState = (state: 'available' | 'unconfigured' | 'authorization-required') => catalogView.resolveOperationEligibility({
+    preferences, connections: [{ id: 'openai-api' as const, state, models: [] }],
+  }, 'writing');
+  assert.match(resolveState('available').reason ?? '', /credentials are present; refresh its model catalog/);
+  assert.match(resolveState('unconfigured').reason ?? '', /not configured/);
+  assert.match(resolveState('authorization-required').reason ?? '', /requires authorization/);
+});

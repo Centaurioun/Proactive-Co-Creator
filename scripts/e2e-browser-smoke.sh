@@ -52,7 +52,10 @@ async (page) => {
     });
     await targetPage.route('**/api/**', async (route) => {
       apiHits.push(route.request().url());
-      if (route.request().url().endsWith('/api/ai/capabilities')) return route.continue();
+      if (
+        route.request().url().endsWith('/api/ai/capabilities') ||
+        route.request().url().endsWith('/api/ai/provider-hub/status')
+      ) return route.continue();
       paidApiHits.push(route.request().url());
       await route.fulfill({
         status: 500,

@@ -308,6 +308,17 @@ async function createSrbStoryTestSetup(modelId: string) {
       });
       assert.equal(unqualifiedReasoning.status, 422);
       assert.deepEqual(getCounts(), { transportCalls: 1, fallbackCalls: 0 });
+
+      const screenshotSelection = await fetch(`${server.baseUrl}/api/generate/story`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json', Origin: server.baseUrl,
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-ai-reasoning': 'medium',
+        },
+        body: JSON.stringify({ prompt: 'Synthetic screenshot acceptance fixture.' }),
+      });
+      assert.equal(screenshotSelection.status, 422);
+      assert.deepEqual(getCounts(), { transportCalls: 1, fallbackCalls: 0 });
     } finally {
       await server.close();
       closeServer = null;

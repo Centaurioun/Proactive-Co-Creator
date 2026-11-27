@@ -26,7 +26,7 @@ export interface IssueFixEntry {
 interface SemanticAnalysisPanelProps {
   project: CreativeProject;
   sections: ManuscriptSection[];
-  aiConfigured: boolean;
+  diagnosticsAvailability: { eligible: boolean; reason?: string };
   diagScope: 'full' | 'scene' | 'entity' | 'changed';
   setDiagScope: (scope: 'full' | 'scene' | 'entity' | 'changed') => void;
   diagTargetId: string;
@@ -42,7 +42,7 @@ interface SemanticAnalysisPanelProps {
 const SemanticAnalysisPanel: React.FC<SemanticAnalysisPanelProps> = ({
   project,
   sections,
-  aiConfigured,
+  diagnosticsAvailability,
   diagScope,
   setDiagScope,
   diagTargetId,
@@ -56,9 +56,9 @@ const SemanticAnalysisPanel: React.FC<SemanticAnalysisPanelProps> = ({
 }) => (
   <div className="space-y-2.5 rounded border border-gray-200 bg-gray-50/70 p-3 text-xs dark:border-gray-800 dark:bg-gray-900/60">
     <h3 className="font-semibold">Analyze Consistency (AI Semantic Pass)</h3>
-    {!aiConfigured && (
+    {!diagnosticsAvailability.eligible && (
       <p role="status" className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-        Server Gemini API key is not configured for the current diagnostics gate. ChatGPT plan is qualified only for local Story (GPT-6 Luna / Default). Local deterministic checks and local fixes remain fully functional.
+        AI diagnostics are unavailable: {diagnosticsAvailability.reason ?? 'not currently eligible.'} Local deterministic checks and local fixes remain fully functional.
       </p>
     )}
     <div className="flex flex-wrap items-end gap-2">
@@ -115,7 +115,7 @@ const SemanticAnalysisPanel: React.FC<SemanticAnalysisPanelProps> = ({
       )}
       <button
         type="button"
-        disabled={diagBusy || !aiConfigured || !diagBudget.withinLimit || ((diagScope === 'scene' || diagScope === 'entity') && !diagTargetId)}
+        disabled={diagBusy || !diagnosticsAvailability.eligible || !diagBudget.withinLimit || ((diagScope === 'scene' || diagScope === 'entity') && !diagTargetId)}
         onClick={onRunSemanticDiagnostics}
         className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-45"
       >
@@ -136,7 +136,7 @@ const NEXT_DISPOSITIONS = ['deferred', 'needs-clarification', 'intentional', 're
 interface IssueRegistryCardProps {
   project: CreativeProject;
   issue: NarrativeIssue;
-  aiConfigured: boolean;
+  diagnosticsAvailability: { eligible: boolean; reason?: string };
   isPanelOpen: boolean;
   isIssueFixLoading: boolean;
   fixEntry: IssueFixEntry | undefined;
@@ -165,7 +165,7 @@ interface IssueRegistryCardProps {
 const IssueRegistryCard: React.FC<IssueRegistryCardProps> = ({
   project,
   issue,
-  aiConfigured,
+  diagnosticsAvailability,
   isPanelOpen,
   isIssueFixLoading,
   fixEntry,
@@ -249,7 +249,7 @@ const IssueRegistryCard: React.FC<IssueRegistryCardProps> = ({
             <div className="flex gap-2">
               <button
                 type="button"
-                disabled={!aiConfigured || isIssueFixLoading}
+                disabled={!diagnosticsAvailability.eligible || isIssueFixLoading}
                 onClick={() => onRequestAiFixesForIssue(issue)}
                 className="rounded bg-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-45"
               >
@@ -380,7 +380,7 @@ interface DiagnosticsSectionProps {
   sections: ManuscriptSection[];
   readiness: ReadinessItem[];
   issues: NarrativeIssue[];
-  aiConfigured: boolean;
+  diagnosticsAvailability: { eligible: boolean; reason?: string };
   diagScope: 'full' | 'scene' | 'entity' | 'changed';
   setDiagScope: (scope: 'full' | 'scene' | 'entity' | 'changed') => void;
   diagTargetId: string;
@@ -428,7 +428,7 @@ export const DiagnosticsSection: React.FC<DiagnosticsSectionProps> = ({
   sections,
   readiness,
   issues,
-  aiConfigured,
+  diagnosticsAvailability,
   diagScope,
   setDiagScope,
   diagTargetId,
@@ -507,7 +507,7 @@ export const DiagnosticsSection: React.FC<DiagnosticsSectionProps> = ({
       <SemanticAnalysisPanel
         project={project}
         sections={sections}
-        aiConfigured={aiConfigured}
+        diagnosticsAvailability={diagnosticsAvailability}
         diagScope={diagScope}
         setDiagScope={setDiagScope}
         diagTargetId={diagTargetId}
@@ -550,7 +550,7 @@ export const DiagnosticsSection: React.FC<DiagnosticsSectionProps> = ({
               key={issue.id}
               project={project}
               issue={issue}
-              aiConfigured={aiConfigured}
+              diagnosticsAvailability={diagnosticsAvailability}
               isPanelOpen={fixPanelIssueId === issue.id}
               isIssueFixLoading={fixLoadingIds.has(issue.id)}
               fixEntry={fixAlternativesByIssue[issue.id]}

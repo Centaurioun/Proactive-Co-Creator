@@ -76,7 +76,7 @@ interface ContextualInspectorProps {
   onExportManuscriptText?: () => void;
   onOpenReviewDiagnostics?: () => void;
   onJumpToSection?: (sectionId: string) => void;
-  aiConfigured?: boolean;
+  opportunitiesAvailability?: { eligible: boolean; reason?: string };
   onSendOpportunityToReview?: (proposal: OpportunityProposal) => void;
   historyTarget?: { id: string; sequence: number } | null;
   contentExports: { id: string; label: string }[];
@@ -235,7 +235,7 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = (props) => {
         previewIsStale={previewIsStale}
         mindMapFilter={mindMapFilter}
         timelineView={timelineView}
-        aiConfigured={Boolean(props.aiConfigured)}
+        opportunitiesAvailability={props.opportunitiesAvailability ?? { eligible: false, reason: 'AI opportunity exploration is unavailable.' }}
         historyTarget={props.historyTarget}
         contentExports={props.contentExports}
         onSelectTab={onSelectTab}

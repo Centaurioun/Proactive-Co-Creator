@@ -44,7 +44,7 @@ interface InspectorTabContentProps {
   previewIsStale: boolean;
   mindMapFilter: MindMapStatusFilter;
   timelineView: TimelineViewMode;
-  aiConfigured: boolean;
+  opportunitiesAvailability: { eligible: boolean; reason?: string };
   historyTarget?: { id: string; sequence: number } | null;
   contentExports: { id: string; label: string }[];
   onSelectTab: (tab: RightPanelTab) => void;
@@ -154,7 +154,7 @@ const InspectorTabContent: React.FC<InspectorTabContentProps> = (props) => {
           projectId={project.id}
           projectRevision={project.revision}
           proposals={project.narrative?.opportunities ?? []}
-          aiConfigured={props.aiConfigured}
+          opportunitiesAvailability={props.opportunitiesAvailability}
           onCreate={props.onCreateOpportunity}
           onCreateBatch={props.onCreateOpportunityBatch}
           onTransition={props.onTransitionOpportunity}

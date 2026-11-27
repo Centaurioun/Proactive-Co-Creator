@@ -101,6 +101,7 @@ export default function AiConnectionsPanel() {
   const publishStatus = useCallback((next: ProviderHubStatus) => {
     statusRef.current = next;
     setStatus(next);
+    window.dispatchEvent(new Event('pcc:provider-hub-status-changed'));
   }, []);
 
   const refresh = useCallback(async (preserveFreshPhases = false) => {

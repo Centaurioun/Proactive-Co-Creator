@@ -10,14 +10,14 @@ import { workspaceButton } from '../../manuscript/ManuscriptEditor';
 type AutomationPrefs = NonNullable<NarrativeRecords['automationPreferences']>;
 
 interface AutoAnalysisSettingsSectionProps {
-  aiConfigured: boolean;
+  autoAnalysisDiagnosticsAvailability: { eligible: boolean; reason?: string };
   autoPrefs: AutomationPrefs;
   autoAnalysisCallsUsed: number;
   onUpdateAutomationPreferences: (prefs: AutomationPrefs) => void;
 }
 
 export const AutoAnalysisSettingsSection: React.FC<AutoAnalysisSettingsSectionProps> = ({
-  aiConfigured,
+  autoAnalysisDiagnosticsAvailability,
   autoPrefs,
   autoAnalysisCallsUsed,
   onUpdateAutomationPreferences,
@@ -27,15 +27,15 @@ export const AutoAnalysisSettingsSection: React.FC<AutoAnalysisSettingsSectionPr
     <p className="text-gray-600 dark:text-gray-400">
       When explicitly enabled, runs a debounced semantic consistency check after edits within strict scope and session call caps. Never auto-edits your manuscript or canon.
     </p>
-    {!aiConfigured && (
-      <p className="text-amber-800 dark:text-amber-300">Disabled by the current server Gemini credential gate. ChatGPT plan does not authorize semantic auto-analysis.</p>
+    {!autoAnalysisDiagnosticsAvailability.eligible && (
+      <p role="status" className="text-amber-800 dark:text-amber-300">Semantic auto-analysis is unavailable: {autoAnalysisDiagnosticsAvailability.reason ?? 'not currently eligible.'}</p>
     )}
     <div className="flex flex-wrap items-center gap-4">
       <label className="flex items-center gap-1.5 font-medium">
         <input
           type="checkbox"
-          disabled={!aiConfigured}
-          checked={aiConfigured && autoPrefs.semanticAutoAnalysisEnabled}
+          disabled={!autoAnalysisDiagnosticsAvailability.eligible}
+          checked={autoPrefs.semanticAutoAnalysisEnabled}
           onChange={(e) => onUpdateAutomationPreferences({ ...autoPrefs, semanticAutoAnalysisEnabled: e.target.checked })}
         />
         Enable bounded auto-analysis
@@ -43,7 +43,7 @@ export const AutoAnalysisSettingsSection: React.FC<AutoAnalysisSettingsSectionPr
       <label className="flex items-center gap-1.5">
         <span>Scope</span>
         <select
-          disabled={!aiConfigured || !autoPrefs.semanticAutoAnalysisEnabled}
+          disabled={!autoAnalysisDiagnosticsAvailability.eligible || !autoPrefs.semanticAutoAnalysisEnabled}
           value={autoPrefs.scope}
           onChange={(e) => onUpdateAutomationPreferences({ ...autoPrefs, scope: e.target.value as 'changed' | 'scene' | 'full' })}
           className="rounded border border-gray-300 bg-white px-2 py-0.5 dark:border-gray-700 dark:bg-gray-950"
@@ -59,7 +59,7 @@ export const AutoAnalysisSettingsSection: React.FC<AutoAnalysisSettingsSectionPr
           type="number"
           min={1}
           max={20}
-          disabled={!aiConfigured || !autoPrefs.semanticAutoAnalysisEnabled}
+          disabled={!autoAnalysisDiagnosticsAvailability.eligible || !autoPrefs.semanticAutoAnalysisEnabled}
           value={autoPrefs.maxCallsPerSession}
           onChange={(e) =>
             onUpdateAutomationPreferences({
@@ -72,7 +72,7 @@ export const AutoAnalysisSettingsSection: React.FC<AutoAnalysisSettingsSectionPr
       </label>
       <button
         type="button"
-        disabled={!aiConfigured || !autoPrefs.semanticAutoAnalysisEnabled}
+        disabled={!autoAnalysisDiagnosticsAvailability.eligible || !autoPrefs.semanticAutoAnalysisEnabled}
         onClick={() => onUpdateAutomationPreferences({ ...autoPrefs, paused: !autoPrefs.paused })}
         className={workspaceButton}
       >

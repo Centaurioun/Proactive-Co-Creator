@@ -30,6 +30,7 @@ interface OutputDisplayProps {
   freeformNotes: string;
   onChangeFreeformNotes: (notes: string) => void;
   onPolishPromptWithAi?: () => void;
+  polishAvailability?: { eligible: boolean; reason?: string };
   isPolishingPrompt?: boolean;
   polishProposal?: AiPolishProposal | null;
   isPolishStale?: boolean;
@@ -41,7 +42,7 @@ interface OutputDisplayProps {
   imageWarning?: string | null;
   story: string | null;
   storyProviderSelection: { connectionId: string; modelId?: string; reasoningLevel?: string };
-  chatGptStoryLocalActivation: boolean;
+  storyBlockReason?: string | null;
   storyProviderUsage: { storyText: string; usage: { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' } } | null;
   mode: GenerationMode;
   isLoading: boolean;
@@ -57,6 +58,7 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   freeformNotes,
   onChangeFreeformNotes,
   onPolishPromptWithAi,
+  polishAvailability = { eligible: false, reason: 'Prompt refinement is not currently eligible.' },
   isPolishingPrompt = false,
   polishProposal = null,
   isPolishStale = false,
@@ -69,7 +71,7 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   imageWarning,
   story,
   storyProviderSelection,
-  chatGptStoryLocalActivation,
+  storyBlockReason = null,
   storyProviderUsage,
   mode,
   isLoading,
@@ -111,13 +113,8 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   }
 
   const chatGptStorySelected = mode === 'story' && storyProviderSelection.connectionId === 'chatgpt-plan';
-  const chatGptStoryQualified = storyProviderSelection.modelId === 'gpt-6-luna' && storyProviderSelection.reasoningLevel === 'default';
-  const chatGptStoryBlocked = chatGptStorySelected && (!chatGptStoryLocalActivation || !chatGptStoryQualified);
-  const chatGptStoryBlockReason = !chatGptStoryLocalActivation
-    ? 'ChatGPT Story is disabled for this local server process.'
-    : !storyProviderSelection.modelId || !storyProviderSelection.reasoningLevel
-      ? 'Choose the account model and reasoning level explicitly in AI settings.'
-      : 'Only GPT-6 Luna with Default reasoning is qualified for ChatGPT Story.';
+  const chatGptStoryBlocked = mode === 'story' && Boolean(storyBlockReason);
+  const chatGptStoryBlockReason = storyBlockReason ?? '';
 
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const lightboxDialogRef = useRef<HTMLDivElement | null>(null);
@@ -277,14 +274,18 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
             {activeView === 'prompt' && (
               <>
                 {onPolishPromptWithAi && (
-                  <button
-                    type="button"
-                    onClick={onPolishPromptWithAi}
-                    disabled={isPolishingPrompt}
-                    className="px-2.5 py-1 text-xs font-medium rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 transition-colors whitespace-nowrap"
-                  >
-                    {isPolishingPrompt ? 'Polishing...' : 'AI Narrative Polish'}
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={onPolishPromptWithAi}
+                      disabled={isPolishingPrompt || !polishAvailability.eligible}
+                      title={!polishAvailability.eligible ? polishAvailability.reason : undefined}
+                      className="px-2.5 py-1 text-xs font-medium rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 transition-colors whitespace-nowrap"
+                    >
+                      {isPolishingPrompt ? 'Polishing...' : 'AI Narrative Polish'}
+                    </button>
+                    {!polishAvailability.eligible && <span className="text-xs text-amber-800 dark:text-amber-300" role="status">{polishAvailability.reason}</span>}
+                  </>
                 )}
                 <button
                   type="button"
@@ -341,6 +342,7 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
             polishStaleReason={polishStaleReason}
             isPolishingPrompt={isPolishingPrompt}
             onPolishPromptWithAi={onPolishPromptWithAi}
+            polishAvailability={polishAvailability}
             onAcceptPolishProposal={onAcceptPolishProposal}
             onRejectPolishProposal={onRejectPolishProposal}
           />

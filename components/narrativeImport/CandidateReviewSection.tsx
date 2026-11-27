@@ -27,7 +27,7 @@ interface CandidateReviewSectionProps {
   enhanceError: string;
   enhancements: ImportEnhancementProposal[];
   acceptedEnhancementIds: Set<string>;
-  aiConfigured: boolean;
+  importEnhanceAvailability: { eligible: boolean; reason?: string };
   destination: 'new' | 'append';
   existingProjects: CreativeProject[];
   targetProject: CreativeProject | null;
@@ -62,7 +62,7 @@ export function CandidateReviewSection(props: CandidateReviewSectionProps) {
     sourceOnlyMode, analysisComplete, progress, rejectedEvidenceCount, extraction, explicitProposalIds,
     unclassifiedFindingsCount, scope, identityMatches, acceptedIds, rejectedIds, creating, createError,
     strategy, enhanceGoals, enhanceBudget, enhanceBusy, enhanceError, enhancements, acceptedEnhancementIds,
-    aiConfigured, destination, existingProjects, targetProject, targetSections, insertPositionKey,
+    importEnhanceAvailability, destination, existingProjects, targetProject, targetSections, insertPositionKey,
     appendTargetChanged, isDuplicateSource, allowDuplicateSource, crossProjectMatches, identityDecisions,
     projectName, canAppendFeature, canCreateNew, canApplyAppend,
     onAcceptAllExplicit, onToggleAccepted, onToggleRejected, onEnhanceGoalsChange, onRunStage2Enhancements,
@@ -99,7 +99,7 @@ export function CandidateReviewSection(props: CandidateReviewSectionProps) {
               enhanceError={enhanceError}
               enhancements={enhancements}
               acceptedEnhancementIds={acceptedEnhancementIds}
-              aiConfigured={aiConfigured}
+              importEnhanceAvailability={importEnhanceAvailability}
               onEnhanceGoalsChange={onEnhanceGoalsChange}
               onRunStage2Enhancements={onRunStage2Enhancements}
               onToggleEnhancementAccepted={onToggleEnhancementAccepted}
@@ -164,7 +164,7 @@ export function CandidateReviewSection(props: CandidateReviewSectionProps) {
 }
 
 function Stage2EnhancementPanel({
-  enhanceGoals, enhanceBudget, enhanceBusy, enhanceError, enhancements, acceptedEnhancementIds, aiConfigured,
+  enhanceGoals, enhanceBudget, enhanceBusy, enhanceError, enhancements, acceptedEnhancementIds, importEnhanceAvailability,
   onEnhanceGoalsChange, onRunStage2Enhancements, onToggleEnhancementAccepted,
 }: {
   enhanceGoals: string;
@@ -173,7 +173,7 @@ function Stage2EnhancementPanel({
   enhanceError: string;
   enhancements: ImportEnhancementProposal[];
   acceptedEnhancementIds: Set<string>;
-  aiConfigured: boolean;
+  importEnhanceAvailability: { eligible: boolean; reason?: string };
   onEnhanceGoalsChange: (goals: string) => void;
   onRunStage2Enhancements: () => void;
   onToggleEnhancementAccepted: (id: string, checked: boolean) => void;
@@ -202,12 +202,13 @@ function Stage2EnhancementPanel({
       </p>
       <button
         type="button"
-        disabled={enhanceBusy || !aiConfigured || !enhanceBudget.withinLimit}
+        disabled={enhanceBusy || !importEnhanceAvailability.eligible || !enhanceBudget.withinLimit}
         onClick={onRunStage2Enhancements}
         className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-45"
       >
         {enhanceBusy ? 'Generating Stage 2 proposals…' : 'Generate Enhancement Proposals'}
       </button>
+      {!importEnhanceAvailability.eligible && <p role="status" className="text-amber-800 dark:text-amber-300">Enhancement is unavailable: {importEnhanceAvailability.reason ?? 'not currently eligible.'}</p>}
       {enhanceError && <p role="alert" className="text-red-700 dark:text-red-300">{enhanceError}</p>}
       {enhancements.length > 0 && (
         <div className="space-y-2 pt-1">

@@ -65,8 +65,7 @@ import {
 } from './lib/projectController';
 import { buildStartupAnalysisProviderInputs } from './lib/promptBuilder';
 import { deleteProjectCompletely, loadProjectsFromLocalStorage, type IndexedDbLoadStatus } from './lib/storageEngine';
-import { analyzePromptToBeliefGraph, generateClarifications, readProviderPreferencesSnapshot } from './services/apiClient';
-import { chatGptOperationBlockReason } from './lib/providerCatalogView';
+import { analyzePromptToBeliefGraph, generateClarifications } from './services/apiClient';
 import { MAX_PROMPT_CHARS, validateEffectivePromptLength } from './shared/schemas';
 import type {
   BatchEditProposalResult,
@@ -389,7 +388,7 @@ function App() {
     setAutoAnalysisCallsUsed,
     autoBackupEnabled,
     setAutoBackupEnabled,
-    aiConfigured: aiPlanActions.aiConfigured,
+    aiConfigured: aiPlanActions.operationAvailability.diagnostics.eligible,
     hydrationGate,
     getHydrationGate,
     allowNavigation,
@@ -449,9 +448,11 @@ function App() {
     // Reanalyze starts both analyze and clarify; reject unsupported
     // selections before starting either request or the async loading slot.
     try {
-      const { preferences } = readProviderPreferencesSnapshot();
-      const blocked = chatGptOperationBlockReason('analyze', preferences) ??
-        chatGptOperationBlockReason('clarify', preferences);
+      const blocked = !aiPlanActions.operationAvailability.analyze.eligible
+        ? aiPlanActions.operationAvailability.analyze.reason
+        : !aiPlanActions.operationAvailability.clarify.eligible
+          ? aiPlanActions.operationAvailability.clarify.reason
+          : undefined;
       if (blocked) {
         setAnalysisErrors((prev) => ({ ...prev, [originProject.id]: blocked }));
         setClarificationErrors((prev) => ({ ...prev, [originProject.id]: blocked }));
@@ -532,7 +533,7 @@ function App() {
       label: 'Reanalyze Prompt with AI',
       summary: 'Merged AI analysis while preserving confirmed user decisions.',
     });
-  }, []);
+  }, [aiPlanActions.operationAvailability, setAnalysisErrors, setClarificationErrors, setStatusNotification]);
 
   // Kept in App.tsx for releaseQualification contract check.
   const handleSwitchProject = (projectId: string) => {
@@ -864,7 +865,7 @@ function App() {
           initialArtifactId={adoptArtifactId}
           onDismissAdoption={() => setAdoptArtifactId(undefined)}
           focusedSectionId={focusedSectionId}
-          aiConfigured={aiPlanActions.aiConfigured}
+          writingAvailability={aiPlanActions.operationAvailability.writing}
           onSaveWritingAlternative={narrativeActions.handleSaveWritingAlternative}
           onExportDraft={(sections) =>
             downloadTextFile(
@@ -900,7 +901,9 @@ function App() {
               key={activeProject.id}
               project={activeProject}
               checks={consistencyIssues}
-              aiConfigured={aiPlanActions.aiConfigured}
+              diagnosticsAvailability={aiPlanActions.operationAvailability.diagnostics}
+              syncAvailability={aiPlanActions.operationAvailability.sync}
+              autoAnalysisDiagnosticsAvailability={aiPlanActions.operationAvailability.diagnostics}
               openChecks={() => openPlan('consistency')}
               openHistory={() => openPlan('history', 'revision-history')}
               openOutput={() => handleSelectHeaderSection('output')}
@@ -953,7 +956,8 @@ function App() {
             <ImportWorkflow
               existingProjects={savedProjects}
               activeProjectId={activeProject.id}
-              aiConfigured={aiPlanActions.aiConfigured}
+              narrativeImportAvailability={aiPlanActions.operationAvailability['narrative-import']}
+              importEnhanceAvailability={aiPlanActions.operationAvailability['import-enhance']}
               onCreateProject={narrativeActions.handleCreateImportedProject}
               onAppendToExistingProject={narrativeActions.handleAppendToExistingProject}
               onCancelImport={() => setWorkspaceMode(lastStableWorkspaceModeRef.current)}
@@ -1102,6 +1106,7 @@ function App() {
               isLoading={isGraphLoading || isGenerating}
               isGenerating={isGenerating}
               isFirstRun={!latestStoryArtifact && !latestImageArtifact}
+              storyBlockReason={aiPlanActions.storyBlockReason}
               mode={mode}
               setMode={planHandlers.handleModeChange}
               compiledPromptLength={snapshot.refinedPrompt.trim().length}
@@ -1157,6 +1162,7 @@ function App() {
               freeformNotes={snapshot.freeformNotes}
               onChangeFreeformNotes={planHandlers.handleSetFreeformNotes}
               onPolishPromptWithAi={aiPlanActions.handlePolishPromptWithAi}
+              polishAvailability={aiPlanActions.operationAvailability.polish}
               isPolishingPrompt={isPolishingPrompt}
               polishProposal={aiPlanActions.activePolishProposal}
               isPolishStale={Boolean(aiPlanActions.polishValidation && !aiPlanActions.polishValidation.ok)}
@@ -1168,7 +1174,7 @@ function App() {
               imageWarning={latestImageArtifact?.warning ?? null}
               story={latestStoryArtifact?.storyText ?? null}
               storyProviderSelection={aiPlanActions.storyProviderSelection}
-              chatGptStoryLocalActivation={aiPlanActions.chatGptStoryLocalActivation}
+              storyBlockReason={aiPlanActions.storyBlockReason}
               storyProviderUsage={aiPlanActions.lastStoryProviderUsage}
               mode={mode}
               isLoading={isGenerating}
@@ -1235,7 +1241,7 @@ function App() {
                 setFocusedSectionId(sectionId);
                 setWorkspaceMode('write');
               }}
-              aiConfigured={aiPlanActions.aiConfigured}
+              opportunitiesAvailability={aiPlanActions.operationAvailability.opportunities}
               onSendOpportunityToReview={narrativeActions.handleSendOpportunityToReview}
               contentExports={contentExports.map(({ id, label }) => ({ id, label }))}
               onExportContent={exportContent}
@@ -1293,6 +1299,7 @@ function App() {
           onModeChange={planHandlers.handleModeChange}
           onGenerate={aiPlanActions.handleGenerateOutput}
           isGenerating={isGenerating}
+          storyBlockReason={aiPlanActions.storyBlockReason}
           showOutputDrawer={showOutputDrawer}
           onToggleOutputDrawer={() => setShowOutputDrawer((value) => !value)}
           revisionCount={activeProject.revision}

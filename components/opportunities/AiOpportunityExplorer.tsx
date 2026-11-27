@@ -27,7 +27,7 @@ interface AiOpportunityExplorerProps {
   projectRevision: number;
   sections: ManuscriptSection[];
   existingProposals: OpportunityProposal[];
-  aiConfigured: boolean;
+  opportunitiesAvailability: { eligible: boolean; reason?: string };
   fieldClass: string;
   onCreate: (input: OpportunityProposalInput, expectedRevision: number) => void;
   onCreateBatch?: (inputs: OpportunityProposalInput[], expectedRevision: number) => void;
@@ -38,7 +38,7 @@ const AiOpportunityExplorer: React.FC<AiOpportunityExplorerProps> = ({
   projectRevision,
   sections,
   existingProposals,
-  aiConfigured,
+  opportunitiesAvailability,
   fieldClass,
   onCreate,
   onCreateBatch,
@@ -131,8 +131,8 @@ const AiOpportunityExplorer: React.FC<AiOpportunityExplorerProps> = ({
 
   const handleExplore = async () => {
     if (exploring) return;
-    if (!aiConfigured) {
-      setExploreError('Server Gemini API key is not configured. Add a server key to run AI opportunity exploration.');
+    if (!opportunitiesAvailability.eligible) {
+      setExploreError(opportunitiesAvailability.reason ?? 'AI opportunity exploration is unavailable.');
       return;
     }
     if (selectedCategories.length === 0) {
@@ -204,9 +204,9 @@ const AiOpportunityExplorer: React.FC<AiOpportunityExplorerProps> = ({
       <h4 id="explore-ai-heading" className="text-xs font-semibold text-gray-900 dark:text-gray-100">
         Explore Improvements (AI)
       </h4>
-      {!aiConfigured && (
+      {!opportunitiesAvailability.eligible && (
         <p role="status" className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-          AI exploration is unavailable because the server Gemini API key is not configured. You can still record, stage, and review manual ideas below.
+          AI exploration is unavailable: {opportunitiesAvailability.reason ?? 'not currently eligible.'} You can still record, stage, and review manual ideas below.
         </p>
       )}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs">
@@ -289,7 +289,7 @@ const AiOpportunityExplorer: React.FC<AiOpportunityExplorerProps> = ({
         type="button"
         disabled={
           exploring ||
-          !aiConfigured ||
+          !opportunitiesAvailability.eligible ||
           !budgetDisclosure.withinLimit ||
           selectedCategories.length === 0 ||
           (exploreScope !== 'project' && !exploreTargetId)
