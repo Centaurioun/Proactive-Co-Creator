@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { resolveOperationEligibility } from '../lib/providerCatalogView.ts';
+import { GEMINI_MODELS } from '../server/models.ts';
 import * as apiClient from '../services/apiClient.ts';
 import { ClientApiError, generateClarifications, generateImagesFromPrompt, generateStoryFromPrompt, invalidateAiProviderRequests, invalidateAiProviderRequestsForPreferenceChange, refinePromptWithAllUpdates } from '../services/apiClient.ts';
 
@@ -30,6 +32,35 @@ test('text follows the selected provider while images stay on the disclosed exis
       { url: '/api/clarify', connection: 'chatgpt-plan', model: 'gpt-6-luna' },
       { url: '/api/generate/images', connection: 'gemini-managed', model: null },
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('managed Gemini UI eligibility matches the effective model sent for the server default exception', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const preferences = {
+    defaultConnectionId: 'gemini-managed' as const,
+    defaultTextModelId: GEMINI_MODELS.text,
+    defaultReasoningLevel: 'default' as const,
+  };
+  installPreferences(JSON.stringify(preferences));
+  let sentModel: string | null = null;
+  globalThis.fetch = async (_input, init) => {
+    sentModel = new Headers(init?.headers).get('x-pcc-ai-model');
+    return new Response(JSON.stringify({ clarifications: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const eligibility = resolveOperationEligibility({
+      preferences,
+      connections: [{ id: 'gemini-managed', state: 'available', selectedModelId: GEMINI_MODELS.text, models: [] }],
+    }, 'clarify');
+    assert.equal(eligibility.eligible, true);
+    await generateClarifications('A safe prompt.', [], 'story');
+    assert.equal(sentModel, GEMINI_MODELS.text);
+    assert.equal(sentModel, eligibility.modelId);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import * as catalogView from '../lib/providerCatalogView.ts';
 import { catalogStateLabel, isCatalogSelectable, modelsForConnection, isEligibleTextModel, isSelectableTextPreferenceModel } from '../lib/providerCatalogView.ts';
+import { GEMINI_MODELS } from '../server/models.ts';
 
 test('refreshing a different catalog does not change the active model choices', () => {
   const gemini = [{ id: 'gemini' }];
@@ -158,12 +159,63 @@ test('ChatGPT operations are Story-only, requiring local activation and exact Lu
 
 test('managed Gemini accepts its available host route and provider default, while unconfigured stays blocked', () => {
   const preferences = { defaultConnectionId: 'gemini-managed' as const };
-  const managed = { preferences, connections: [{ id: 'gemini-managed' as const, state: 'available' as const, selectedModelId: 'managed-default', models: [] }] };
-  assert.deepEqual(catalogView.resolveOperationEligibility(managed, 'analyze'), { eligible: true, connectionId: 'gemini-managed', modelId: 'managed-default', reasoningLevel: 'default' });
+  const managed = { preferences, connections: [{ id: 'gemini-managed' as const, state: 'available' as const, selectedModelId: GEMINI_MODELS.text, models: [] }] };
+  assert.deepEqual(catalogView.resolveOperationEligibility(managed, 'analyze'), { eligible: true, connectionId: 'gemini-managed', modelId: GEMINI_MODELS.text, reasoningLevel: 'default' });
   const providerDefault = { ...managed, connections: [{ ...managed.connections[0], selectedModelId: undefined }] };
   assert.deepEqual(catalogView.resolveOperationEligibility(providerDefault, 'analyze'), { eligible: true, connectionId: 'gemini-managed', reasoningLevel: 'default' });
   const unconfigured = { ...managed, connections: [{ ...managed.connections[0], state: 'unconfigured' as const }] };
   assert.match(catalogView.resolveOperationEligibility(unconfigured, 'analyze').reason ?? '', /not configured/);
+});
+
+test('managed Gemini catalog exception is limited to the exact configured default model', () => {
+  type EligibilityPreferences = Parameters<typeof catalogView.resolveOperationEligibility>[0]['preferences'];
+  const baseStatus = {
+    connections: [{ id: 'gemini-managed' as const, state: 'available', selectedModelId: GEMINI_MODELS.text, models: [] }],
+    preferences: { defaultConnectionId: 'gemini-managed', defaultReasoningLevel: 'default' } satisfies EligibilityPreferences,
+  };
+  const resolve = (preferences: EligibilityPreferences) =>
+    catalogView.resolveOperationEligibility({ ...baseStatus, preferences }, 'analyze');
+
+  const arbitraryMissingModel = resolve({ ...baseStatus.preferences, defaultTextModelId: 'unverified-gemini-model' });
+  assert.equal(arbitraryMissingModel.eligible, false);
+  assert.match(arbitraryMissingModel.reason ?? '', /not present in the gemini-managed catalog/);
+
+  const configuredManagedDefault = resolve({ ...baseStatus.preferences, defaultTextModelId: GEMINI_MODELS.text });
+  assert.equal(configuredManagedDefault.eligible, true);
+  assert.equal(configuredManagedDefault.modelId, GEMINI_MODELS.text);
+
+  const explicitOverride = catalogView.resolveOperationEligibility({
+    ...baseStatus,
+    preferences: {
+      ...baseStatus.preferences,
+      defaultTextModelId: GEMINI_MODELS.text,
+      operationOverrides: { analyze: { modelId: 'unverified-gemini-override' } },
+    },
+  }, 'analyze');
+  assert.equal(explicitOverride.eligible, false);
+  assert.equal(explicitOverride.modelId, 'unverified-gemini-override');
+
+  const catalogListedModel = catalogView.resolveOperationEligibility({
+    ...baseStatus,
+    connections: [{
+      ...baseStatus.connections[0],
+      models: [{
+        id: 'verified-gemini-model',
+        availability: { state: 'supported' },
+        textGeneration: { state: 'supported' },
+        reasoning: { state: 'supported', value: ['default'] },
+        operationCapabilities: { analyze: { state: 'supported', value: true } },
+      }],
+    }],
+    preferences: { ...baseStatus.preferences, defaultTextModelId: 'verified-gemini-model' },
+  }, 'analyze');
+  assert.equal(catalogListedModel.eligible, true);
+
+  const unknownReasoning = catalogView.resolveOperationEligibility({
+    ...baseStatus,
+    preferences: { ...baseStatus.preferences, defaultTextModelId: 'unverified-gemini-model', defaultReasoningLevel: 'medium' as const },
+  }, 'analyze');
+  assert.equal(unknownReasoning.eligible, false);
 });
 
 test('ChatGPT unsupported operations explain policy before disconnected state; unverified reasoning is blocked', () => {

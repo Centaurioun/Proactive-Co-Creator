@@ -1,5 +1,6 @@
 import type { AiCapability, AiConnectionId, AiModelDescriptor, AiProviderSelection, AiReasoningLevel, ProviderPreferences } from '../server/providers/contracts';
 import type { AiOperation } from '../server/aiBudget';
+import { GEMINI_MODELS } from '../server/models';
 
 export const PROVIDER_PREFERENCE_OPERATIONS = [
   ['analyze', 'Analysis'],
@@ -247,7 +248,7 @@ export function resolveOperationEligibility(
     ? { eligible: true, connectionId, reasoningLevel }
     : fail('Choose a text model explicitly in AI Settings.');
   const model = connection.models.find(item => item.id === modelId);
-  if (!model) return managedGemini && reasoningLevel === 'default'
+  if (!model) return managedGemini && modelId === GEMINI_MODELS.text && reasoningLevel === 'default'
     ? { eligible: true, connectionId, modelId, reasoningLevel }
     : fail(`Model ${modelId} is not present in the ${connectionId} catalog. Refresh the catalog or choose another model.`);
   if (model.availability.state !== 'supported') return fail(model.availability.state === 'unknown'
