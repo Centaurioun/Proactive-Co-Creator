@@ -12,6 +12,7 @@ The arm64 Electron candidate launched from the produced bundle in isolated profi
 
 - Repository: `Centaurioun/Proactive-Co-Creator`, PR #23, branch `fix/macos-real-use-recovery-20261127`.
 - Starting source HEAD: `72c720e3b3b7e855f8cb9a7e118639fd13d1e46c` (tree `10b66aec10bdcf84b68480c254cc75183c952b5fa`).
+- Final product-source HEAD: `2cd66142c5f88a7ef9a3b1fe51c074df71d7744b` (tree `a68c0cb8e352952569d4dd26d7b8edbf50f4c56b`). This is the exact source used for the final build and CI run.
 - Qualification worktree: `/Users/yusuf/.codex/worktrees/pcc-mac-final-qualification-20261127`.
 - Node `v26.12.1`, npm `11.20.0`; macOS `27.0.1` (build `26A434`), arm64.
 - `package-lock.json` SHA-256: `a84e162321b23fa74524e34aa10a57556a17e21e11ef86580c0efb0b01ba738c` (unchanged).
@@ -29,13 +30,13 @@ All commands ran in the clean qualification worktree, with synthetic data only.
 
 | Command | Result |
 |---|---|
-| `npm ci` | PASS; 536 packages installed; lockfile unchanged |
-| `npm run typecheck` | PASS |
-| `npm run lint` | PASS |
-| `npm test` | PASS; 598 tests, 33 suites, 0 failures |
-| `npm run build` | PASS; Vite emitted the existing >500 kB chunk warning |
-| `npm run desktop:build` | PASS after source correction; arm64 DMG and app bundle produced |
-| `git diff --check` | PASS before evidence/report completion |
+| `npm ci` (exit 0) | PASS; 536 packages installed; lockfile unchanged |
+| `npm run typecheck` (exit 0) | PASS |
+| `npm run lint` (exit 0) | PASS |
+| `npm test` (exit 0) | PASS; 598 tests, 33 suites, 0 failures |
+| `npm run build` (exit 0) | PASS; Vite emitted the existing >500 kB chunk warning |
+| `npm run desktop:build` (exit 0) | PASS after source correction; arm64 DMG and app bundle produced |
+| `git diff --check` (exit 0) | PASS for the scoped source/evidence diff |
 
 ### E2E suites
 
@@ -54,15 +55,17 @@ These harness failures are retained as failures; manual native observations do n
 
 ## CI and dependency audit
 
-- Existing workflow-dispatch run `46024943964` completed successfully for SHA `72c720e3b3b7e855f8cb9a7e118639fd13d1e46c`. It tests the starting SHA only, not this source correction. A final-SHA run is required after push and recorded below.
-- `npm audit --omit=dev`: PASS, 0 vulnerabilities in runtime dependencies.
-- Full audit: 6 moderate findings in the Electron build/development dependency chain, including `minimatch` below `11.0.1` (GHSA-g3hv-75wg-m249) through electron-builder-related packages. No high or critical finding was reported. No broad upgrades or forced audit fixes were applied. These findings affect build tooling; the production-only audit was clean.
+- Workflow-dispatch run `46024943964` completed successfully for starting SHA `72c720e3b3b7e855f8cb9a7e118639fd13d1e46c`; it does not verify this correction.
+- Final candidate run `46028521948` completed successfully for exact SHA `2cd66142c5f88a7ef9a3b1fe51c074df71d7744b`. Node 22.13.0, Node 22.x and Node 24.x verification jobs passed typecheck, lint, tests and production build; the Chromium browser E2E smoke job passed E2E-A through E2E-I and uploaded its results. [Run 46028521948](https://github.com/Centaurioun/Proactive-Co-Creator/actions/runs/46028521948).
+- `npm audit --omit=dev` (exit 0): PASS, 0 vulnerabilities in runtime dependencies.
+- `npm audit` (exit 1 due reported advisories): 6 moderate findings in the Electron build/development dependency chain, including `minimatch` below `11.0.1` (GHSA-g3hv-75wg-m249) through electron-builder-related packages. No high or critical finding was reported. No broad upgrades or forced audit fixes were applied. These findings affect build tooling; the production-only audit was clean.
 
 ## Native candidate and artifact
 
 - App: `/Users/yusuf/.codex/worktrees/pcc-mac-final-qualification-20261127/release/mac-arm64/Proactive Co-Creator.app`
 - DMG: `/Users/yusuf/.codex/worktrees/pcc-mac-final-qualification-20261127/release/Proactive Co-Creator.dmg`
 - Electron `45.5.0`; electron-builder `26.18.0`; app version `0.0.0`; arm64.
+- DMG size: 151,418,814 bytes.
 - DMG SHA-256: `62b0a72371d32d61d77ef3f601ba1b9c0f34c359382929dd67a6417f0f2299e1`.
 - Packaged `app.asar` SHA-256: `fc13e521257ca506ec3ed1870dcee2d0eb5f3e47b161a2e6ec7007ab49afc76c`.
 - Latest DMG was produced by `npm run desktop:build`; its app bundle was verified against the packaged app content. Build emitted metadata/default-icon and duplicate dependency reference warnings in addition to the chunk warning.
@@ -104,6 +107,6 @@ The application candidate is locally launchable but unsigned and unnotarized. E2
 
 ## Final revisions and CI
 
-- Final product-source HEAD: to be filled after the scoped source/evidence commit.
-- Final PR HEAD: to be filled after push.
-- Final-SHA CI run: to be dispatched after push and recorded with the exact tested SHA and conclusion.
+- Final product-source/build HEAD: `2cd66142c5f88a7ef9a3b1fe51c074df71d7744b`, tree `a68c0cb8e352952569d4dd26d7b8edbf50f4c56b`.
+- Final candidate CI SHA: `2cd66142c5f88a7ef9a3b1fe51c074df71d7744b`, run `46028521948`, SUCCESS.
+- A documentation-only closure commit records the completed CI result and does not change source or build inputs; its PR tip is reported in the direct handoff.
