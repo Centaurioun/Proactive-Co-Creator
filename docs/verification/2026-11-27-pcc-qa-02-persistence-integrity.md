@@ -64,5 +64,5 @@
 ## Final state
 
 - Starting HEAD: `dfe5133ee37153ac8c893bf9f4537611bb4bbfb8`.
-- Final HEAD: recorded after commit below.
+- Final implementation HEAD (product source and regression test): `8a2c244` (`fix(storage): stabilize migrated decision timestamps`). The evidence-report-only follow-up commit is the branch tip after this implementation commit.
 - PR #23 remains open, draft and unmerged. Await independent review before beginning MAC qualification.
