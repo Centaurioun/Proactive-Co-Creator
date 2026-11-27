@@ -26,9 +26,13 @@ const STORY_PLAN_LIFETIME_MS = 60_000;
 const MAX_REQUEST_BINDINGS = 4_096;
 const utf8Encoder = new TextEncoder();
 
+import type { AiReasoningLevel } from './contracts.ts';
+import { describeChatGptModel, reasoningParameter } from './policy.ts';
+
 export interface ChatGptStoryPlanInput {
   requestId: string;
   modelId: string;
+  reasoningLevel?: AiReasoningLevel;
   grantGeneration: number;
   sourceDigest: string;
   sourceText: string;
@@ -40,6 +44,7 @@ export interface ChatGptStoryPlan {
   requestId: string;
   operation: 'story';
   modelId: string;
+  reasoningLevel?: AiReasoningLevel;
   grantGeneration: number;
   sourceDigest: string;
   policyVersion: string;
@@ -110,10 +115,13 @@ function buildPinnedStoryRequest(input: ChatGptStoryPlanInput): {
   requestBodyBytes: number;
   estimatedInputTokens: number;
 } {
+  const model = describeChatGptModel({ id: input.modelId, displayName: input.modelId }, 'chatgpt-plan');
+  const reasoning = reasoningParameter(model, input.reasoningLevel);
   const requestBody = JSON.stringify({
     model: input.modelId,
     input: [{ role: 'user', content: input.sourceText }],
     ...(input.instructions ? { instructions: input.instructions } : {}),
+    ...reasoning,
     store: false,
     stream: true,
   });

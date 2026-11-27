@@ -65,9 +65,7 @@ const TEXT_OPERATIONS: AiOperation[] = [
   'diagnostics', 'sync', 'writing', 'opportunities', 'import-enhance',
 ];
 
-// Story output is plain text; PCC writing requires a structured manuscript
-// response contract that generateContent support alone does not establish.
-const TEXT_OUTPUT_OPERATIONS: AiOperation[] = ['story'];
+const GEMINI_REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'extra-high'] as const;
 
 function modelIdFromName(name: string): string {
   return name.startsWith('models/') ? name.slice('models/'.length) : name;
@@ -113,17 +111,23 @@ function toModelDescriptor(model: GeminiModelRecord): AiModelDescriptor | null {
     : unknownCapability<boolean>('The Gemini account catalog did not report supportedActions for this exact model.');
   const operationCapabilities: AiModelDescriptor['operationCapabilities'] = {};
   for (const operation of TEXT_OPERATIONS) {
-    if (TEXT_OUTPUT_OPERATIONS.includes(operation)) {
-      operationCapabilities[operation] = textGeneration;
-    } else if (textGeneration.state === 'unsupported') {
-      operationCapabilities[operation] = { state: 'unsupported', evidence: textGeneration.evidence };
-    } else {
-      operationCapabilities[operation] = unknownCapability(`PCC operation ${operation} requires workflow-specific structured-output and budget qualification.`);
-    }
+    operationCapabilities[operation] = textGeneration;
   }
-  // PCC image generation uses the existing managed Gemini image route; the current
-  // preference contract does not support selecting image-operation overrides.
+  // PCC image generation uses the dedicated image generation route rather than
+  // per-operation text preferences.
   operationCapabilities.image = { state: 'unsupported', evidence };
+
+  const structuredOutput: AiCapability<boolean> = textGeneration.state === 'supported'
+    ? { state: 'supported', value: true, evidence }
+    : textGeneration.state === 'unsupported'
+      ? { state: 'unsupported', evidence }
+      : unknownCapability('Structured-output compatibility is not verified for this exact Gemini model.');
+
+  const reasoning: AiModelDescriptor['reasoning'] = model.thinking === true
+    ? { state: 'supported', value: GEMINI_REASONING_LEVELS, evidence }
+    : model.thinking === false
+      ? { state: 'unsupported', evidence }
+      : unknownCapability('The Gemini account catalog did not specify thinking support for this exact model.');
 
   return {
     id,
@@ -131,10 +135,10 @@ function toModelDescriptor(model: GeminiModelRecord): AiModelDescriptor | null {
     availability,
     textGeneration,
     imageGeneration,
-    structuredOutput: unknownCapability('Structured-output compatibility is not verified for this exact Gemini model.'),
+    structuredOutput,
     contextLimit: catalogLimit(model.inputTokenLimit, evidence, 'input-token limit'),
     outputLimit: catalogLimit(model.outputTokenLimit, evidence, 'output-token limit'),
-    reasoning: unknownCapability('The catalog thinking boolean does not identify supported levels for this exact model.'),
+    reasoning,
     operationCapabilities,
     capabilityPolicyVersion: CAPABILITY_POLICY_VERSION,
   };

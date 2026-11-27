@@ -241,6 +241,94 @@ export function stripMarkdownCodeFence(text: string): string {
   return trimmed;
 }
 
+const ENTITY_CATEGORY_MAP: Record<string, EntityCategory> = {
+  character: 'character',
+  person: 'character',
+  protagonist: 'character',
+  antagonist: 'character',
+  creature: 'character',
+  location: 'location',
+  place: 'location',
+  setting: 'location',
+  environment: 'location',
+  object: 'object',
+  item: 'object',
+  prop: 'object',
+  artifact: 'object',
+  event: 'event',
+  action: 'event',
+  group: 'group',
+  faction: 'group',
+  organization: 'group',
+  crowd: 'group',
+  scene: 'scene',
+  story: 'scene',
+  image: 'scene',
+};
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeNullableStringList(value: unknown): string[] | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (!Array.isArray(value)) return undefined;
+  return value.map((item) => nonEmptyString(item)).filter((item): item is string => Boolean(item));
+}
+
+function normalizeBeliefGraphPayload(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  const entities = Array.isArray(record.entities)
+    ? record.entities.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+        const entity = entry as Record<string, unknown>;
+        const rawCategory = nonEmptyString(entity.category)?.toLowerCase();
+        const category = rawCategory ? ENTITY_CATEGORY_MAP[rawCategory] : undefined;
+        const attributes = Array.isArray(entity.attributes)
+          ? entity.attributes
+              .map((attrEntry) => {
+                if (!attrEntry || typeof attrEntry !== 'object' || Array.isArray(attrEntry)) return attrEntry;
+                const attr = attrEntry as Record<string, unknown>;
+                const values = Array.isArray(attr.value)
+                  ? attr.value.map((v) => nonEmptyString(v)).filter((v): v is string => Boolean(v))
+                  : typeof attr.value === 'string' && attr.value.trim()
+                    ? [attr.value.trim()]
+                    : [];
+                return {
+                  ...attr,
+                  presence_in_prompt: typeof attr.presence_in_prompt === 'boolean' ? attr.presence_in_prompt : false,
+                  value: values.length > 0 ? values : ['unspecified'],
+                };
+              })
+          : [];
+        return {
+          ...entity,
+          ...(category ? { category } : { category: undefined }),
+          presence_in_prompt: typeof entity.presence_in_prompt === 'boolean' ? entity.presence_in_prompt : false,
+          description: typeof entity.description === 'string' ? entity.description.trim() : '',
+          alternatives: normalizeNullableStringList(entity.alternatives),
+          attributes,
+        };
+      })
+    : record.entities;
+  const relationships = Array.isArray(record.relationships)
+    ? record.relationships.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+        const rel = entry as Record<string, unknown>;
+        return {
+          ...rel,
+          presence_in_prompt: typeof rel.presence_in_prompt === 'boolean' ? rel.presence_in_prompt : undefined,
+          evidence_excerpt: nonEmptyString(rel.evidence_excerpt),
+          alternatives: normalizeNullableStringList(rel.alternatives),
+        };
+      })
+    : record.relationships;
+  return { entities, relationships };
+}
+
 export function parseAndValidateBeliefGraph(rawText: string, prompt: string): BeliefState {
   const cleaned = stripMarkdownCodeFence(rawText);
   let parsedJson: unknown;
@@ -250,7 +338,8 @@ export function parseAndValidateBeliefGraph(rawText: string, prompt: string): Be
     throw new Error('INVALID_RESPONSE: Model returned malformed JSON for belief graph.');
   }
 
-  const validated = RawBeliefGraphSchema.safeParse(parsedJson);
+  const normalized = normalizeBeliefGraphPayload(parsedJson);
+  const validated = RawBeliefGraphSchema.safeParse(normalized);
   if (!validated.success) {
     throw new Error(
       `INVALID_RESPONSE: Belief graph schema mismatch (${validated.error.issues[0]?.message ?? 'invalid structure'}).`
@@ -297,6 +386,33 @@ const VALID_STORY_FIELDS = new Set<keyof StoryBibleFields>([
   'cameraAndLighting',
 ]);
 
+const VALID_CLARIFY_TARGET_TYPES = new Set(['entity_attribute', 'relationship', 'story_bible', 'general']);
+const VALID_CLARIFY_CATEGORIES = new Set(['character', 'setting', 'plot', 'tone', 'visual', 'general']);
+
+function normalizeClarificationsPayload(raw: unknown): unknown {
+  if (!Array.isArray(raw)) return raw;
+  return raw.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    const item = entry as Record<string, unknown>;
+    const rawTargetType = nonEmptyString(item.targetType)?.toLowerCase();
+    const rawCategory = nonEmptyString(item.category)?.toLowerCase();
+    const rawStoryField = nonEmptyString(item.targetStoryField);
+    const options = Array.isArray(item.options)
+      ? item.options.map((o) => nonEmptyString(o)).filter((o): o is string => Boolean(o))
+      : item.options;
+    return {
+      question: nonEmptyString(item.question) ?? item.question,
+      options,
+      targetType: rawTargetType && VALID_CLARIFY_TARGET_TYPES.has(rawTargetType) ? rawTargetType : undefined,
+      targetEntityName: nonEmptyString(item.targetEntityName),
+      targetAttributeName: nonEmptyString(item.targetAttributeName),
+      targetStoryField: rawStoryField && VALID_STORY_FIELDS.has(rawStoryField as keyof StoryBibleFields) ? rawStoryField : undefined,
+      category: rawCategory && VALID_CLARIFY_CATEGORIES.has(rawCategory) ? rawCategory : undefined,
+      impact: nonEmptyString(item.impact),
+    };
+  });
+}
+
 export function parseAndValidateClarifications(rawText: string): Clarification[] {
   const cleaned = stripMarkdownCodeFence(rawText);
   let parsedJson: unknown;
@@ -306,7 +422,8 @@ export function parseAndValidateClarifications(rawText: string): Clarification[]
     throw new Error('INVALID_RESPONSE: Model returned malformed JSON for clarifications.');
   }
 
-  const validated = RawClarificationsSchema.safeParse(parsedJson);
+  const normalized = normalizeClarificationsPayload(parsedJson);
+  const validated = RawClarificationsSchema.safeParse(normalized);
   if (!validated.success) {
     throw new Error(
       `INVALID_RESPONSE: Clarifications schema mismatch (${validated.error.issues[0]?.message ?? 'invalid structure'}).`
@@ -340,6 +457,41 @@ export function parseAndValidateClarifications(rawText: string): Clarification[]
   });
 }
 
+function normalizeBatchEditPayload(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  const operations = Array.isArray(record.operations)
+    ? record.operations.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+        const op = entry as Record<string, unknown>;
+        const rawCategory = nonEmptyString(op.entityCategory)?.toLowerCase();
+        const normalizedCategory = rawCategory ? ENTITY_CATEGORY_MAP[rawCategory] : undefined;
+        let nextValue = nonEmptyString(op.nextValue);
+        let targetEntityName = nonEmptyString(op.targetEntityName);
+        if (op.type === 'update_story_bible' && !nextValue && targetEntityName) {
+          nextValue = targetEntityName;
+          targetEntityName = undefined;
+        }
+        return {
+          ...op,
+          summary: nonEmptyString(op.summary) ?? op.summary,
+          entityName: nonEmptyString(op.entityName),
+          newEntityName: nonEmptyString(op.newEntityName),
+          entityCategory: normalizedCategory,
+          attributeName: nonEmptyString(op.attributeName),
+          nextValue,
+          sourceEntityName: nonEmptyString(op.sourceEntityName),
+          targetEntityName,
+          storyField: nonEmptyString(op.storyField),
+        };
+      })
+    : [];
+  const ambiguities = Array.isArray(record.ambiguities) ? record.ambiguities : [];
+  const warnings = Array.isArray(record.warnings) ? record.warnings : [];
+  const unhandledClauses = Array.isArray(record.unhandledClauses) ? record.unhandledClauses : [];
+  return { operations, ambiguities, warnings, unhandledClauses };
+}
+
 export function parseAndValidateBatchEditResponse(
   rawText: string,
   instruction: string
@@ -352,7 +504,8 @@ export function parseAndValidateBatchEditResponse(
     throw new Error('INVALID_RESPONSE: Model returned malformed JSON for batch edit.');
   }
 
-  const validated = RawBatchEditResponseSchema.safeParse(parsedJson);
+  const normalized = normalizeBatchEditPayload(parsedJson);
+  const validated = RawBatchEditResponseSchema.safeParse(normalized);
   if (!validated.success) {
     throw new Error(
       `INVALID_RESPONSE: Batch edit schema mismatch (${validated.error.issues[0]?.message ?? 'invalid structure'}).`

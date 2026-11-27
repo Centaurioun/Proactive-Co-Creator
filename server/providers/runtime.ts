@@ -118,6 +118,12 @@ export function createOpenAiApiAdapter(fetchImpl: typeof fetch = fetch): ChatGpt
 
 export function getChatGptModels(): AiModelDescriptor[] { return structuredClone(chatGptModels); }
 export function setChatGptModels(value: AiModelDescriptor[]): void { chatGptModels = structuredClone(value); }
+export function hasCachedProviderModels(connectionId: AiConnectionId): boolean {
+  const list = connectionId === 'gemini-managed' ? managedGeminiModels
+    : connectionId === 'gemini-personal' ? personalGeminiModels
+    : connectionId === 'chatgpt-plan' ? chatGptModels : openAiApiModels;
+  return list.length > 0;
+}
 export function getCachedProviderModel(connectionId: AiConnectionId, modelId: string): AiModelDescriptor | undefined {
   const list = connectionId === 'gemini-managed' ? managedGeminiModels
     : connectionId === 'gemini-personal' ? personalGeminiModels
@@ -255,14 +261,17 @@ export function createLegacyAiClient(selection: AiProviderSelection, operation: 
           typeof config.maxOutputTokens === 'number' ? config.maxOutputTokens : AI_OPERATION_POLICIES[operation].maxOutputTokens,
           AI_OPERATION_POLICIES[operation].maxOutputTokens,
         );
+        const effectiveModelId = selection.modelId ?? params.model;
+        const cachedModel = getCachedProviderModel(selection.connectionId, effectiveModelId);
+        const omitUnsupportedThinking = cachedModel?.reasoning.state === 'unsupported' && (!selection.reasoningLevel || selection.reasoningLevel === 'default');
         const result = await withCredentialAuthority(config.abortSignal instanceof AbortSignal ? config.abortSignal : undefined, requestSignal => adapter.generateText({
           operation,
-          modelId: selection.modelId ?? params.model,
+          modelId: effectiveModelId,
           input: contents,
           instructions: typeof config.systemInstruction === 'string' ? config.systemInstruction : undefined,
           responseSchema: config.responseSchema,
           responseMimeType: typeof config.responseMimeType === 'string' ? config.responseMimeType : undefined,
-          thinkingConfig: config.thinkingConfig,
+          thinkingConfig: omitUnsupportedThinking ? undefined : config.thinkingConfig,
           reasoningLevel: selection.reasoningLevel ?? 'default',
           maxInputBytes: 512 * 1024,
           maxOutputBytes: 128 * 1024,

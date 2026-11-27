@@ -132,8 +132,8 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
     }
     const tokenSource = (tokenCount as { totalTokens?: number; source?: 'provider-count' | 'estimate' }).source;
     const connectionId = getAiProviderRequestContext()?.selection.connectionId;
-    if ((connectionId === 'chatgpt-plan' || connectionId === 'openai-api') && tokenSource !== 'provider-count') {
-      throw new AppApiError('MODEL_UNSUPPORTED', 'Narrative extraction requires provider token preflight; the selected OpenAI transport did not provide an exact count. Generation was not started.', 503, false);
+    if (connectionId === 'openai-api' && tokenSource !== 'provider-count') {
+      throw new AppApiError('MODEL_UNSUPPORTED', 'Narrative extraction requires provider token preflight; the OpenAI API transport did not provide an exact count. Generation was not started.', 503, false);
     }
     const inputTokensForBudget = tokenSource === 'estimate'
       ? Math.max(estimateTokensFromText(prompt), tokenCount.totalTokens)

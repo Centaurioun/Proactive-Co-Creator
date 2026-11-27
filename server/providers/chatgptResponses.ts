@@ -325,16 +325,18 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
     approvedBody: string,
     limits: StoryStreamLimits,
   ): Promise<ChatGptStoryTransportResult> {
-    const wrongConnectionOrOp = this.connectionId !== 'chatgpt-plan' || request.operation !== 'story';
-    const hasRestrictedFields = (request.reasoningLevel !== undefined && request.reasoningLevel !== 'default') ||
-      request.responseSchema !== undefined || request.maxOutputTokens !== undefined;
-    if (wrongConnectionOrOp || hasRestrictedFields) {
-      throw new AppApiError('MODEL_UNSUPPORTED', 'The bounded ChatGPT story transport accepts only the default-reasoning text story request.', 422, false);
+    if (this.connectionId !== 'chatgpt-plan' || request.operation !== 'story' ||
+      request.responseSchema !== undefined || request.maxOutputTokens !== undefined) {
+      throw new AppApiError('MODEL_UNSUPPORTED', 'The bounded ChatGPT story transport accepts only bounded Responses story parameters.', 422, false);
     }
+    const model = describeChatGptModel({ id: request.modelId, displayName: request.modelId }, 'chatgpt-plan');
+    assertModelOperation(model, 'story');
+    const reasoning = reasoningParameter(model, request.reasoningLevel);
     const expectedBody = JSON.stringify({
       model: request.modelId,
       input: [{ role: 'user', content: request.input }],
       ...(request.instructions ? { instructions: request.instructions } : {}),
+      ...reasoning,
       store: false,
       stream: true,
     });
@@ -356,10 +358,7 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
       throw new AppApiError('VALIDATION_ERROR', 'The request input exceeded the configured input byte limit.', 413, false);
     }
     const model = describeChatGptModel({ id: request.modelId, displayName: request.modelId }, this.connectionId as 'chatgpt-plan' | 'openai-api');
-    if (this.connectionId === 'openai-api') assertModelOperation(model, request.operation);
-    else if (model.textGeneration.state !== 'supported' || model.textGeneration.value !== true) {
-      throw new AppApiError('MODEL_UNSUPPORTED', 'The selected account model has no verified capability for text generation.', 422, false);
-    }
+    assertModelOperation(model, request.operation);
     assertReasoningSelection(model, request.reasoningLevel);
     const invalidOutputCap = !Number.isSafeInteger(request.maxOutputTokens) || (request.maxOutputTokens ?? 0) <= 0;
     if (this.connectionId === 'openai-api' && invalidOutputCap) {

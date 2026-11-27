@@ -24,11 +24,16 @@ import { getGeminiClient } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
 import { withRetry } from './retry.ts';
 import { acquireAiSlot, AI_OPERATION_POLICIES, estimateTokensFromText, evaluateOperationBudget, reserveAggregateOperationUsage } from './aiBudget.ts';
+import { getAiProviderRequestContext } from './providers/requestContext.ts';
 
 const TEXT_TIMEOUT_MS = 45_000;
 const IMAGE_TIMEOUT_MS = 60_000;
 const TARGET_IMAGE_COUNT = 4;
 const IMAGE_CONCURRENCY = 2;
+
+function maxAttemptsForRequest(defaultMaxAttempts: number): number {
+  return getAiProviderRequestContext()?.selection.connectionId === 'chatgpt-plan' ? 1 : defaultMaxAttempts;
+}
 
 function combineSignals(
   externalSignal: AbortSignal | undefined,
@@ -152,13 +157,13 @@ OUTPUT JSON:`;
     type: Type.OBJECT,
     properties: {
       name: { type: Type.STRING },
-      category: { type: Type.STRING },
+      category: { type: Type.STRING, enum: ['character', 'location', 'object', 'event', 'group', 'scene'] },
       presence_in_prompt: { type: Type.BOOLEAN },
       description: { type: Type.STRING },
       alternatives: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
       attributes: { type: Type.ARRAY, items: attributeSchema },
     },
-    required: ['name', 'presence_in_prompt', 'description', 'attributes'],
+    required: ['name', 'category', 'presence_in_prompt', 'description', 'attributes'],
   };
 
   const relationshipSchema = {
@@ -171,7 +176,7 @@ OUTPUT JSON:`;
       evidence_excerpt: { type: Type.STRING, nullable: true },
       alternatives: { type: Type.ARRAY, items: { type: Type.STRING }, nullable: true },
     },
-    required: ['source', 'target', 'label'],
+    required: ['source', 'target', 'label', 'presence_in_prompt'],
   };
 
   const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
@@ -195,7 +200,7 @@ OUTPUT JSON:`;
             },
           },
         }),
-      { maxAttempts: 3, signal: reqSignal }
+      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
     );
 
     const text = response.text;
@@ -264,19 +269,23 @@ Return a JSON array of objects.`;
                 properties: {
                   question: { type: Type.STRING },
                   options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  targetType: { type: Type.STRING },
-                  targetEntityName: { type: Type.STRING },
-                  targetAttributeName: { type: Type.STRING },
-                  targetStoryField: { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  impact: { type: Type.STRING },
+                  targetType: { type: Type.STRING, enum: ['entity_attribute', 'relationship', 'story_bible', 'general'], nullable: true },
+                  targetEntityName: { type: Type.STRING, nullable: true },
+                  targetAttributeName: { type: Type.STRING, nullable: true },
+                  targetStoryField: {
+                    type: Type.STRING,
+                    enum: ['genre', 'tone', 'narrativePerspective', 'intendedAudience', 'setting', 'themes', 'centralConflict', 'pacing', 'continuityRules', 'explicitExclusions', 'visualStyle', 'cameraAndLighting'],
+                    nullable: true,
+                  },
+                  category: { type: Type.STRING, enum: ['character', 'setting', 'plot', 'tone', 'visual', 'general'], nullable: true },
+                  impact: { type: Type.STRING, nullable: true },
                 },
                 required: ['question', 'options'],
               },
             },
           },
         }),
-      { maxAttempts: 3, signal: reqSignal }
+      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
     );
 
     const text = response.text;
@@ -328,7 +337,7 @@ Rules:
    - \`add_relationship\`: requires \`sourceEntityName\`, \`targetEntityName\`, \`nextValue\` (label)
    - \`update_relationship\`: requires \`sourceEntityName\`, \`targetEntityName\`, \`nextValue\` (label)
    - \`remove_relationship\`: requires \`sourceEntityName\`, \`targetEntityName\`
-   - \`update_story_bible\`: requires \`storyField\` (one of: genre, tone, narrativePerspective, intendedAudience, setting, themes, centralConflict, pacing, continuityRules, explicitExclusions, visualStyle, cameraAndLighting) and \`nextValue\`
+   - \`update_story_bible\`: requires \`storyField\` (one of: genre, tone, narrativePerspective, intendedAudience, setting, themes, centralConflict, pacing, continuityRules, explicitExclusions, visualStyle, cameraAndLighting) and \`nextValue\` (ALWAYS put the new story bible field text in \`nextValue\`, never in \`targetEntityName\`)
 4. Flag any contradictory statements inside the instruction in \`warnings\`.
 5. CRITICAL: If any clause or sub-instruction in the user's request cannot be mapped to one of the supported operation types or references a nonexistent target, include the exact clause text in \`unhandledClauses\` instead of silently ignoring it.
 
@@ -356,16 +365,23 @@ User Batch Instruction: ${JSON.stringify(instruction)}`;
                   items: {
                     type: Type.OBJECT,
                     properties: {
-                      type: { type: Type.STRING },
+                      type: {
+                        type: Type.STRING,
+                        enum: ['set_attribute', 'add_attribute', 'add_entity', 'rename_entity', 'exclude_entity', 'add_relationship', 'update_relationship', 'remove_relationship', 'update_story_bible'],
+                      },
                       summary: { type: Type.STRING },
-                      entityName: { type: Type.STRING },
-                      newEntityName: { type: Type.STRING },
-                      entityCategory: { type: Type.STRING },
-                      attributeName: { type: Type.STRING },
-                      nextValue: { type: Type.STRING },
-                      sourceEntityName: { type: Type.STRING },
-                      targetEntityName: { type: Type.STRING },
-                      storyField: { type: Type.STRING },
+                      entityName: { type: Type.STRING, nullable: true },
+                      newEntityName: { type: Type.STRING, nullable: true },
+                      entityCategory: { type: Type.STRING, enum: ['character', 'location', 'object', 'event', 'group', 'scene'], nullable: true },
+                      attributeName: { type: Type.STRING, nullable: true },
+                      nextValue: { type: Type.STRING, nullable: true },
+                      sourceEntityName: { type: Type.STRING, nullable: true },
+                      targetEntityName: { type: Type.STRING, nullable: true },
+                      storyField: {
+                        type: Type.STRING,
+                        enum: ['genre', 'tone', 'narrativePerspective', 'intendedAudience', 'setting', 'themes', 'centralConflict', 'pacing', 'continuityRules', 'explicitExclusions', 'visualStyle', 'cameraAndLighting'],
+                        nullable: true,
+                      },
                     },
                     required: ['type', 'summary'],
                   },
@@ -396,7 +412,7 @@ User Batch Instruction: ${JSON.stringify(instruction)}`;
             },
           },
         }),
-      { maxAttempts: 3, signal: reqSignal }
+      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
     );
 
     const text = response.text;
@@ -489,7 +505,7 @@ Updated Prompt:`;
             thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           },
         }),
-      { maxAttempts: 3, signal: reqSignal }
+      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
     );
 
     const refined = response.text?.trim();
@@ -532,7 +548,7 @@ Story:`;
             abortSignal: reqSignal,
           },
         }),
-      { maxAttempts: 3, signal: reqSignal }
+      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
     );
 
     const text = response.text?.trim();

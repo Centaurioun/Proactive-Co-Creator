@@ -107,7 +107,7 @@ export const DiagnosticsSuggestFixesRequestSchema = z.object({
   projectId: z.string().min(1).max(120),
   baseRevision: z.number().int().positive(),
   issue: z.object({
-    id: z.string().min(1).max(160),
+    id: z.string().min(1).max(512),
     title: z.string().min(1).max(240),
     description: z.string().min(1).max(1_200),
     category: z.string().max(80).optional(),
@@ -174,7 +174,7 @@ export const SyncModelProposalSchema = z.object({
   sectionId: z.string().max(120).optional(),
   entityId: z.string().max(120).optional(),
   entityName: z.string().max(160).optional(),
-  entityCategory: z.enum(['character', 'location', 'object', 'event', 'group']).optional(),
+  entityCategory: z.enum(['character', 'location', 'object', 'event', 'group', 'scene']).optional(),
   attributeName: z.string().max(120).optional(),
   sourceEntityName: z.string().max(160).optional(),
   targetEntityName: z.string().max(160).optional(),

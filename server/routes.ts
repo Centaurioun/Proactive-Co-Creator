@@ -58,7 +58,15 @@ import { GEMINI_MODELS } from './models.ts';
 import { createProviderHubRouter, resolveClientSelection, type ProviderHubRouterOptions } from './providerHubRoutes.ts';
 import { getAiProviderRequestContext, runWithAiProviderContext } from './providers/requestContext.ts';
 import { CAPABILITY_POLICY_VERSION, assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
-import { getCachedProviderModel, getCredentialAuthorityId } from './providers/runtime.ts';
+import {
+  getCachedProviderModel,
+  getCredentialAuthorityId,
+  hasCachedProviderModels,
+  hasOpenAiApiKey,
+  hasPersonalGeminiKey,
+  listProviderModels,
+} from './providers/runtime.ts';
+import { chatGptSessionStore } from './auth/chatgpt/runtime.ts';
 import { createChatGptStorySrbAuthority } from './providers/subscriptionResourceBudget.ts';
 import { handleChatGptStoryGeneration, type ChatGptStorySrbInjection } from './providers/storyRouteHandler.ts';
 import { extractNarrativeChunk } from './narrative/extractionService.ts';
@@ -279,12 +287,19 @@ function validateNarrativePlanBinding(
   return providerPlanBinding as NarrativeExtractionRequest['providerPlanBinding'];
 }
 
-function admitProviderRequest(
+function hasCredentialsForConnection(connectionId: 'gemini-managed' | 'gemini-personal' | 'chatgpt-plan' | 'openai-api', handlers: AiServiceHandlers): boolean {
+  if (connectionId === 'gemini-managed') return handlers.hasConfiguredGeminiKey();
+  if (connectionId === 'gemini-personal') return hasPersonalGeminiKey();
+  if (connectionId === 'openai-api') return hasOpenAiApiKey();
+  return chatGptSessionStore.snapshot().connected;
+}
+
+async function admitProviderRequest(
   req: Request,
   operation: AiOperation,
   isNarrativeExtraction: boolean,
-  options: ApiRouterOptions,
-): NarrativeExtractionRequest['providerPlanBinding'] | undefined {
+  handlers: AiServiceHandlers,
+): Promise<NarrativeExtractionRequest['providerPlanBinding'] | undefined> {
   const selection = resolveClientSelection(req);
   if (!selection) {
     throw new AppApiError(
@@ -294,18 +309,21 @@ function admitProviderRequest(
       false,
     );
   }
-  const authorizedBoundedStory = operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
-    (options.chatGptStorySrbTestInjection !== undefined || options.chatGptStoryLocalActivation === true);
-  if (authorizedBoundedStory && (selection.reasoningLevel ?? 'default') !== 'default') {
-    throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story uses Default reasoning only.', 422, false);
-  }
   const providerPlanBinding = isNarrativeExtraction ? validateNarrativePlanBinding(req, selection) : undefined;
-  if (!authorizedBoundedStory) assertProviderOperation(selection.connectionId, operation);
+  assertProviderOperation(selection.connectionId, operation);
   if (selection.connectionId !== 'gemini-managed' && !selection.modelId) {
     throw new AppApiError('MODEL_UNSUPPORTED', 'Refresh this connection’s model list and select a model before using it.', 422, false);
   }
   if (selection.modelId) {
-    const model = getCachedProviderModel(selection.connectionId, selection.modelId);
+    let model = getCachedProviderModel(selection.connectionId, selection.modelId);
+    if (!model && !hasCachedProviderModels(selection.connectionId) && hasCredentialsForConnection(selection.connectionId, handlers)) {
+      try {
+        await listProviderModels(selection.connectionId);
+      } catch {
+        // Fall through to cached check or explicit default allowance below.
+      }
+      model = getCachedProviderModel(selection.connectionId, selection.modelId);
+    }
     if (!model) {
       const managedDefault = selection.connectionId === 'gemini-managed' && selection.modelId === GEMINI_MODELS.text &&
         (selection.reasoningLevel ?? 'default') === 'default';
@@ -313,7 +331,7 @@ function admitProviderRequest(
         throw new AppApiError('MODEL_UNSUPPORTED', 'The selected model is not in the latest server-verified account catalog. Refresh the model list.', 422, false);
       }
     } else {
-      if (!authorizedBoundedStory) assertModelOperation(model, operation);
+      assertModelOperation(model, operation);
       assertReasoningSelection(model, selection.reasoningLevel);
     }
   }
@@ -350,7 +368,7 @@ export function createApiRouter(
     res.status(429).json({ error: err.toPayload() });
   });
 
-  router.use((req, res, next) => {
+  router.use(async (req, res, next) => {
     if (req.path === '/health' || req.path === '/ai/capabilities' || req.path.startsWith('/ai/provider-hub/')) {
       next();
       return;
@@ -366,7 +384,7 @@ export function createApiRouter(
       return;
     }
     try {
-      const providerPlanBinding = admitProviderRequest(req, operation, isNarrativeExtraction, options);
+      const providerPlanBinding = await admitProviderRequest(req, operation, isNarrativeExtraction, handlers);
       runWithAiProviderContext({ selection, operation, ...(providerPlanBinding ? { providerPlanBinding } : {}) }, next);
     } catch (error) {
       const failure = error instanceof AppApiError ? error : new AppApiError('MODEL_UNSUPPORTED', 'The selected AI model cannot run this operation.', 422, false);

@@ -101,7 +101,7 @@ function validateDefaultSelection(
 
   const model = getCachedProviderModel(defaultConnectionId, defaultTextModelId);
   const textCapable = model && model.availability.state === 'supported' && model.textGeneration.state === 'supported';
-  const opCapable = defaultConnectionId === 'chatgpt-plan' || (model ? hasSupportedOperation(model) : false);
+  const opCapable = model ? hasSupportedOperation(model) : false;
   if (!textCapable || !opCapable) {
     return defaultConnectionId === 'chatgpt-plan'
       ? 'Choose a currently verified text model from the connected ChatGPT account catalog.'
@@ -127,13 +127,6 @@ function validateSingleOverride(operation: string, rawOverride: unknown): AiProv
   const model = getCachedProviderModel(conn, modelId);
   if (!model || model.availability.state !== 'supported') return undefined;
 
-  if (operation === 'story' && conn === 'chatgpt-plan') {
-    if (modelId !== 'gpt-6-luna' || reasoningLevel !== 'default' || model.textGeneration.state !== 'supported') {
-      return undefined;
-    }
-    return { connectionId: conn, modelId, reasoningLevel };
-  }
-
   const capability = model.operationCapabilities[operation as AiOperation];
   if (capability?.state !== 'supported' || capability.value !== true) return undefined;
   try {
@@ -146,8 +139,6 @@ function validateSingleOverride(operation: string, rawOverride: unknown): AiProv
 
 function validateAndNormalizeOverrides(
   rawOverrides: unknown,
-  preferredModelId: string | undefined,
-  preferredReasoningLevel: AiReasoningLevel | undefined,
 ): { ok: true; operationOverrides?: Record<string, AiProviderSelection> } | { ok: false; message: string } {
   if (rawOverrides === undefined) return { ok: true };
   if (!isPlainRecord(rawOverrides)) return { ok: false, message: 'Operation preferences are invalid.' };
@@ -157,12 +148,6 @@ function validateAndNormalizeOverrides(
     const validated = validateSingleOverride(operation, rawOverride);
     if (!validated) return { ok: false, message: 'One or more operation preferences are invalid.' };
     normalized[operation] = validated;
-  }
-  if (normalized.story?.connectionId === 'chatgpt-plan') {
-    const qualifiedChatGpt = preferredModelId === 'gpt-6-luna' && (preferredReasoningLevel ?? 'default') === 'default';
-    if (!qualifiedChatGpt) {
-      return { ok: false, message: 'ChatGPT Story requires the saved GPT-6 Luna preference with Default reasoning.' };
-    }
   }
   return { ok: true, operationOverrides: normalized };
 }
@@ -207,11 +192,7 @@ export function validateAndNormalizePreferences(
   const defaultError = validateDefaultSelection(defaultConnectionId, defaultTextModelId, defaultReasoningLevel);
   if (defaultError) return { ok: false, message: defaultError };
 
-  const overridesResult = validateAndNormalizeOverrides(
-    record.operationOverrides,
-    chatGptPrefs.preferredTextModelsByConnection?.['chatgpt-plan'],
-    chatGptPrefs.preferredReasoningLevelsByConnection?.['chatgpt-plan'],
-  );
+  const overridesResult = validateAndNormalizeOverrides(record.operationOverrides);
   if (!overridesResult.ok) return overridesResult;
 
   return {

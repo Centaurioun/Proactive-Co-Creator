@@ -38,13 +38,9 @@ export async function handleChatGptStoryGeneration(params: HandleChatGptStoryPar
   if (!selectedModelId) {
     throw new AppApiError('MODEL_UNSUPPORTED', 'Select a current ChatGPT account model before using the story route.', 422, false);
   }
-  if (selectedModelId !== 'gpt-6-luna' || (providerContext.selection.reasoningLevel ?? 'default') !== 'default') {
-    throw new AppApiError(
-      'MODEL_UNSUPPORTED',
-      'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no substitution or provider fallback is available.',
-      422,
-      false,
-    );
+  const reasoningLevel = providerContext.selection.reasoningLevel ?? 'default';
+  if (!localActivation && !injection) {
+    throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT story generation is not activated for production admission.', 422, false);
   }
   const requestId = req.get('x-pcc-story-request-id');
   if (!requestId) {
@@ -54,10 +50,11 @@ export async function handleChatGptStoryGeneration(params: HandleChatGptStoryPar
   const authority = injection?.authority ?? localAuthority;
   const currentGrantGeneration = injection?.currentGrantGeneration ?? (() => chatGptSessionStore.getGeneration());
   const grantGeneration = currentGrantGeneration();
-  const sourceDigest = createHash('sha256').update(`${CHATGPT_STORY_INSTRUCTIONS}\n${prompt}`).digest('hex');
+  const sourceDigest = createHash('sha256').update(`${CHATGPT_STORY_INSTRUCTIONS}\n${prompt}\n${reasoningLevel}`).digest('hex');
   const plan = authority.prepare({
     requestId,
     modelId: selectedModelId,
+    reasoningLevel,
     grantGeneration,
     sourceDigest,
     sourceText: prompt,
@@ -76,7 +73,7 @@ export async function handleChatGptStoryGeneration(params: HandleChatGptStoryPar
         modelId: plan.modelId,
         input: plan.sourceText,
         ...(plan.instructions ? { instructions: plan.instructions } : {}),
-        reasoningLevel: 'default',
+        reasoningLevel,
         maxInputBytes: limits.maxRequestBodyBytes,
         maxOutputBytes: limits.maxAcceptedOutputBytes,
         timeoutMs: limits.timeoutMs,

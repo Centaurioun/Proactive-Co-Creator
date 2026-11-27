@@ -2,7 +2,7 @@ import type { AiOperation } from '../aiBudget.ts';
 import type { AiCapability, AiCapabilityEvidence, AiConnectionId, AiModelDescriptor, AiReasoningLevel } from './contracts.ts';
 import { AppApiError } from '../errors.ts';
 
-const TEXT_OPERATIONS: AiOperation[] = [
+export const TEXT_OPERATIONS: AiOperation[] = [
   'analyze', 'clarify', 'polish', 'story', 'batch-edit', 'narrative-import',
   'diagnostics', 'sync', 'writing', 'opportunities', 'import-enhance',
 ];
@@ -14,7 +14,7 @@ const PROVIDER_OPERATIONS: Record<AiConnectionId, AiOperation[]> = {
   'openai-api': TEXT_OPERATIONS,
 };
 
-export const CAPABILITY_POLICY_VERSION = '2026-11-26.3';
+export const CAPABILITY_POLICY_VERSION = '2026-11-27.1';
 export const SIWC_MODELS_DOCUMENTATION = 'https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference';
 export const SIWC_PREVIEW_LIMITATIONS = 'https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations';
 export const OPENAI_MODEL_CATALOG_ENDPOINT = 'https://api.openai.com/v1/models';
@@ -23,7 +23,7 @@ export const GEMINI_THINKING_DOCUMENTATION = 'https://ai.google.dev/gemini-api/d
 function evidence(connectionId: AiConnectionId, modelSlug: string, reference: string, source: AiCapabilityEvidence['source'] = 'official-documentation'): AiCapabilityEvidence[] {
   return [{
     source, reference,
-    checkedAt: '2026-11-26',
+    checkedAt: '2026-11-27',
     transport: source === 'account-catalog' ? (connectionId === 'chatgpt-plan' ? 'siwc-model-catalog' : 'openai-api-model-catalog') : connectionId === 'chatgpt-plan' ? 'openai-api-responses' : connectionId === 'openai-api' ? 'openai-api-responses' : 'gemini-generate-content',
     modelSlug,
   }];
@@ -41,12 +41,24 @@ const OPENAI_MODEL_EVIDENCE: Record<string, { reasoning: readonly AiReasoningLev
   'gpt-5.6-sol': { reasoning: ['none', 'low', 'medium', 'high', 'extra-high', 'max'], context: 1_050_000, output: 128_000, structuredOutput: true },
   'gpt-5.6-terra': { reasoning: ['none', 'low', 'medium', 'high', 'extra-high', 'max'], context: 1_050_000, output: 128_000, structuredOutput: true },
   'gpt-5.6-luna': { reasoning: ['none', 'low', 'medium', 'high', 'extra-high', 'max'], context: 1_050_000, output: 128_000, structuredOutput: true },
+  'gpt-5.4': { reasoning: ['none', 'minimal', 'low', 'medium', 'high', 'extra-high'], context: 1_050_000, output: 128_000, structuredOutput: true },
+  'gpt-5.4-mini': { reasoning: ['none', 'minimal', 'low', 'medium', 'high', 'extra-high'], context: 400_000, output: 128_000, structuredOutput: true },
+  'gpt-5.2': { reasoning: ['minimal', 'low', 'medium', 'high'], context: 400_000, output: 128_000, structuredOutput: true },
+  'gpt-5': { reasoning: ['minimal', 'low', 'medium', 'high'], context: 400_000, output: 128_000, structuredOutput: true },
+  'gpt-5-mini': { reasoning: ['minimal', 'low', 'medium', 'high'], context: 400_000, output: 128_000, structuredOutput: true },
+  'gpt-5-nano': { reasoning: ['minimal', 'low', 'medium', 'high'], context: 400_000, output: 128_000, structuredOutput: true },
+  'gpt-4.1': { reasoning: [], context: 1_047_576, output: 32_768, structuredOutput: true },
+  'gpt-4.1-mini': { reasoning: [], context: 1_047_576, output: 32_768, structuredOutput: true },
+  'gpt-4o': { reasoning: [], context: 128_000, output: 16_384, structuredOutput: true },
+  'o3': { reasoning: ['low', 'medium', 'high'], context: 200_000, output: 100_000, structuredOutput: true },
+  'o4-mini': { reasoning: ['low', 'medium', 'high'], context: 200_000, output: 100_000, structuredOutput: true },
 };
 
 /**
- * Account discovery proves that a model is selectable for the signed-in account,
- * not that the model supports every PCC operation or request parameter. This
- * registry deliberately uses exact slugs and a versioned documentation source.
+ * Account discovery proves that a model is selectable for the signed-in account.
+ * Known documented OpenAI models are qualified across PCC text/structured-JSON
+ * workflows using Responses API (`store: false`, `stream: true`) with conservative
+ * local input budgets on SIWC and exact preflight + `max_output_tokens` on API key.
  */
 export function describeChatGptModel(model: { id: string; displayName: string }, connectionId: 'chatgpt-plan' | 'openai-api' = 'chatgpt-plan'): AiModelDescriptor {
   const slug = model.id;
@@ -54,14 +66,25 @@ export function describeChatGptModel(model: { id: string; displayName: string },
   const modelDocumentation = `${API_MODEL_DOCS}${encodeURIComponent(slug)}`;
   const catalogProof = evidence(connectionId, slug, connectionId === 'chatgpt-plan' ? SIWC_MODELS_DOCUMENTATION : OPENAI_MODEL_CATALOG_ENDPOINT, 'account-catalog');
   const textProof = evidence(connectionId, slug, modelDocumentation);
-  const siwcLimitProof = evidence(connectionId, slug, SIWC_PREVIEW_LIMITATIONS);
   const supported = <T>(value: T, ev: AiCapabilityEvidence[]): AiCapability<T> => ({ state: 'supported', value, evidence: ev });
   const textGeneration: AiCapability<boolean> = known
     ? supported(true, textProof)
     : { state: 'unknown', reason: 'This exact account model slug has no verified text-generation mapping.' };
-  const reasoning: AiCapability<readonly AiReasoningLevel[]> = known
-    ? { state: 'supported', value: known.reasoning, evidence: textProof }
-    : { state: 'unknown', reason: 'This exact account model slug has no verified reasoning mapping.' };
+  const reasoning: AiCapability<readonly AiReasoningLevel[]> = !known
+    ? { state: 'unknown', reason: 'This exact account model slug has no verified reasoning mapping.' }
+    : known.reasoning.length > 0
+      ? { state: 'supported', value: known.reasoning, evidence: textProof }
+      : { state: 'unsupported', evidence: textProof };
+  const operationEvidence = connectionId === 'chatgpt-plan'
+    ? [...catalogProof, ...textProof]
+    : textProof;
+  const operationCapabilities = Object.fromEntries(TEXT_OPERATIONS.map((operation) => [operation,
+    known
+      ? supported(true, operationEvidence)
+      : { state: 'unknown', reason: `This exact model has no verified PCC text-operation compatibility for ${operation}.` },
+  ])) as AiModelDescriptor['operationCapabilities'];
+  operationCapabilities.image = { state: 'unsupported', evidence: catalogProof };
+
   return {
     id: slug,
     displayName: model.displayName,
@@ -74,18 +97,9 @@ export function describeChatGptModel(model: { id: string; displayName: string },
     contextLimit: known?.context ? supported(known.context, textProof) : { state: 'unknown', reason: 'No context limit is verified for this exact model.' },
     outputLimit: known?.output && connectionId === 'openai-api'
       ? supported(known.output, textProof)
-      : { state: 'unknown', reason: connectionId === 'chatgpt-plan' ? 'The OpenAI API model page documents this limit, but SIWC does not establish that it can be enforced through this transport.' : 'No hard output-token limit is verified for this exact model.' },
+      : { state: 'unknown', reason: connectionId === 'chatgpt-plan' ? 'SIWC uses conservative local stream/output byte limits because max_output_tokens is not forwarded.' : 'No hard output-token limit is verified for this exact model.' },
     reasoning,
-    // SIWC documents inference but no exact input-token preflight or hard
-    // max_output_tokens control. PCC operations require both budget controls,
-    // so model availability/text modality cannot qualify an operation here.
-    operationCapabilities: Object.fromEntries(TEXT_OPERATIONS.map((operation) => [operation,
-      connectionId === 'chatgpt-plan'
-        ? { state: 'unsupported', evidence: [...catalogProof, ...siwcLimitProof] }
-        : known
-          ? supported(true, textProof)
-          : { state: 'unknown', reason: `This exact model has no verified PCC text-operation compatibility for ${operation}.` },
-    ])) as AiModelDescriptor['operationCapabilities'],
+    operationCapabilities,
     capabilityPolicyVersion: CAPABILITY_POLICY_VERSION,
   };
 }

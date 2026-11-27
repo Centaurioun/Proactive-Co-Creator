@@ -24,7 +24,7 @@ export function createApp(routerOptions: ApiRouterOptions = {}) {
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
   const chatGptStoryLocalActivation =
-    !isProd && process.env.PCC_CHATGPT_STORY_LOCAL_ACTIVATION === '1';
+    !isProd && process.env.PCC_CHATGPT_STORY_LOCAL_ACTIVATION !== '0';
   const app = createApp({
     chatGptStoryLocalActivation,
   });
@@ -55,7 +55,7 @@ async function startServer() {
     });
   }
 
-  const host = chatGptStoryLocalActivation ? '127.0.0.1' : '0.0.0.0';
+  const host = process.env.HOST || '0.0.0.0';
   httpServer.listen(port, host, () => {
     console.log(`Proactive Co-Creator server listening on http://${host}:${port}`);
   });
