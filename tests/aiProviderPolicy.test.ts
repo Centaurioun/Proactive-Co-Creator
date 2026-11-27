@@ -86,3 +86,18 @@ test('unknown exact account slugs stay default-only and do not gain transport or
   assert.equal(model.operationCapabilities.story?.state, 'unsupported');
   assert.equal(hasSupportedOperation(model), false);
 });
+
+test('desktop mode never advertises unqualified ChatGPT text operations', () => {
+  const previous = process.env.PCC_DESKTOP_MODE;
+  process.env.PCC_DESKTOP_MODE = '1';
+  try {
+    const model = describeChatGptModel({ id: 'gpt-6-luna', displayName: 'Luna' });
+    for (const operation of ['analyze', 'clarify', 'polish', 'story', 'batch-edit', 'narrative-import', 'diagnostics', 'sync', 'writing', 'opportunities', 'import-enhance'] as const) {
+      assert.equal(model.operationCapabilities[operation]?.state, 'unsupported', operation);
+    }
+    assert.equal(hasSupportedOperation(model), false);
+  } finally {
+    if (previous === undefined) delete process.env.PCC_DESKTOP_MODE;
+    else process.env.PCC_DESKTOP_MODE = previous;
+  }
+});

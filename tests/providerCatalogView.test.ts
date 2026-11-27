@@ -92,3 +92,19 @@ test('W1-D10 & W1-D14: preference save preserves fresh catalog phases and Story 
   assert.equal(canSelectStory!({ id: 'gpt-6-luna', availability: { state: 'supported' }, textGeneration: { state: 'supported' } }, undefined), true);
   assert.equal(canSelectStory!({ id: 'gpt-6-luna', availability: { state: 'supported' }, textGeneration: { state: 'supported' } }, 'medium'), false);
 });
+
+test('catalog proof survives modal reopen only for matching credential authority, policy and catalog', () => {
+  const status = {
+    capabilityPolicyVersion: 'test-policy',
+    credentialAuthorityIds: { 'chatgpt-plan': 'process-a:grant-1' },
+    connections: [{ id: 'chatgpt-plan', state: 'connected', models: [{ id: 'gpt-6-luna' }] }],
+  };
+  const fingerprint = catalogView.catalogVerificationFingerprint(status, 'chatgpt-plan');
+  assert.ok(fingerprint);
+  assert.equal(catalogView.catalogVerificationFingerprint(structuredClone(status), 'chatgpt-plan'), fingerprint);
+  assert.notEqual(catalogView.catalogVerificationFingerprint({ ...status, credentialAuthorityIds: { 'chatgpt-plan': 'process-b:grant-1' } }, 'chatgpt-plan'), fingerprint);
+  assert.notEqual(catalogView.catalogVerificationFingerprint({ ...status, capabilityPolicyVersion: 'changed' }, 'chatgpt-plan'), fingerprint);
+  assert.notEqual(catalogView.catalogVerificationFingerprint({ ...status, connections: [{ ...status.connections[0], models: [{ id: 'other' }] }] }, 'chatgpt-plan'), fingerprint);
+  assert.equal(catalogView.catalogVerificationFingerprint({ ...status, connections: [{ ...status.connections[0], state: 'expired' }] }, 'chatgpt-plan'), undefined);
+  assert.equal(catalogView.catalogVerificationFingerprint({ ...status, credentialAuthorityIds: {} }, 'chatgpt-plan'), undefined);
+});

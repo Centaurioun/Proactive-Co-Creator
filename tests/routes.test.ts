@@ -541,3 +541,30 @@ async function createSrbStoryTestSetup(modelId: string) {
     assert.ok(limiter.size() <= 16);
   });
 });
+
+it('desktop ChatGPT blocks non-Story before the handler even with previously broad cached model metadata', async () => {
+  const previous = process.env.PCC_DESKTOP_MODE;
+  const originalModels = getChatGptModels();
+  process.env.PCC_DESKTOP_MODE = '1';
+  const model = describeChatGptModel({ id: 'gpt-6-luna', displayName: 'Luna' });
+  setChatGptModels([{ ...model, operationCapabilities: { ...model.operationCapabilities, analyze: model.textGeneration } }]);
+  let handlerCalls = 0;
+  let server: Awaited<ReturnType<typeof startTestServer>> | undefined;
+  try {
+    server = await startTestServer(createStubHandlers({
+      analyzeBeliefGraph: async () => { handlerCalls++; throw new Error('Unqualified handler invoked'); },
+    }), { chatGptStoryLocalActivation: true });
+    const response = await fetch(`${server.baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: server.baseUrl, 'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': 'gpt-6-luna', 'x-pcc-ai-reasoning': 'medium' },
+      body: JSON.stringify({ prompt: 'Synthetic test only.', mode: 'story' }),
+    });
+    assert.equal(response.status, 422, await response.clone().text());
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await server?.close();
+    setChatGptModels(originalModels);
+    if (previous === undefined) delete process.env.PCC_DESKTOP_MODE;
+    else process.env.PCC_DESKTOP_MODE = previous;
+  }
+});
