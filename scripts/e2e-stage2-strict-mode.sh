@@ -120,7 +120,7 @@ async (bootstrap) => {
       throw new Error('An enhancement from the unmounted workflow reached the replacement workflow.');
     }
     if (enhancementCalls !== 2 || browserEvidence.pageErrors.length) throw new Error(JSON.stringify({ enhancementCalls, browserEvidence }));
-    return JSON.stringify({ status: 'STAGE2_STRICT_MODE_PASS', enhancementCalls, browserEvidence });
+    return JSON.stringify({ status: 'STAGE2_STRICT_MODE_PASS', scenario: 'strict-mode-late-response', enhancementCalls, browserEvidence });
   } catch (error) {
     throw new Error(error.message + '\n' + JSON.stringify({
       url: page.url(), title: await page.title().catch(() => 'unavailable'),
@@ -136,4 +136,4 @@ async (bootstrap) => {
 JS
 output="$(playwright-cli -s="$session" run-code "$scenario" 2>&1)" || { echo "$output" >&2; exit 1; }
 echo "$output"
-[[ "$output" == *STAGE2_STRICT_MODE_PASS* ]]
+printf '%s' "$output" | node scripts/qa/validate-e2e-result.mjs --status STAGE2_STRICT_MODE_PASS --scenario strict-mode-late-response --enhancement-calls 2

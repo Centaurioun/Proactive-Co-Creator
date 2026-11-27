@@ -269,4 +269,4 @@ async (bootstrap) => {
 JS
 output="$(playwright-cli -s="$session" run-code "$scenario" 2>&1)" || { echo "$output" >&2; exit 1; }
 echo "$output"
-[[ "$output" == *PROJECT_LIFECYCLE_PASS* ]]
+printf '%s' "$output" | node scripts/qa/validate-e2e-result.mjs --status PROJECT_LIFECYCLE_PASS --scenarios delete,append,archive,backup-retry,write-recovery

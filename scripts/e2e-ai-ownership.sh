@@ -17,6 +17,7 @@ async (bootstrap) => {
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
     const calls = [];
+    let scenarioDetails = {};
     const browserEvidence = { pageErrors: [], consoleErrors: [], failedRequests: [], apiRequests: [], apiResponses: [] };
     page.on('pageerror', error => browserEvidence.pageErrors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') browserEvidence.consoleErrors.push(message.text()); });
@@ -143,6 +144,24 @@ async (bootstrap) => {
           try { const record = await new Promise(resolve => { const request = db.transaction('projects').objectStore('projects').get(id); request.onsuccess = () => resolve(request.result); }); return record?.snapshot?.storyBible?.genre?.value === 'Synthetic noir'; }
           finally { db.close(); }
         }, undefined, { timeout: 8000 });
+        const afterRecord = await page.evaluate(async () => {
+          const id = localStorage.getItem('proactive_co_creator_active_id_v2');
+          const db = await new Promise(resolve => { const request = indexedDB.open('proactive_co_creator_db_v2'); request.onsuccess = () => resolve(request.result); });
+          try { return await new Promise(resolve => { const request = db.transaction('projects').objectStore('projects').get(id); request.onsuccess = () => resolve(request.result); }); }
+          finally { db.close(); }
+        });
+        if (afterRecord.revision <= beforeRecord.revision) {
+          throw new Error('Accepted diagnostic fix did not advance the durable revision: ' + JSON.stringify({ before: beforeRecord.revision, after: afterRecord.revision }));
+        }
+        const diagnosticAnalyzeCalls = browserEvidence.apiRequests.filter(request => request.method === 'POST' && request.path === '/api/narrative/diagnostics/analyze').length;
+        const diagnosticFixCalls = browserEvidence.apiRequests.filter(request => request.method === 'POST' && request.path === '/api/narrative/diagnostics/suggest-fixes').length;
+        if (diagnosticAnalyzeCalls !== 1 || diagnosticFixCalls !== 1) {
+          throw new Error('Expected exactly one analyze and one suggest-fixes request: ' + JSON.stringify({ diagnosticAnalyzeCalls, diagnosticFixCalls }));
+        }
+        scenarioDetails = {
+          diagnosticFixRevision: { before: beforeRecord.revision, after: afterRecord.revision },
+          diagnosticAnalyzeCalls, diagnosticFixCalls,
+        };
         await page.getByRole('heading', { name: 'Safe Fix Alternatives (Review Before Applying)' }).waitFor({ state: 'hidden' });
         if (await page.getByRole('button', { name: 'Accept this change', exact: true }).count()) throw new Error('Accepted diagnostic fix remained actionable.');
         await open('Plan');
@@ -217,7 +236,7 @@ async (bootstrap) => {
         browserEvidence,
       }, null, 2));
     } finally {
-      scenarioEvidence.push({ kind, routeCalls: calls.length, ...browserEvidence });
+      scenarioEvidence.push({ kind, routeCalls: calls.length, ...scenarioDetails, ...browserEvidence });
       calls.forEach(call => call.finish());
       await context.close();
     }
@@ -228,4 +247,4 @@ async (bootstrap) => {
 JS
 output="$(playwright-cli -s="$session" run-code "$scenario" 2>&1)" || { echo "$output" >&2; exit 1; }
 echo "$output"
-[[ "$output" == *'AI_OWNERSHIP_PASS'* ]]
+printf '%s' "$output" | node scripts/qa/validate-e2e-result.mjs --status AI_OWNERSHIP_PASS --scenarios switch,edit,pause,supersede,batch,fixes --route-calls switch=1,edit=1,pause=1,supersede=2,batch=2,fixes=2 --revision-advances fixes --api-counts fixes:/api/narrative/diagnostics/analyze=1,fixes:/api/narrative/diagnostics/suggest-fixes=1
