@@ -1,0 +1,239 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
+import {
+  chatGptSessionStore,
+  createApp,
+  setChatGptCatalogPersistenceHandler,
+  setChatGptModels,
+  setPreferences,
+  setPreferencesPersistenceHandler,
+} from '../dist-electron/server.mjs';
+import {
+  isAllowedNavigationUrl,
+  isSafeExternalUrl,
+  resolveDesktopPort,
+  startDesktopServer,
+} from './desktopServer.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+app.setName('Proactive Co-Creator');
+
+let mainWindow = null;
+let desktopServer = null;
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+function readJsonSafe(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return undefined;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+function writeJsonSafe(filePath, value) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(value), { mode: 0o600 });
+  } catch {
+    // Non-fatal persistence error
+  }
+}
+
+function initDesktopPersistence() {
+  const userDataDir = app.getPath('userData');
+  const sessionFile = path.join(userDataDir, 'chatgpt-session.enc');
+  const catalogFile = path.join(userDataDir, 'chatgpt-models.json');
+  const prefsFile = path.join(userDataDir, 'provider-preferences.json');
+
+  // 1. Restore ChatGPT OAuth session (encrypted via macOS Keychain / Electron safeStorage)
+  try {
+    if (fs.existsSync(sessionFile)) {
+      const raw = fs.readFileSync(sessionFile);
+      const jsonText = safeStorage.isEncryptionAvailable()
+        ? safeStorage.decryptString(raw)
+        : raw.toString('utf8');
+      const savedTokens = JSON.parse(jsonText);
+      if (savedTokens && typeof savedTokens.accessToken === 'string') {
+        chatGptSessionStore.install(savedTokens);
+      }
+    }
+  } catch {
+    // Corrupted or unreadable session file; user can reconnect cleanly
+  }
+
+  chatGptSessionStore.setPersistenceHandler((tokens) => {
+    try {
+      if (!tokens) {
+        if (fs.existsSync(sessionFile)) fs.unlinkSync(sessionFile);
+        return;
+      }
+      fs.mkdirSync(userDataDir, { recursive: true });
+      const payload = JSON.stringify(tokens);
+      const data = safeStorage.isEncryptionAvailable()
+        ? safeStorage.encryptString(payload)
+        : Buffer.from(payload, 'utf8');
+      fs.writeFileSync(sessionFile, data, { mode: 0o600 });
+    } catch {
+      // Non-fatal persistence error
+    }
+  });
+
+  // 2. Restore cached ChatGPT model catalog
+  const savedCatalog = readJsonSafe(catalogFile);
+  if (Array.isArray(savedCatalog) && savedCatalog.length > 0) {
+    setChatGptModels(savedCatalog);
+  }
+  setChatGptCatalogPersistenceHandler((models) => {
+    writeJsonSafe(catalogFile, models);
+  });
+
+  // 3. Restore provider preferences (defaulting to chatgpt-plan in desktop mode)
+  const savedPrefs = readJsonSafe(prefsFile);
+  if (savedPrefs && typeof savedPrefs.defaultConnectionId === 'string') {
+    setPreferences(savedPrefs);
+  } else {
+    setPreferences({ defaultConnectionId: 'chatgpt-plan' });
+  }
+  setPreferencesPersistenceHandler((prefs) => {
+    writeJsonSafe(prefsFile, prefs);
+  });
+}
+
+async function createMainWindow(origin) {
+  const win = new BrowserWindow({
+    width: 1440,
+    height: 920,
+    minWidth: 1024,
+    minHeight: 680,
+    title: 'Proactive Co-Creator',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+    },
+  });
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigationUrl(url, origin)) {
+      event.preventDefault();
+      if (isSafeExternalUrl(url)) {
+        void shell.openExternal(url);
+      }
+    }
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url === 'about:blank') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          show: false,
+          webPreferences: {
+            contextIsolation: true,
+            sandbox: true,
+            nodeIntegration: false,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
+          },
+        },
+      };
+    }
+    if (isSafeExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  win.webContents.on('did-create-window', (childWin) => {
+    const cleanupTimer = globalThis.setTimeout(() => {
+      if (!childWin.isDestroyed()) childWin.close();
+    }, 15_000);
+
+    childWin.on('closed', () => {
+      globalThis.clearTimeout(cleanupTimer);
+    });
+
+    childWin.webContents.on('will-navigate', (event, targetUrl) => {
+      event.preventDefault();
+      if (isSafeExternalUrl(targetUrl)) {
+        void shell.openExternal(targetUrl);
+      }
+      if (!childWin.isDestroyed()) childWin.close();
+    });
+  });
+
+  win.once('ready-to-show', () => {
+    win.show();
+  });
+
+  win.on('closed', () => {
+    mainWindow = null;
+  });
+
+  await win.loadURL(origin);
+  return win;
+}
+
+async function boot() {
+  if (!gotLock) return;
+  const distDir = path.join(app.getAppPath(), 'dist');
+  const port = resolveDesktopPort(process.env);
+  process.env.PORT = String(port);
+  process.env.NODE_ENV = 'production';
+  process.env.PCC_DESKTOP_MODE = '1';
+
+  initDesktopPersistence();
+
+  try {
+    desktopServer = await startDesktopServer({
+      createApp,
+      distDir,
+      port,
+      chatGptStoryLocalActivation: true,
+    });
+  } catch (err) {
+    dialog.showErrorBox(
+      'Proactive Co-Creator failed to start',
+      `Could not start the local loopback server on 127.0.0.1:${port}.\n\n${err instanceof Error ? err.message : String(err)}`
+    );
+    app.quit();
+    return;
+  }
+
+  mainWindow = await createMainWindow(desktopServer.origin);
+}
+
+app.whenReady().then(boot).catch((err) => {
+  console.error('Desktop boot failed:', err);
+  app.quit();
+});
+
+app.on('before-quit', () => {
+  if (desktopServer) {
+    void desktopServer.close();
+  }
+});
+
+app.on('window-all-closed', () => {
+  app.quit();
+});

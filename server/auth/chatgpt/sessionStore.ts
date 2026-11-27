@@ -96,6 +96,7 @@ export class ChatGptSessionStore {
   private tokenRotationVersion = 0;
   private readonly activeRequests = new Set<AbortController>();
   private readonly activeRevocations = new Set<AbortController>();
+  private persistenceHandler?: (tokens: ChatGptTokenSet | undefined) => void;
 
   constructor(options: ChatGptSessionStoreOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch;
@@ -108,12 +109,17 @@ export class ChatGptSessionStore {
   }
 
   /** Installs a new authorization grant and invalidates all authority from its predecessor. */
+  setPersistenceHandler(handler: ((tokens: ChatGptTokenSet | undefined) => void) | undefined): void {
+    this.persistenceHandler = handler;
+  }
+
   install(tokens: ChatGptTokenSet): void {
     this.abortAllInFlight();
     this.generation += 1;
     this.tokenRotationVersion += 1;
     this.tokens = safeTokenSet(tokens);
     this.refreshInFlight = undefined;
+    this.persistenceHandler?.(this.tokens ? { ...this.tokens } : undefined);
   }
 
   snapshot(): ChatGptSessionSnapshot {
@@ -134,6 +140,7 @@ export class ChatGptSessionStore {
     this.tokenRotationVersion += 1;
     this.tokens = undefined;
     this.refreshInFlight = undefined;
+    this.persistenceHandler?.(undefined);
   }
 
   createRequestLease(parentSignal?: AbortSignal, expectedGeneration = this.generation): ChatGptRequestLease {

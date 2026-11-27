@@ -80,7 +80,7 @@ export function describeChatGptModel(model: { id: string; displayName: string },
     // max_output_tokens control. PCC operations require both budget controls,
     // so model availability/text modality cannot qualify an operation here.
     operationCapabilities: Object.fromEntries(TEXT_OPERATIONS.map((operation) => [operation,
-      connectionId === 'chatgpt-plan'
+      connectionId === 'chatgpt-plan' && process.env.PCC_DESKTOP_MODE !== '1'
         ? { state: 'unsupported', evidence: [...catalogProof, ...siwcLimitProof] }
         : known
           ? supported(true, textProof)

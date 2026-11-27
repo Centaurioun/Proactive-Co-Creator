@@ -59,6 +59,7 @@ import { createProviderHubRouter, resolveClientSelection, type ProviderHubRouter
 import { getAiProviderRequestContext, runWithAiProviderContext } from './providers/requestContext.ts';
 import { CAPABILITY_POLICY_VERSION, assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
 import { getCachedProviderModel, getCredentialAuthorityId } from './providers/runtime.ts';
+import { chatGptSessionStore } from './auth/chatgpt/runtime.ts';
 import { createChatGptStorySrbAuthority } from './providers/subscriptionResourceBudget.ts';
 import { handleChatGptStoryGeneration, type ChatGptStorySrbInjection } from './providers/storyRouteHandler.ts';
 import { extractNarrativeChunk } from './narrative/extractionService.ts';
@@ -294,7 +295,8 @@ function admitProviderRequest(
       false,
     );
   }
-  const authorizedBoundedStory = operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
+  const desktopChatGptFull = process.env.PCC_DESKTOP_MODE === '1' && selection.connectionId === 'chatgpt-plan';
+  const authorizedBoundedStory = !desktopChatGptFull && operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
     (options.chatGptStorySrbTestInjection !== undefined || options.chatGptStoryLocalActivation === true);
   if (authorizedBoundedStory && (selection.reasoningLevel ?? 'default') !== 'default') {
     throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story uses Default reasoning only.', 422, false);
@@ -333,7 +335,8 @@ export function createApiRouter(
   const rateLimiter = createIpRateLimiter(windowMs, maxRequests);
 
   router.get('/health', (_req, res) => {
-    res.json({ ok: true, configured: handlers.hasConfiguredGeminiKey(), models: GEMINI_MODELS });
+    const desktopChatGptReady = process.env.PCC_DESKTOP_MODE === '1' && chatGptSessionStore.snapshot().connected;
+    res.json({ ok: true, configured: handlers.hasConfiguredGeminiKey() || desktopChatGptReady, models: GEMINI_MODELS });
   });
 
   router.use((req, res, next) => {
