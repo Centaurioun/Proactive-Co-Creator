@@ -61,9 +61,10 @@ export function ModelPreferencesSection({
   const preferredChatGptReasoning = preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default';
 
   const selectableDefaultConnections = connections.filter(item =>
-    item.state !== 'unsupported-environment' &&
-    (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model =>
-      item.id === 'chatgpt-plan' ? isSelectableTextPreferenceModel(model) : isEligibleTextModel(model)))));
+    item.id === preferences.defaultConnectionId ||
+    (item.state !== 'unsupported-environment' &&
+      (item.id === 'gemini-managed' || (item.state === 'connected' && item.models.some(model =>
+        item.id === 'chatgpt-plan' ? isSelectableTextPreferenceModel(model) : isEligibleTextModel(model))))));
 
   return (
     <>
