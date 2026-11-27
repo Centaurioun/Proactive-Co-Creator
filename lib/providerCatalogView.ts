@@ -142,3 +142,20 @@ export function isEligibleTextModel(model: EligibilityDescriptor): boolean {
 export function isSelectableTextPreferenceModel(model: Pick<EligibilityDescriptor, 'availability' | 'textGeneration'>): boolean {
   return model.availability.state === 'supported' && model.textGeneration.state === 'supported';
 }
+
+/** A local status refresh can confirm an in-memory explicit catalog refresh,
+ * never promote a disk cache or another credential authority to fresh. */
+export function catalogVerificationFingerprint(
+  status: {
+    capabilityPolicyVersion: string;
+    credentialAuthorityIds: Partial<Record<AiConnectionId, string>>;
+    connections: readonly { id: string; state: string; models: unknown[] }[];
+  },
+  connectionId: AiConnectionId,
+): string | undefined {
+  const connection = status.connections.find(item => item.id === connectionId);
+  const authority = status.credentialAuthorityIds[connectionId];
+  if (!authority || !status.capabilityPolicyVersion || !connection ||
+      !['available', 'connected'].includes(connection.state)) return undefined;
+  return JSON.stringify([connectionId, authority, status.capabilityPolicyVersion, connection.models]);
+}
