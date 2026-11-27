@@ -13,6 +13,11 @@ import {
   setEntityExistence,
   updateStoryBibleField,
 } from '../lib/canonicalModel.ts';
+import {
+  mutateEntityAttributeInPlace,
+  mutateRenameEntityInPlace,
+  mutateUpsertRelationshipInPlace,
+} from '../lib/canonical/mutators.ts';
 import { evaluateProjectConsistency } from '../lib/consistencyChecker.ts';
 import {
   computeSnapshotDigest,
@@ -54,7 +59,7 @@ import {
   saveProjectToLocalStorage,
   simulateBrowserProcessRestartForTesting,
 } from '../lib/storageEngine.ts';
-import type { Clarification, CreativeProject, ProposedOperation } from '../shared/types.ts';
+import type { Clarification, CreativeProject, ProjectSnapshot, ProposedOperation } from '../shared/types.ts';
 import type { NarrativeRecords } from '../shared/narrativeTypes.ts';
 import { FakeIndexedDB, MockLocalStorage, installMockBrowserStorage } from './helpers/mockBrowserStorage.ts';
 
@@ -684,5 +689,124 @@ describe('W2 Domain, History & Storage Defect Reproductions and Characterization
     assert.equal(preExcludedIssues.length, 1);
     assert.equal(preExcludedIssues[0].operationId, 'op3');
     assert.equal(preExcludedIssues[0].code, 'MISSING_TARGET');
+  });
+
+  it('F-W7-CH01: mutating or renaming an ID-less entity never corrupts unrelated ID-less relationships, clarifications, or decisions', () => {
+    const base = createSampleProject(FIXED_TS).snapshot;
+    const snap: ProjectSnapshot = {
+      ...structuredClone(base),
+      entities: [
+        {
+          name: 'Alpha',
+          category: 'character',
+          description: 'ID-less Alpha',
+          presence_in_prompt: true,
+          alternatives: null,
+          attributes: [{ name: 'mood', presence_in_prompt: false, value: [{ name: 'calm' }], confirmedValue: 'calm', status: 'confirmed' }],
+          status: 'confirmed',
+        },
+        {
+          name: 'Beta',
+          category: 'character',
+          description: 'ID-less Beta',
+          presence_in_prompt: true,
+          alternatives: null,
+          attributes: [{ name: 'mood', presence_in_prompt: false, value: [{ name: 'tense' }], confirmedValue: 'tense', status: 'pending' }],
+          status: 'confirmed',
+        },
+        {
+          id: '',
+          name: 'Gamma',
+          category: 'location',
+          description: 'Empty-id Gamma',
+          presence_in_prompt: true,
+          alternatives: null,
+          attributes: [],
+          status: 'confirmed',
+        },
+      ],
+      relationships: [
+        { source: 'Beta', target: 'Gamma', label: 'guards', status: 'confirmed' },
+      ],
+      clarifications: [
+        {
+          id: 'clar_beta_mood',
+          question: 'What is Beta mood?',
+          options: ['tense', 'calm'],
+          target: { type: 'entity_attribute', entityName: 'Beta', attributeName: 'mood' },
+          category: 'character',
+          impact: 'Mood detail',
+          status: 'unanswered',
+        },
+      ],
+      decisions: [
+        {
+          id: 'dec_beta_mood',
+          category: 'attribute',
+          title: 'Confirm Beta mood',
+          description: 'Select mood for Beta',
+          provenance: 'ai-inferred',
+          groupKey: 'character',
+          targetEntityName: 'Beta',
+          targetAttributeName: 'mood',
+          proposedValue: 'tense',
+          options: ['tense', 'calm'],
+          status: 'pending',
+          createdAt: FIXED_TS,
+        },
+      ],
+    };
+
+    // 1. Direct mutators on Alpha (id: undefined) must leave Beta's clarification, decision, and Beta->Gamma relationship untouched
+    const attrSnap = structuredClone(snap);
+    assert.equal(mutateEntityAttributeInPlace(attrSnap, 'Alpha', 'mood', 'joyful'), true);
+    assert.equal(attrSnap.clarifications[0].status, 'unanswered');
+    assert.equal(attrSnap.decisions[0].status, 'pending');
+
+    const renameSnap = structuredClone(snap);
+    assert.equal(mutateRenameEntityInPlace(renameSnap, 'Alpha', 'AlphaPrime'), true);
+    assert.equal(renameSnap.relationships[0].source, 'Beta');
+    assert.equal(renameSnap.relationships[0].target, 'Gamma');
+    assert.equal(renameSnap.clarifications[0].target?.entityName, 'Beta');
+
+    // 2. applyProposedOperations (rename_entity + set_attribute on Alpha) must not corrupt Beta->Gamma or Beta's clarification
+    const batchRes = applyProposedOperations(snap, [
+      { id: 'op_ren', type: 'rename_entity', summary: 'Rename Alpha', entityName: 'Alpha', newEntityName: 'AlphaPrime', selected: true },
+      { id: 'op_attr', type: 'set_attribute', summary: 'Set Alpha mood', entityName: 'AlphaPrime', attributeName: 'mood', nextValue: 'joyful', selected: true },
+    ]);
+    assert.equal(batchRes.errors.length, 0);
+    assert.equal(batchRes.snapshot.relationships[0].source, 'Beta');
+    assert.equal(batchRes.snapshot.relationships[0].target, 'Gamma');
+    assert.equal(batchRes.snapshot.clarifications[0].target?.entityName, 'Beta');
+    assert.equal(batchRes.snapshot.clarifications[0].status, 'unanswered');
+
+    // 3. Upserting relationship from ID-bearing entity to ID-less Gamma must not overwrite existing relationship to ID-less Beta
+    const relSnap = structuredClone(snap);
+    relSnap.entities.push({
+      id: 'ent_warden',
+      name: 'Warden',
+      category: 'character',
+      description: 'Has ID',
+      presence_in_prompt: true,
+      alternatives: null,
+      attributes: [],
+      status: 'confirmed',
+    });
+    relSnap.relationships.push({
+      id: 'rel_warden_beta',
+      sourceId: 'ent_warden',
+      source: 'Warden',
+      target: 'Beta',
+      label: 'watches',
+      status: 'confirmed',
+    });
+    assert.equal(
+      mutateUpsertRelationshipInPlace(relSnap, 'ent_warden', 'Gamma', 'protects', 'user-edit', {
+        replaceSameDirectionSingle: true,
+      }),
+      true
+    );
+    assert.equal(relSnap.relationships.find((r) => r.id === 'rel_warden_beta')?.target, 'Beta');
+    assert.equal(relSnap.relationships.some((r) => r.source === 'Warden' && r.target === 'Gamma' && r.label === 'protects'), true);
   });
 });

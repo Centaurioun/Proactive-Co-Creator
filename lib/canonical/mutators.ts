@@ -100,6 +100,15 @@ function updateExistingAttributeInPlace(
     : [{ name: newValue }, ...attr.value.filter((v) => v.name !== newValue)];
 }
 
+function matchesEntityIdOrName(
+  entityId: string | undefined,
+  refId: string | undefined,
+  refName: string | undefined,
+  targetLower: string
+): boolean {
+  return Boolean(entityId && refId === entityId) || refName?.toLowerCase() === targetLower;
+}
+
 function markAttributeDecisionsAndClarifications(
   next: ProjectSnapshot,
   entity: Entity,
@@ -108,8 +117,12 @@ function markAttributeDecisionsAndClarifications(
 ): void {
   const entLower = entity.name.toLowerCase();
   next.decisions = next.decisions.map((dec) => {
-    const matchesEntity =
-      dec.targetEntityId === entity.id || dec.targetEntityName?.toLowerCase() === entLower;
+    const matchesEntity = matchesEntityIdOrName(
+      entity.id,
+      dec.targetEntityId,
+      dec.targetEntityName,
+      entLower
+    );
     if (matchesEntity && dec.targetAttributeName?.toLowerCase() === normAttr) {
       return { ...dec, proposedValue: newValue, status: 'accepted' };
     }
@@ -117,8 +130,12 @@ function markAttributeDecisionsAndClarifications(
   });
 
   next.clarifications = next.clarifications.map((clar) => {
-    const matchesEntity =
-      clar.target?.entityId === entity.id || clar.target?.entityName?.toLowerCase() === entLower;
+    const matchesEntity = matchesEntityIdOrName(
+      entity.id,
+      clar.target?.entityId,
+      clar.target?.entityName,
+      entLower
+    );
     if (
       clar.target?.type === 'entity_attribute' &&
       matchesEntity &&
@@ -200,7 +217,8 @@ export function mutateRenameEntityInPlace(
 
   const normTarget = entityIdOrOldName.trim().toLowerCase();
   const entity = next.entities.find(
-    (e) => e.id === entityIdOrOldName || e.name.trim().toLowerCase() === normTarget
+    (e) =>
+      (Boolean(e.id) && e.id === entityIdOrOldName) || e.name.trim().toLowerCase() === normTarget
   );
   if (!entity || entity.name === trimmedNew) return false;
 
@@ -212,21 +230,21 @@ export function mutateRenameEntityInPlace(
   entity.provenance = provenance;
 
   for (const rel of next.relationships) {
-    if (rel.sourceId === entity.id || rel.source.toLowerCase() === oldLower) {
+    if (matchesEntityIdOrName(entity.id, rel.sourceId, rel.source, oldLower)) {
       rel.sourceId = entity.id;
       rel.source = trimmedNew;
     }
-    if (rel.targetId === entity.id || rel.target.toLowerCase() === oldLower) {
+    if (matchesEntityIdOrName(entity.id, rel.targetId, rel.target, oldLower)) {
       rel.targetId = entity.id;
       rel.target = trimmedNew;
     }
   }
 
   for (const clar of next.clarifications) {
-    const matchesTarget =
+    if (
       clar.target &&
-      (clar.target.entityId === entity.id || clar.target.entityName?.toLowerCase() === oldLower);
-    if (matchesTarget && clar.target) {
+      matchesEntityIdOrName(entity.id, clar.target.entityId, clar.target.entityName, oldLower)
+    ) {
       clar.target.entityId = entity.id;
       clar.target.entityName = trimmedNew;
     }
@@ -311,7 +329,7 @@ function findMatchingRelationshipForUpsert(
   const srcLower = sourceName.toLowerCase();
   const tgtLower = targetName.toLowerCase();
   const matchesSameDirection = (r: Relationship) =>
-    (Boolean(r.sourceId && sourceEnt?.id) &&
+    (Boolean(r.sourceId && sourceEnt?.id && r.targetId && targetEnt?.id) &&
       r.sourceId === sourceEnt?.id &&
       r.targetId === targetEnt?.id) ||
     (r.source.toLowerCase() === srcLower && r.target.toLowerCase() === tgtLower);
@@ -402,7 +420,7 @@ export function mutateUpdateRelationshipByIdInPlace(
   },
   provenance: DecisionProvenance = 'user-edit'
 ): boolean {
-  const rel = next.relationships.find((r) => r.id === relationshipId);
+  const rel = relationshipId ? next.relationships.find((r) => r.id === relationshipId) : undefined;
   if (!rel) return false;
 
   if (updates.reverseDirection) {

@@ -1,4 +1,4 @@
-import { evaluateProjectConsistency } from '../../consistencyChecker.ts';
+import { buildEntityMentionRegex, evaluateProjectConsistency } from '../../consistencyChecker.ts';
 import type { UndoRedoState } from '../../historyEngine.ts';
 import type {
   ConsistencyIssue,
@@ -98,8 +98,7 @@ function collectExcludedManuscriptMentionFindings(project: CreativeProject): Dia
   const sections = manuscriptSections(project);
   const excludedEntities = project.snapshot.entities.filter((e) => e.excluded && e.name.trim().length > 1);
   for (const ent of excludedEntities) {
-    const escaped = ent.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(?<!\\p{L}|\\p{N}|_)${escaped}(?!\\p{L}|\\p{N}|_)`, 'iu');
+    const regex = buildEntityMentionRegex(ent.name);
     for (const section of sections) {
       if (!regex.test(section.text)) continue;
       findings.push({

@@ -276,3 +276,73 @@ test('W6-D06b: applyDiagnosticFixAlternative rejects missing entityId on entity_
     /entity ID|target entity/i
   );
 });
+
+test('F-W7-CH02: Turkish İ/i case-folding matches excluded İpek across İpek/İPEK/ipek/i\\u0307pek without breaking word boundaries or English Iris', () => {
+  const base = createSampleProject(100);
+  const projectWithTurkishEntities: CreativeProject = {
+    ...base,
+    snapshot: {
+      ...base.snapshot,
+      entities: [
+        ...base.snapshot.entities,
+        { id: 'ent_ipek', name: 'İpek', category: 'character', description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+        { id: 'ent_iris', name: 'Iris', category: 'character', description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+        { id: 'ent_omer', name: 'Ömer', category: 'character', description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+      ],
+    },
+  };
+
+  const secLower = prepareManuscriptChange(
+    projectWithTurkishEntities,
+    createUndoRedoStateFromProject(projectWithTurkishEntities),
+    narrativeBase(projectWithTurkishEntities),
+    [{ id: 'sec_lc', kind: 'scene', title: 'Bölüm LC', text: 'ipek kapıda bekledi.' }]
+  )!;
+  assert.equal(
+    collectLocalDiagnosticFindings(secLower.project).some((f) => f.type === 'manuscript_excluded_mention' && f.title.includes('İpek')),
+    true
+  );
+
+  const secNfd = prepareManuscriptChange(
+    projectWithTurkishEntities,
+    createUndoRedoStateFromProject(projectWithTurkishEntities),
+    narrativeBase(projectWithTurkishEntities),
+    [{ id: 'sec_nfd', kind: 'scene', title: 'Bölüm NFD', text: 'i\u0307pek kapıda bekledi.' }]
+  )!;
+  assert.equal(
+    collectLocalDiagnosticFindings(secNfd.project).some((f) => f.type === 'manuscript_excluded_mention' && f.title.includes('İpek')),
+    true
+  );
+
+  const secBoundaryAndEnglish = prepareManuscriptChange(
+    projectWithTurkishEntities,
+    createUndoRedoStateFromProject(projectWithTurkishEntities),
+    narrativeBase(projectWithTurkishEntities),
+    [{ id: 'sec_bnd', kind: 'scene', title: 'Bölüm BND', text: 'İpeksi kumaş, Ömerli yolu ve ırıs çiçeği.' }]
+  )!;
+  assert.equal(
+    collectLocalDiagnosticFindings(secBoundaryAndEnglish.project).some((f) => f.type === 'manuscript_excluded_mention'),
+    false
+  );
+
+  const lowercaseExcludedProject: CreativeProject = {
+    ...base,
+    snapshot: {
+      ...base.snapshot,
+      entities: [
+        ...base.snapshot.entities,
+        { id: 'ent_ipek_lc', name: 'ipek', category: 'character', description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+      ],
+    },
+  };
+  const secUpperText = prepareManuscriptChange(
+    lowercaseExcludedProject,
+    createUndoRedoStateFromProject(lowercaseExcludedProject),
+    narrativeBase(lowercaseExcludedProject),
+    [{ id: 'sec_uc', kind: 'scene', title: 'Bölüm UC', text: 'İpek kapıda bekledi.' }]
+  )!;
+  assert.equal(
+    collectLocalDiagnosticFindings(secUpperText.project).some((f) => f.type === 'manuscript_excluded_mention' && f.title.includes('ipek')),
+    true
+  );
+});

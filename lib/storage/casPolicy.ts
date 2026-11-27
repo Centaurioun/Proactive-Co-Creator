@@ -181,6 +181,13 @@ function casConflictResult(
   };
 }
 
+const INTENT_RECORD_SUFFIX_RE = /^([\s\S]+):(\d+):([0-9a-f]+)$/;
+
+function extractStoredIntentKey(recordId: string): string {
+  const match = INTENT_RECORD_SUFFIX_RE.exec(recordId);
+  return match ? match[1] : recordId;
+}
+
 function evaluateSchemaAndIntentGuard(
   existing: CreativeProject | undefined,
   getNormalizedExisting: () => CreativeProject | undefined,
@@ -199,7 +206,7 @@ function evaluateSchemaAndIntentGuard(
   }
 
   const existingIntent = intentId
-    ? existing?.recentIntentIds?.find((id) => id.startsWith(`${intentId}:`) || id === intentId)
+    ? existing?.recentIntentIds?.find((id) => extractStoredIntentKey(id) === intentId)
     : undefined;
   if (existing && intentId && existingIntent) {
     if (existingIntent !== intentRecordId(candidate, intentId, rawExpected)) {

@@ -1549,5 +1549,58 @@ describe('T4: Hydration Write Gate & Deletion Content Parity (ST-01 through ST-1
     assert.equal(verifyProjectCacheParity(localProj, idbDiffRevSnap), false);
     assert.equal(verifyProjectCacheParity(localProj, structuredClone(localProj)), true);
   });
+
+  it('F-W7-CH03: colon-containing intentId does not collide with shorter prefix intentIds', async () => {
+    const base = createSampleProject();
+    await persistProjectDurably(base, { forceOverwrite: true });
+
+    const saveColonIntent = {
+      ...base,
+      revision: 2,
+      persistedRevision: 1,
+      updatedAt: base.updatedAt + 10,
+      snapshot: updateStoryBibleField(base.snapshot, 'genre', 'Colon Intent Genre'),
+    };
+    const res1 = await persistProjectDurably(saveColonIntent, {
+      expectedPersistedRevision: 1,
+      intentId: 'batch:save',
+    });
+    assert.equal(res1.saved, true);
+
+    // Shorter prefix intentId "batch" with different content must NOT collide with "batch:save"
+    const savePrefixIntent = {
+      ...saveColonIntent,
+      revision: 3,
+      persistedRevision: 2,
+      updatedAt: base.updatedAt + 20,
+      snapshot: updateStoryBibleField(saveColonIntent.snapshot, 'tone', 'Prefix Intent Tone'),
+    };
+    const res2 = await persistProjectDurably(savePrefixIntent, {
+      expectedPersistedRevision: 2,
+      intentId: 'batch',
+    });
+    assert.equal(res2.saved, true);
+    assert.equal(Boolean(res2.conflictDetected), false);
+
+    // Exact replay of "batch:save" still hits idempotency cleanly
+    const replay1 = await persistProjectDurably(saveColonIntent, {
+      expectedPersistedRevision: 1,
+      intentId: 'batch:save',
+    });
+    assert.equal(replay1.saved, true);
+    assert.equal(replay1.idempotentHit, true);
+
+    // Reusing "batch:save" with altered content still fails closed
+    const alteredColon = {
+      ...saveColonIntent,
+      snapshot: updateStoryBibleField(saveColonIntent.snapshot, 'genre', 'Tampered Genre'),
+    };
+    const conflict1 = await persistProjectDurably(alteredColon, {
+      expectedPersistedRevision: 1,
+      intentId: 'batch:save',
+    });
+    assert.equal(conflict1.saved, false);
+    assert.equal(conflict1.conflictDetected, true);
+  });
 });
 

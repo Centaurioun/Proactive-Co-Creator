@@ -25,15 +25,21 @@ const ANTONYM_PAIRS: Array<[RegExp, RegExp, string]> = [
   [/\b(?:cheerful|joyful)\b/i, /\b(?:grim|miserable|bleak)\b/i, 'mood (cheerful vs. grim)'],
 ];
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const NEVER_MATCH_REGEX = /(?!)/;
+
+export function buildEntityMentionRegex(entityName: string): RegExp {
+  const trimmed = entityName.trim();
+  if (!trimmed) return NEVER_MATCH_REGEX;
+  const canonical = trimmed.replace(/[iI]\u0307/g, '\u0130');
+  const pattern = canonical
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/[i\u0130]/g, '(?:i\u0307|[i\u0130])');
+  return new RegExp(`(?<!\\p{L}|\\p{N}|_|\\p{M})${pattern}(?!\\p{L}|\\p{N}|_|\\p{M})`, 'iu');
 }
 
 function mentionsEntityName(text: string, entityName: string): boolean {
-  const trimmed = entityName.trim();
-  if (!trimmed || !text) return false;
-  const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escapeRegExp(trimmed)}(?:$|[^\\p{L}\\p{N}_])`, 'iu');
-  return pattern.test(text);
+  if (!text) return false;
+  return buildEntityMentionRegex(entityName).test(text);
 }
 
 /**
