@@ -19,6 +19,7 @@ interface PromptInputProps {
   compiledPromptLength?: number;
   maxPromptChars?: number;
   storyBlockReason?: string | null;
+  reanalyzeBlockReason?: string | null;
 }
 
 const PromptInput: React.FC<PromptInputProps> = ({
@@ -33,6 +34,7 @@ const PromptInput: React.FC<PromptInputProps> = ({
   compiledPromptLength,
   maxPromptChars = 8000,
   storyBlockReason = null,
+  reanalyzeBlockReason = null,
 }) => {
   const [validationError, setValidationError] = useState<string | null>(null);
   const hasPromptText = prompt.trim().length > 0;
@@ -121,8 +123,8 @@ const PromptInput: React.FC<PromptInputProps> = ({
           <button
             type="button"
             onClick={handleAnalyzeClick}
-            disabled={isLoading || !hasPromptText || (mode === 'story' && Boolean(storyBlockReason))}
-            title={mode === 'story' ? (storyBlockReason ?? undefined) : undefined}
+            disabled={isLoading || !hasPromptText || Boolean(reanalyzeBlockReason)}
+            title={reanalyzeBlockReason ?? undefined}
             className="px-2.5 py-1 text-xs font-semibold rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 transition-colors whitespace-nowrap disabled:opacity-50"
           >
             Reanalyze Idea

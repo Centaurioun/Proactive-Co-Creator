@@ -1107,6 +1107,13 @@ function App() {
               isGenerating={isGenerating}
               isFirstRun={!latestStoryArtifact && !latestImageArtifact}
               storyBlockReason={aiPlanActions.storyBlockReason}
+              reanalyzeBlockReason={
+                !aiPlanActions.operationAvailability.analyze.eligible
+                  ? aiPlanActions.operationAvailability.analyze.reason ?? 'AI analysis is unavailable.'
+                  : !aiPlanActions.operationAvailability.clarify.eligible
+                    ? aiPlanActions.operationAvailability.clarify.reason ?? 'AI clarification is unavailable.'
+                    : null
+              }
               mode={mode}
               setMode={planHandlers.handleModeChange}
               compiledPromptLength={snapshot.refinedPrompt.trim().length}
