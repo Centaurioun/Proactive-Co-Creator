@@ -332,3 +332,24 @@ test('does not call Responses for unverified model operations or reasoning contr
   await assert.rejects(adapter.generateText(request({ modelId: 'gpt-unmapped', reasoningLevel: 'high' })), /no verified capability|not verified/i);
   assert.equal(calls, 0);
 });
+
+test('W1-D07: listModels enforces redirect error and body bounds, generateText enforces redirect error, and openai-api uses OpenAI API label on 500', async () => {
+  const redirects: Array<RequestRedirect | undefined> = [];
+  const oversizedAdapter = new ChatGptResponsesAdapter('synthetic-api-key-for-test', async (_input, init) => {
+    redirects.push(init?.redirect);
+    return new Response('x'.repeat(2 * 1024 * 1024), { status: 200, headers: { 'content-type': 'application/json' } });
+  }, undefined, 'openai-api');
+  await assert.rejects(oversizedAdapter.listModels(), /size limit|invalid|could not retrieve/i);
+  assert.equal(redirects[0], 'error');
+
+  const failingOpenAiAdapter = new ChatGptResponsesAdapter('synthetic-api-key-for-test', async (_input, init) => {
+    redirects.push(init?.redirect);
+    return new Response('server error', { status: 500 });
+  }, undefined, 'openai-api');
+  await assert.rejects(failingOpenAiAdapter.generateText(request({ maxOutputTokens: 100 })), (error: Error) => {
+    assert.match(error.message, /OpenAI API endpoint/);
+    assert.doesNotMatch(error.message, /ChatGPT endpoint/);
+    return true;
+  });
+  assert.equal(redirects[1], 'error');
+});

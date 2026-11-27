@@ -12,18 +12,20 @@ fi
 
 PORT_TO_USE="${STAGE0_PORT:-3100}"
 BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${PORT_TO_USE}}"
+EVIDENCE_DIR="${STAGE0_EVIDENCE_DIR:-.playwright-cli/stage0-evidence}"
+SESSION_NAME="pcc-stage0-$$"
 STARTED_SERVER=0
 SERVER_PID=""
 
 cleanup() {
-  playwright-cli close >/dev/null 2>&1 || true
+  playwright-cli -s="$SESSION_NAME" close >/dev/null 2>&1 || true
   if [ "$STARTED_SERVER" -eq 1 ] && [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
-mkdir -p .playwright-cli
+mkdir -p .playwright-cli "$EVIDENCE_DIR"
 
 if [ ! -f .playwright-cli/stage0-fixtures.json ]; then
   npx --yes tsx scripts/stage0-fixtures.ts .playwright-cli/stage0-fixtures.json
@@ -37,6 +39,11 @@ if [ -z "${E2E_BASE_URL:-}" ]; then
   SERVER_PID=$!
   STARTED_SERVER=1
   for _ in $(seq 1 40); do
+    if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+      echo "ERROR: Stage 0 audit server exited prematurely." >&2
+      cat .playwright-cli/stage0-audit-server.log >&2 || true
+      exit 1
+    fi
     if curl -sf "$BASE_URL/api/health" >/dev/null; then
       break
     fi
@@ -51,14 +58,14 @@ echo "$HEALTH_JSON" | grep -q '"configured":false' || {
   exit 1
 }
 
-playwright-cli open --browser=chromium "$BASE_URL/api/health" >/dev/null
+playwright-cli -s="$SESSION_NAME" open --browser=chromium "$BASE_URL/api/health" >/dev/null
 
 run_pw_phase() {
   local phase_name="$1"
   local code_file="$2"
   local out_json="$3"
   local raw_out
-  raw_out="$(playwright-cli run-code "$(cat "$code_file")" 2>&1)" || {
+  raw_out="$(playwright-cli -s="$SESSION_NAME" run-code "$(cat "$code_file")" 2>&1)" || {
     echo "PHASE_${phase_name}_FAIL" >&2
     echo "$raw_out" >&2
     exit 1
@@ -624,11 +631,11 @@ async (page) => {
     });
     const idbWritesBefore = await p.evaluate(() => window.__j10IdbWriteCount);
     await p.getByRole('tab', { name: /Checks/ }).click();
-    await p.screenshot({ path: 'docs/qa/evidence/browser/j10-checks-desktop-1440x900.png' });
+    await p.screenshot({ path: '__EVIDENCE_DIR__/j10-checks-desktop-1440x900.png' });
     await p.getByRole('button', { name: 'Inspect Fox' }).click();
     await p.getByRole('heading', { name: 'Fox', exact: true }).waitFor();
     const foxSelected = await p.getByRole('heading', { name: 'Fox', exact: true }).isVisible();
-    await p.screenshot({ path: 'docs/qa/evidence/browser/j10-fox-inspector-desktop-1440x900.png' });
+    await p.screenshot({ path: '__EVIDENCE_DIR__/j10-fox-inspector-desktop-1440x900.png' });
     await p.getByRole('tab', { name: /Checks/ }).click();
     const openTone = p.getByRole('button', { name: 'Open Tone field' });
     const openToneCount = await openTone.count();
@@ -641,7 +648,7 @@ async (page) => {
     const revAfter = Number((await p.locator('footer').textContent() || '').match(/(\d+)\s+revs?/)?.[1]);
     const idbWritesAfter = await p.evaluate(() => window.__j10IdbWriteCount);
     const semanticAfter = await semanticSnapshotDigest();
-    await p.screenshot({ path: 'docs/qa/evidence/browser/j10-tone-focus-desktop-1440x900.png' });
+    await p.screenshot({ path: '__EVIDENCE_DIR__/j10-tone-focus-desktop-1440x900.png' });
     return {
       status: foxSelected && focusedId === 'bible-tone' && toneFieldVisible && storyBibleSelected === 'true' &&
         Number.isInteger(revAfter) && revBefore === revAfter && idbWritesBefore === idbWritesAfter && semanticBefore.digest === semanticAfter.digest && semanticBefore.projection === semanticAfter.projection ? 'PASS' : 'FAIL',
@@ -824,6 +831,16 @@ async (page) => {
     await p.route('**/api/**', (r) => r.fulfill({ status: 500, body: '{}' }));
     await p.goto(BASE, { waitUntil: 'networkidle' });
     await p.waitForTimeout(300);
+
+    const inboxToggle = p.getByRole('button', { name: /Inbox/ });
+    if ((await inboxToggle.getAttribute('aria-expanded')) === 'false') {
+      await inboxToggle.click();
+    }
+    const outputToggle = p.getByRole('button', { name: 'Read output' });
+    if ((await outputToggle.getAttribute('aria-expanded')) === 'false') {
+      await outputToggle.click();
+    }
+    await p.waitForTimeout(150);
 
     const measureContrast = async () => {
       return p.evaluate(() => {
@@ -1094,7 +1111,7 @@ async (page) => {
 }
 EOF
 
-BASE_URL_ENV="$BASE_URL" node -e '
+BASE_URL_ENV="$BASE_URL" EVIDENCE_DIR_ENV="$EVIDENCE_DIR" node -e '
   const fs = require("node:fs");
   const all = JSON.parse(fs.readFileSync(".playwright-cli/stage0-fixtures.json", "utf8"));
   const compact = {
@@ -1109,7 +1126,10 @@ BASE_URL_ENV="$BASE_URL" node -e '
   const compactStr = JSON.stringify(compact);
   for (const name of ["phase2-journeys", "phase3-audit"]) {
     let code = fs.readFileSync(`.playwright-cli/${name}.js`, "utf8");
-    code = code.replace("__BASE_URL__", process.env.BASE_URL_ENV).replace("__FIXTURES_JSON__", compactStr);
+    code = code
+      .replace("__BASE_URL__", process.env.BASE_URL_ENV)
+      .replace("__FIXTURES_JSON__", compactStr)
+      .replaceAll("__EVIDENCE_DIR__", process.env.EVIDENCE_DIR_ENV);
     fs.writeFileSync(`.playwright-cli/${name}.resolved.js`, code);
   }
 '

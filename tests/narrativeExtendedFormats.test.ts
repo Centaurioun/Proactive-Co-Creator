@@ -204,3 +204,60 @@ test('EPUB reports an injected archive read failure with a typed result', async 
   assert.equal(result.status, 'archive-read-failed');
   assert.match(result.reason ?? '', /read|archive/i);
 });
+
+test('W3-NEW-05: parseEpub classifies readEntry rejection after AbortSignal abort as cancelled, not archive-read-failed', async () => {
+  const archive = readerFor(validFiles());
+  const originalRead = archive.readEntry.bind(archive);
+  const controller = new AbortController();
+  archive.readEntry = async (path, maxBytes, signal) => {
+    if (path === 'OEBPS/package.opf') {
+      controller.abort();
+      throw new Error('EPUB ZIP member read was aborted.');
+    }
+    return originalRead(path, maxBytes, signal);
+  };
+  const result = await parseEpub(archive, undefined, { signal: controller.signal });
+  assert.equal(result.status, 'cancelled');
+});
+
+test('W3-NEW-13 & W3-NEW-14: pdfTextParser imports cleanly in Node and runs page.cleanup() on abort and size limit', async () => {
+  const { extractPdfTextFromDocument, MAX_PDF_PAGES, MAX_PDF_TEXT_BYTES } = await import('../lib/narrative/import/pdfTextParser.ts');
+  let cleanups = 0;
+  const controller = new AbortController();
+  const docAbort = {
+    numPages: 2,
+    async getPage(pageNumber: number) {
+      return {
+        async getTextContent() {
+          if (pageNumber === 2) controller.abort();
+          return { items: [{ str: `Page ${pageNumber}`, hasEOL: false }] };
+        },
+        cleanup() { cleanups += 1; },
+      };
+    },
+  };
+  await assert.rejects(
+    () => extractPdfTextFromDocument(docAbort, controller.signal),
+    (err: unknown) => err instanceof Error && err.name === 'AbortError',
+  );
+  assert.equal(cleanups, 2, 'page.cleanup() must run even when aborted during getTextContent');
+
+  let limitCleanups = 0;
+  const bigStr = 'a'.repeat(MAX_PDF_TEXT_BYTES + 1);
+  const docLimit = {
+    numPages: 1,
+    async getPage() {
+      return {
+        async getTextContent() { return { items: [{ str: bigStr, hasEOL: false }] }; },
+        cleanup() { limitCleanups += 1; },
+      };
+    },
+  };
+  await assert.rejects(() => extractPdfTextFromDocument(docLimit), /8 MiB limit/);
+  assert.equal(limitCleanups, 1, 'page.cleanup() must run when 8 MiB text limit throws');
+
+  await assert.rejects(
+    () => extractPdfTextFromDocument({ numPages: MAX_PDF_PAGES + 1, async getPage() { throw new Error('unused'); } }),
+    /more than 200 pages/,
+  );
+});

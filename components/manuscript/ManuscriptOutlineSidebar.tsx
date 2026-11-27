@@ -49,6 +49,8 @@ const ManuscriptOutlineSidebar: React.FC<ManuscriptOutlineSidebarProps> = ({
   onChangeChronologyFilter,
   onSelectSection,
 }) => {
+  const sectionIndexById = new Map(sections.map((section, idx) => [section.id, idx]));
+
   return (
     <aside
       id="manuscript-outline"
@@ -58,6 +60,7 @@ const ManuscriptOutlineSidebar: React.FC<ManuscriptOutlineSidebarProps> = ({
       <h2 className="font-semibold">Outline</h2>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
+          type="button"
           className={buttonClassName}
           disabled={!enabled || saving || adopting}
           onClick={() => onAddSection('chapter')}
@@ -65,6 +68,7 @@ const ManuscriptOutlineSidebar: React.FC<ManuscriptOutlineSidebarProps> = ({
           Add chapter
         </button>
         <button
+          type="button"
           className={buttonClassName}
           disabled={!enabled || saving || adopting}
           onClick={() => onAddSection('scene')}
@@ -122,7 +126,7 @@ const ManuscriptOutlineSidebar: React.FC<ManuscriptOutlineSidebarProps> = ({
               className="w-full rounded px-2 py-1.5 text-left break-words aria-[current=true]:bg-amber-100 dark:aria-[current=true]:bg-amber-950"
             >
               {section.title ||
-                `${section.kind === 'chapter' ? 'Chapter' : 'Scene'} ${sections.indexOf(section) + 1}`}
+                `${section.kind === 'chapter' ? 'Chapter' : 'Scene'} ${(sectionIndexById.get(section.id) ?? 0) + 1}`}
               {section.kind === 'scene' && !section.chapterId ? (
                 <span className="ml-2 text-xs text-gray-500">Unchaptered</span>
               ) : null}

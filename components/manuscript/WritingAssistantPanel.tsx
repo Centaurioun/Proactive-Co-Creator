@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ManuscriptSection } from '../../shared/narrativeTypes';
 import type { CreativeProject } from '../../shared/types';
 import type { WritingAssistAction, WritingAssistProposal } from '../../shared/narrativeAiSchemas';
@@ -11,6 +11,20 @@ import {
 } from '../../lib/narrative/writing/selectionHelpers';
 import { requestWritingAssist } from '../../services/apiClient';
 import { workspaceButton } from './ManuscriptEditor';
+
+export function isWritingAssistResponseCurrent(
+  requestEpoch: number,
+  activeEpoch: number,
+  requestSectionId: string,
+  activeSectionId: string | undefined,
+  aborted: boolean
+): boolean {
+  return !aborted && requestEpoch === activeEpoch && requestSectionId === activeSectionId;
+}
+
+export function resolveAlternativeTargetSectionId(generatedSectionId: string): string {
+  return generatedSectionId;
+}
 
 type ActionOption = {
   id: WritingAssistAction;
@@ -73,6 +87,28 @@ export default function WritingAssistantPanel({
     selectedText: string;
     proposals: WritingAssistProposal[];
   } | null>(null);
+
+  const requestEpochRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const activeSectionIdRef = useRef<string | undefined>(section?.id);
+
+  useEffect(() => {
+    activeSectionIdRef.current = section?.id;
+    requestEpochRef.current += 1;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setLoading(false);
+    }
+  }, [section?.id]);
+
+  useEffect(() => {
+    return () => {
+      requestEpochRef.current += 1;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, []);
 
   const sectionText = section?.text ?? '';
   const validatedSelection = useMemo(
@@ -145,13 +181,31 @@ export default function WritingAssistantPanel({
       setError('Enter a custom instruction before running Custom assist.');
       return;
     }
+
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const epoch = ++requestEpochRef.current;
+    const requestSectionId = section.id;
+
     setLoading(true);
     setError('');
     setStatusMessage('');
     try {
-      const response = await requestWritingAssist(requestPreview);
+      const response = await requestWritingAssist(requestPreview, controller.signal);
+      if (
+        !isWritingAssistResponseCurrent(
+          epoch,
+          requestEpochRef.current,
+          requestSectionId,
+          activeSectionIdRef.current,
+          controller.signal.aborted
+        )
+      ) {
+        return;
+      }
       setGenerated({
-        sectionId: section.id,
+        sectionId: requestSectionId,
         action,
         start: validatedSelection.start,
         end: validatedSelection.end,
@@ -161,14 +215,26 @@ export default function WritingAssistantPanel({
       });
       setStatusMessage(`Generated ${response.proposals.length} reviewable draft proposal(s). No manuscript text has been changed.`);
     } catch (cause) {
+      if (
+        controller.signal.aborted ||
+        epoch !== requestEpochRef.current ||
+        requestSectionId !== activeSectionIdRef.current
+      ) {
+        return;
+      }
       setError(cause instanceof Error ? cause.message : 'Writing Assistant request failed.');
     } finally {
-      setLoading(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
+      if (epoch === requestEpochRef.current) {
+        setLoading(false);
+      }
     }
   };
 
   const applyProposal = (proposal: WritingAssistProposal, mode: 'replace' | 'insert-after') => {
-    if (!section || !generated) return;
+    if (!section || !generated || generated.sectionId !== section.id) return;
     const applied = applyWritingSelectionEdit({
       currentText: section.text,
       expectedDigest: generated.expectedDigest,
@@ -355,11 +421,10 @@ export default function WritingAssistantPanel({
                   </button>
                   <button
                     type="button"
-                    disabled={disabled || !section}
+                    disabled={disabled || !generated.sectionId}
                     onClick={() => {
-                      if (!section) return;
                       onSaveAlternative({
-                        sectionId: section.id,
+                        sectionId: resolveAlternativeTargetSectionId(generated.sectionId),
                         action: generated.action,
                         label: proposal.label,
                         text: proposal.text,

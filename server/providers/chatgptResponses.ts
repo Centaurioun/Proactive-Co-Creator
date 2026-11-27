@@ -16,26 +16,48 @@ import {
   describeChatGptModel,
   reasoningParameter,
 } from './policy.ts';
+import { asRecord, readSseEvents, type SseEvent } from './responsesSseParser.ts';
 
 const API_ORIGIN = 'https://api.openai.com/v1';
 const HARD_MAX_TIMEOUT_MS = 120_000;
 const HARD_MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const HARD_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const HARD_MAX_STREAM_BYTES = 4 * 1024 * 1024;
-const MAX_SSE_LINE_CHARS = 128 * 1024;
+const LIST_MODELS_TIMEOUT_MS = 15_000;
+const LIST_MODELS_MAX_BYTES = 1024 * 1024;
+const utf8Encoder = new TextEncoder();
 
 type TokenSource = string | (() => string | Promise<string>);
 type FetchLike = typeof fetch;
 
-interface SseEvent {
-  type: string;
-  [key: string]: unknown;
+interface StoryStreamLimits {
+  maxStreamBytes: number;
+  maxAcceptedOutputBytes: number;
+  maxStreamEvents: number;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
+interface ValidatedTextRequest {
+  model: AiModelDescriptor;
+  instructions: string;
+  maxOutputBytes: number;
+  timeoutMs: number;
+}
+
+interface StreamExecutionContext {
+  response: Response;
+  maxOutputBytes: number;
+  signal: AbortSignal;
+  getTimeoutError: () => AppApiError | undefined;
+  operationSignal?: AbortSignal;
+  storyLimits?: StoryStreamLimits;
+}
+
+interface StreamFetchContext {
+  token: string;
+  body: string;
+  signal: AbortSignal;
+  getTimeoutError: () => AppApiError | undefined;
+  operationSignal?: AbortSignal;
 }
 
 function constrainedJsonInstruction(responseSchema: unknown): string {
@@ -82,137 +104,69 @@ function readUsage(value: unknown): AiProviderTextResult['usage'] {
   };
 }
 
-function validateSseEvent(eventName: string, data: string): SseEvent {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(data);
-  } catch {
-    throw new AppApiError('INVALID_RESPONSE', 'The Responses stream contained malformed SSE JSON.', 502, false);
-  }
-  const record = asRecord(parsed);
-  if (!record || typeof record.type !== 'string') {
-    throw new AppApiError('INVALID_RESPONSE', 'The Responses stream event did not contain a valid type.', 502, false);
-  }
-  if (eventName && eventName !== record.type) {
-    throw new AppApiError('INVALID_RESPONSE', 'The Responses SSE event type did not match its JSON envelope.', 502, false);
-  }
-  return record as SseEvent;
+function extractRefusalFromCompletedResponse(completedResponse: Record<string, unknown> | undefined): boolean {
+  const output = Array.isArray(completedResponse?.output) ? completedResponse.output : [];
+  return output.some((item) => {
+    const record = asRecord(item);
+    if (record?.type === 'refusal') return true;
+    return Array.isArray(record?.content) && record.content.some((part) => asRecord(part)?.type === 'refusal');
+  });
 }
 
-/**
- * Parse SSE frames strictly. We accept standard comments/fields and multi-line data,
- * but every dispatched frame must be valid JSON with a Responses event type.
- */
-async function* readSseEvents(
-  response: Response,
-  limits: { maxStreamBytes: number; maxOutputBytes: number; maxEvents?: number },
-  stats?: { streamBytes: number; eventCount: number },
-): AsyncGenerator<SseEvent> {
-  if (!response.body) {
-    throw new AppApiError('INVALID_RESPONSE', 'The Responses endpoint returned no stream body.', 502, false);
+function mapCatalogModelEntry(
+  item: unknown,
+  connectionId: 'chatgpt-plan' | 'openai-api',
+): AiModelDescriptor[] {
+  const model = asRecord(item);
+  const id = connectionId === 'chatgpt-plan' ? model?.slug : model?.id;
+  if (!model || typeof id !== 'string' || (connectionId === 'chatgpt-plan' && model.visibility !== 'list')) {
+    return [];
   }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8', { fatal: true });
-  let pending = '';
-  let eventName = '';
-  let dataLines: string[] = [];
-  let streamBytes = 0;
-  let outputBytes = 0;
-  let terminal = false;
+  const rawDisplay = typeof model.display_name === 'string' && model.display_name.trim() ? model.display_name : model.name;
+  const displayName = typeof rawDisplay === 'string' && rawDisplay.trim() ? rawDisplay : id;
+  return [describeChatGptModel({ id, displayName }, connectionId)];
+}
 
-  const dispatch = (): SseEvent | undefined => {
-    if (dataLines.length === 0) {
-      eventName = '';
-      return undefined;
-    }
-    if (terminal) {
-      throw new AppApiError('INVALID_RESPONSE', 'The Responses stream emitted data after a terminal event.', 502, false);
-    }
-    if (stats) {
-      stats.eventCount += 1;
-      if (limits.maxEvents !== undefined && stats.eventCount > limits.maxEvents) {
-        throw new AppApiError('VALIDATION_ERROR', 'The Responses stream exceeded the configured event-count limit.', 413, false);
-      }
-    }
-    const event = validateSseEvent(eventName, dataLines.join('\n'));
-    eventName = '';
-    dataLines = [];
-    if (event.type === 'response.output_text.delta') {
-      if (typeof event.delta !== 'string') {
-        throw new AppApiError('INVALID_RESPONSE', 'The Responses stream contained a malformed text delta.', 502, false);
-      }
-      outputBytes += new TextEncoder().encode(event.delta).byteLength;
-      if (outputBytes > limits.maxOutputBytes) {
-        throw new AppApiError('VALIDATION_ERROR', 'The Responses output exceeded the configured output byte limit.', 413, false);
-      }
-    }
-    if (event.type === 'response.completed' || event.type === 'response.failed' || event.type === 'response.incomplete') {
-      terminal = true;
-    }
-    return event;
-  };
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      streamBytes += value.byteLength;
-      if (stats) stats.streamBytes = streamBytes;
-      if (streamBytes > limits.maxStreamBytes) {
-        throw new AppApiError('VALIDATION_ERROR', 'The Responses stream exceeded the adapter byte limit.', 413, false);
-      }
-      pending += decoder.decode(value, { stream: true });
-      if (pending.length > MAX_SSE_LINE_CHARS && !/[\r\n]/.test(pending)) {
-        throw new AppApiError('INVALID_RESPONSE', 'The Responses stream contained an oversized SSE line.', 502, false);
-      }
-      let newlineIndex: number;
-      while ((newlineIndex = pending.search(/[\r\n]/)) >= 0) {
-        const char = pending[newlineIndex];
-        if (char === '\r' && newlineIndex === pending.length - 1) break;
-        const line = pending.slice(0, newlineIndex);
-        const lineEndingLength = char === '\r' && pending[newlineIndex + 1] === '\n' ? 2 : 1;
-        pending = pending.slice(newlineIndex + lineEndingLength);
-        if (line.length > MAX_SSE_LINE_CHARS) {
-          throw new AppApiError('INVALID_RESPONSE', 'The Responses stream contained an oversized SSE line.', 502, false);
-        }
-        if (line === '') {
-          const event = dispatch();
-          if (event) yield event;
-          continue;
-        }
-        if (line.startsWith(':')) continue;
-        const colon = line.indexOf(':');
-        const field = colon < 0 ? line : line.slice(0, colon);
-        let fieldValue = colon < 0 ? '' : line.slice(colon + 1);
-        if (fieldValue.startsWith(' ')) fieldValue = fieldValue.slice(1);
-        if (field === 'event') eventName = fieldValue;
-        else if (field === 'data') dataLines.push(fieldValue);
-      }
-    }
-    pending += decoder.decode();
-    if (pending.length > 0) {
-      const line = pending.replace(/\r$/, '');
-      if (line === '') {
-        const event = dispatch();
-        if (event) yield event;
-      } else if (!line.startsWith(':')) {
-        const colon = line.indexOf(':');
-        const field = colon < 0 ? line : line.slice(0, colon);
-        let fieldValue = colon < 0 ? '' : line.slice(colon + 1);
-        if (fieldValue.startsWith(' ')) fieldValue = fieldValue.slice(1);
-        if (field === 'event') eventName = fieldValue;
-        else if (field === 'data') dataLines.push(fieldValue);
-      }
-    }
-    const finalEvent = dispatch();
-    if (finalEvent) yield finalEvent;
-  } catch (error) {
-    try { await reader.cancel(error); } catch { /* best-effort stream cleanup */ }
-    if (error instanceof AppApiError) throw error;
-    throw new AppApiError('INVALID_RESPONSE', 'The Responses stream could not be decoded.', 502, false);
-  } finally {
-    reader.releaseLock();
+function formatFailedSseEventError(
+  event: SseEvent,
+  connectionId: AiConnectionId,
+  providerLabel: string,
+): AppApiError {
+  const responseBody = asRecord(event.response);
+  const error = asRecord(responseBody?.error);
+  const errorCode = diagnosticToken(error?.code);
+  const suffix = diagnosticSuffix(
+    errorCode,
+    diagnosticToken(error?.param),
+    diagnosticToken(error?.request_id) ?? diagnosticToken(responseBody?.id),
+  );
+  if (connectionId === 'chatgpt-plan' && isChatGptPlanQuotaError(errorCode)) {
+    return new AppApiError(
+      'RATE_LIMITED',
+      `ChatGPT plan usage is currently unavailable or exhausted; an explicit recovery decision is required${suffix}.`,
+      429,
+      false,
+    );
   }
+  return new AppApiError('UPSTREAM_ERROR', `The ${providerLabel} Responses request failed${suffix}.`, 502, false);
+}
+
+function createAbortTimeoutRace(
+  controller: AbortController,
+  getTimeoutError: () => AppApiError | undefined,
+  operationSignal?: AbortSignal,
+): { promise: Promise<never>; cleanup: () => void } {
+  let cleanup = () => {};
+  const promise = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => {
+      const timeoutError = getTimeoutError();
+      if (timeoutError) reject(timeoutError);
+      else if (operationSignal?.aborted) reject(abortError(operationSignal));
+    };
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    cleanup = () => controller.signal.removeEventListener('abort', onAbort);
+  });
+  return { promise, cleanup };
 }
 
 export class ChatGptResponsesAdapter implements AiProviderAdapter {
@@ -242,7 +196,16 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
 
   private async accessToken(): Promise<string> {
     const token = typeof this.tokenSource === 'function' ? await this.tokenSource() : this.tokenSource;
-    if (!token.trim()) throw new AppApiError('AUTH_ERROR', this.connectionId === 'chatgpt-plan' ? 'Connect a ChatGPT account before using its plan.' : 'Add an OpenAI API key for this server session before using OpenAI API billing.', 401, false);
+    if (!token.trim()) {
+      throw new AppApiError(
+        'AUTH_ERROR',
+        this.connectionId === 'chatgpt-plan'
+          ? 'Connect a ChatGPT account before using its plan.'
+          : 'Add an OpenAI API key for this server session before using OpenAI API billing.',
+        401,
+        false,
+      );
+    }
     return token;
   }
 
@@ -258,65 +221,97 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
   private async listModelsWithSignal(signal?: AbortSignal): Promise<AiModelDescriptor[]> {
     if (signal?.aborted) throw abortError(signal);
     const token = await this.accessToken();
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`${API_ORIGIN}/models`, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${token}` },
-        signal,
-      });
-    } catch {
-      if (signal?.aborted) throw abortError(signal);
-      throw new AppApiError('UPSTREAM_ERROR', `Could not retrieve the ${this.connectionId === 'chatgpt-plan' ? 'ChatGPT account' : 'OpenAI API'} model catalog.`, 503, true);
-    }
-    if (!response.ok) throw await this.httpError(response);
+    const response = await this.fetchCatalogResponse(token, signal);
+    if (!response.ok) throw await this.boundedHttpError(response);
     let payload: unknown;
-    try { payload = await response.json(); } catch {
-      throw new AppApiError('INVALID_RESPONSE', 'The ChatGPT account model catalog was malformed.', 502, false);
+    try {
+      payload = parseOAuthJson(response.body, 'malformed');
+    } catch {
+      throw new AppApiError('INVALID_RESPONSE', `The ${this.providerLabel} model catalog was malformed.`, 502, false);
     }
     const models = this.connectionId === 'chatgpt-plan' ? asRecord(payload)?.models : asRecord(payload)?.data;
     if (!Array.isArray(models)) {
       throw new AppApiError('INVALID_RESPONSE', 'The account model catalog did not contain a valid model array.', 502, false);
     }
-    return models.flatMap((item): AiModelDescriptor[] => {
-      const model = asRecord(item);
-      const id = this.connectionId === 'chatgpt-plan' ? model?.slug : model?.id;
-      if (!model || typeof id !== 'string' || (this.connectionId === 'chatgpt-plan' && model.visibility !== 'list')) return [];
-      return [describeChatGptModel({
-        id,
-        displayName: typeof model.display_name === 'string' && model.display_name.trim()
-          ? model.display_name
-          : typeof model.name === 'string' && model.name.trim() ? model.name : id,
-      }, this.connectionId as 'chatgpt-plan' | 'openai-api')];
-    });
+    const targetConnection = this.connectionId as 'chatgpt-plan' | 'openai-api';
+    return models.flatMap((item) => mapCatalogModelEntry(item, targetConnection));
   }
 
-  async countTokens(modelId: string, input: string, signal?: AbortSignal, instructions?: string, generation?: { responseSchema?: unknown }): Promise<AiTokenCount> {
+  private async fetchCatalogResponse(token: string, signal?: AbortSignal) {
+    try {
+      return await fetchBoundedHttpBody(this.fetchImpl, `${API_ORIGIN}/models`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+      }, { timeoutMs: LIST_MODELS_TIMEOUT_MS, maxBodyBytes: LIST_MODELS_MAX_BYTES, signal });
+    } catch (error) {
+      if (signal?.aborted) throw abortError(signal);
+      const message = error instanceof Error ? error.message : '';
+      if (message.includes('timed out')) {
+        throw new AppApiError('TIMEOUT', `The ${this.providerLabel} model catalog request exceeded its time limit.`, 504, true);
+      }
+      if (message.includes('size limit')) {
+        throw new AppApiError('INVALID_RESPONSE', `The ${this.providerLabel} model catalog exceeded the response size limit.`, 502, false);
+      }
+      const catalogLabel = this.connectionId === 'chatgpt-plan' ? 'ChatGPT account' : 'OpenAI API';
+      throw new AppApiError('UPSTREAM_ERROR', `Could not retrieve the ${catalogLabel} model catalog.`, 503, true);
+    }
+  }
+
+  async countTokens(
+    modelId: string,
+    input: string,
+    signal?: AbortSignal,
+    instructions?: string,
+    generation?: { responseSchema?: unknown },
+  ): Promise<AiTokenCount> {
     if (signal?.aborted) throw abortError(signal);
     if (this.connectionId === 'chatgpt-plan') {
-      // The SIWC profile documents Responses inference, but no provider token-count route.
-      return { tokens: Math.ceil(new TextEncoder().encode(`${input}${instructions ?? ''}${generation?.responseSchema === undefined ? '' : JSON.stringify(generation.responseSchema)}`).byteLength / 4), source: 'estimate' };
+      const schemaSuffix = generation?.responseSchema === undefined ? '' : JSON.stringify(generation.responseSchema);
+      const totalBytes = utf8Encoder.encode(`${input}${instructions ?? ''}${schemaSuffix}`).byteLength;
+      return { tokens: Math.ceil(totalBytes / 4), source: 'estimate' };
     }
+    return this.countOpenAiApiTokens({ modelId, input, signal, instructions, responseSchema: generation?.responseSchema });
+  }
+
+  private async countOpenAiApiTokens(params: {
+    modelId: string;
+    input: string;
+    signal?: AbortSignal;
+    instructions?: string;
+    responseSchema?: unknown;
+  }): Promise<AiTokenCount> {
     const token = await this.accessToken();
-    const schemaInstruction = generation?.responseSchema === undefined ? '' : constrainedJsonInstruction(generation.responseSchema);
-    const completeInstructions = [instructions, schemaInstruction].filter(Boolean).join('\n\n');
+    const schemaInstruction = params.responseSchema === undefined ? '' : constrainedJsonInstruction(params.responseSchema);
+    const completeInstructions = [params.instructions, schemaInstruction].filter(Boolean).join('\n\n');
     let response;
     try {
       response = await fetchBoundedHttpBody(this.fetchImpl, `${API_ORIGIN}/responses/input_tokens`, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({ model: modelId, input: [{ role: 'user', content: input }], ...(completeInstructions ? { instructions: completeInstructions } : {}) }),
-      }, { timeoutMs: 10_000, maxBodyBytes: 16 * 1024, signal });
+        body: JSON.stringify({
+          model: params.modelId,
+          input: [{ role: 'user', content: params.input }],
+          ...(completeInstructions ? { instructions: completeInstructions } : {}),
+        }),
+      }, { timeoutMs: 10_000, maxBodyBytes: 16 * 1024, signal: params.signal });
     } catch {
-      if (signal?.aborted) throw abortError(signal);
+      if (params.signal?.aborted) throw abortError(params.signal);
       throw new AppApiError('UPSTREAM_ERROR', 'OpenAI API input-token preflight failed; generation was not started.', 503, true);
     }
-    if (!response.ok) throw new AppApiError(response.status === 401 || response.status === 403 ? 'AUTH_ERROR' : 'UPSTREAM_ERROR', 'OpenAI API input-token preflight was not accepted; generation was not started.', response.status, response.status >= 500);
+    if (!response.ok) {
+      throw new AppApiError(
+        response.status === 401 || response.status === 403 ? 'AUTH_ERROR' : 'UPSTREAM_ERROR',
+        'OpenAI API input-token preflight was not accepted; generation was not started.',
+        response.status,
+        response.status >= 500,
+      );
+    }
     const payload = asRecord(parseOAuthJson(response.body, 'OpenAI API input-token response was invalid.'));
-    if (payload?.object !== 'response.input_tokens' || typeof payload.input_tokens !== 'number' || !Number.isSafeInteger(payload.input_tokens) || payload.input_tokens < 0) {
+    const count = payload?.input_tokens;
+    if (payload?.object !== 'response.input_tokens' || typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
       throw new AppApiError('INVALID_RESPONSE', 'OpenAI API did not return a verified input-token count.', 502, false);
     }
-    return { tokens: payload.input_tokens, source: 'provider-count' };
+    return { tokens: count, source: 'provider-count' };
   }
 
   async generateText(request: AiProviderRequest): Promise<AiProviderTextResult> {
@@ -328,11 +323,12 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
   async generateStoryText(
     request: AiProviderRequest & { requestId?: string },
     approvedBody: string,
-    limits: { maxStreamBytes: number; maxAcceptedOutputBytes: number; maxStreamEvents: number },
+    limits: StoryStreamLimits,
   ): Promise<ChatGptStoryTransportResult> {
-    if (this.connectionId !== 'chatgpt-plan' || request.operation !== 'story' ||
-      (request.reasoningLevel !== undefined && request.reasoningLevel !== 'default') ||
-      request.responseSchema !== undefined || request.maxOutputTokens !== undefined) {
+    const wrongConnectionOrOp = this.connectionId !== 'chatgpt-plan' || request.operation !== 'story';
+    const hasRestrictedFields = (request.reasoningLevel !== undefined && request.reasoningLevel !== 'default') ||
+      request.responseSchema !== undefined || request.maxOutputTokens !== undefined;
+    if (wrongConnectionOrOp || hasRestrictedFields) {
       throw new AppApiError('MODEL_UNSUPPORTED', 'The bounded ChatGPT story transport accepts only the default-reasoning text story request.', 422, false);
     }
     const expectedBody = JSON.stringify({
@@ -342,49 +338,150 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
       store: false,
       stream: true,
     });
-    if (expectedBody !== approvedBody || new TextEncoder().encode(approvedBody).byteLength > 32 * 1024) {
+    if (expectedBody !== approvedBody || utf8Encoder.encode(approvedBody).byteLength > 32 * 1024) {
       throw new AppApiError('VALIDATION_ERROR', 'The ChatGPT story request does not match its approved serialized plan.', 409, false);
     }
     return this.generateTextInternal(request, limits, approvedBody);
   }
 
-  private generateTextInternal(request: AiProviderRequest): Promise<AiProviderTextResult>;
-  private generateTextInternal(
-    request: AiProviderRequest,
-    storyLimits: { maxStreamBytes: number; maxAcceptedOutputBytes: number; maxStreamEvents: number },
-    approvedBody: string,
-  ): Promise<ChatGptStoryTransportResult>;
-  private async generateTextInternal(
-    request: AiProviderRequest,
-    storyLimits?: { maxStreamBytes: number; maxAcceptedOutputBytes: number; maxStreamEvents: number },
-    approvedBody?: string,
-  ): Promise<AiProviderTextResult | ChatGptStoryTransportResult> {
+  private validateTextRequest(request: AiProviderRequest): ValidatedTextRequest {
     const maxInputBytes = positiveBound(request.maxInputBytes, 'input byte', HARD_MAX_INPUT_BYTES);
     const maxOutputBytes = positiveBound(request.maxOutputBytes, 'output byte', HARD_MAX_OUTPUT_BYTES);
     const timeoutMs = positiveBound(request.timeoutMs, 'timeout', HARD_MAX_TIMEOUT_MS);
     if (!request.modelId.trim()) throw new AppApiError('VALIDATION_ERROR', 'A model is required.', 400, false);
     const schemaInstruction = request.responseSchema === undefined ? '' : constrainedJsonInstruction(request.responseSchema);
     const instructions = [request.instructions, schemaInstruction].filter(Boolean).join('\n\n');
-    const inputBytes = new TextEncoder().encode(request.input).byteLength +
-      new TextEncoder().encode(instructions).byteLength;
+    const inputBytes = utf8Encoder.encode(request.input).byteLength + utf8Encoder.encode(instructions).byteLength;
     if (inputBytes > maxInputBytes) {
       throw new AppApiError('VALIDATION_ERROR', 'The request input exceeded the configured input byte limit.', 413, false);
     }
     const model = describeChatGptModel({ id: request.modelId, displayName: request.modelId }, this.connectionId as 'chatgpt-plan' | 'openai-api');
-    // Runtime route admission uses the effective capability descriptor and
-    // budget preflight. The adapter itself still exposes its transport behavior
-    // for isolated qualification, but only exact known text slugs are accepted.
     if (this.connectionId === 'openai-api') assertModelOperation(model, request.operation);
     else if (model.textGeneration.state !== 'supported' || model.textGeneration.value !== true) {
       throw new AppApiError('MODEL_UNSUPPORTED', 'The selected account model has no verified capability for text generation.', 422, false);
     }
     assertReasoningSelection(model, request.reasoningLevel);
-    if (this.connectionId === 'openai-api' && (!Number.isSafeInteger(request.maxOutputTokens) || (request.maxOutputTokens ?? 0) <= 0)) {
+    const invalidOutputCap = !Number.isSafeInteger(request.maxOutputTokens) || (request.maxOutputTokens ?? 0) <= 0;
+    if (this.connectionId === 'openai-api' && invalidOutputCap) {
       throw new AppApiError('VALIDATION_ERROR', 'OpenAI API generation requires an explicit provider-enforced output-token limit.', 503, false);
     }
+    return { model, instructions, maxOutputBytes, timeoutMs };
+  }
+
+  private buildRequestBody(request: AiProviderRequest, validated: ValidatedTextRequest, approvedBody?: string): string {
+    if (approvedBody !== undefined) return approvedBody;
+    const reasoning = reasoningParameter(validated.model, request.reasoningLevel);
+    return JSON.stringify({
+      model: request.modelId,
+      input: [{ role: 'user', content: request.input }],
+      ...(validated.instructions ? { instructions: validated.instructions } : {}),
+      ...reasoning,
+      ...(this.connectionId === 'openai-api' ? { max_output_tokens: request.maxOutputTokens } : {}),
+      store: false,
+      stream: true,
+    });
+  }
+
+  private async fetchResponsesStream(ctx: StreamFetchContext): Promise<Response> {
+    try {
+      return await this.fetchImpl(`${API_ORIGIN}/responses`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${ctx.token}`,
+          'content-type': 'application/json',
+          accept: 'text/event-stream',
+        },
+        body: ctx.body,
+        redirect: 'error',
+        signal: ctx.signal,
+      });
+    } catch {
+      const timeoutError = ctx.getTimeoutError();
+      if (timeoutError) throw timeoutError;
+      if (ctx.operationSignal?.aborted) throw abortError(ctx.operationSignal);
+      if (ctx.signal.aborted) throw abortError(ctx.signal);
+      throw new AppApiError('UPSTREAM_ERROR', `The ${this.providerLabel} Responses request failed before streaming.`, 503, true);
+    }
+  }
+
+  private processStreamEvent(
+    event: SseEvent,
+    acc: { text: string[]; completedEvent?: SseEvent; refusal: boolean },
+  ): void {
+    if (event.type === 'response.output_text.delta') acc.text.push(event.delta as string);
+    else if (event.type === 'response.refusal.delta') acc.refusal = true;
+    else if (event.type === 'response.failed') throw formatFailedSseEventError(event, this.connectionId, this.providerLabel);
+    else if (event.type === 'response.incomplete') {
+      throw new AppApiError('INVALID_RESPONSE', `The ${this.providerLabel} Responses request ended incomplete.`, 502, false);
+    } else if (event.type === 'response.completed') acc.completedEvent = event;
+  }
+
+  private async consumeResponsesStream(ctx: StreamExecutionContext): Promise<AiProviderTextResult | ChatGptStoryTransportResult> {
+    const acc: { text: string[]; completedEvent?: SseEvent; refusal: boolean } = { text: [], refusal: false };
+    const streamStats = { streamBytes: 0, eventCount: 0 };
+    const sseLimits = {
+      maxStreamBytes: ctx.storyLimits?.maxStreamBytes ?? Math.min(HARD_MAX_STREAM_BYTES, ctx.maxOutputBytes * 8 + 64 * 1024),
+      maxOutputBytes: ctx.storyLimits?.maxAcceptedOutputBytes ?? ctx.maxOutputBytes,
+      ...(ctx.storyLimits ? { maxEvents: ctx.storyLimits.maxStreamEvents } : {}),
+    };
+    for await (const event of readSseEvents(ctx.response, sseLimits, ctx.storyLimits ? streamStats : undefined)) {
+      if (ctx.signal.aborted) {
+        if (!ctx.storyLimits) {
+          throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+        }
+        if (event.type === 'response.failed') {
+          const failedError = formatFailedSseEventError(event, this.connectionId, this.providerLabel);
+          if (failedError.code === 'RATE_LIMITED') throw failedError;
+          throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+        }
+        if (event.type === 'response.completed' || event.type === 'response.incomplete') {
+          throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+        }
+        continue;
+      }
+      this.processStreamEvent(event, acc);
+    }
+    if (ctx.signal.aborted) {
+      throw ctx.getTimeoutError() ?? abortError(ctx.operationSignal);
+    }
+    if (!acc.completedEvent) {
+      throw new AppApiError('INVALID_RESPONSE', 'The Responses stream ended without response.completed.', 502, false);
+    }
+    const completedResponse = asRecord(acc.completedEvent.response);
+    const refusal = acc.refusal || extractRefusalFromCompletedResponse(completedResponse);
+    const textValue = acc.text.join('');
+    const usage = readUsage(completedResponse?.usage);
+    if (ctx.storyLimits) {
+      return {
+        text: textValue,
+        terminalEvent: 'response.completed',
+        refusal,
+        streamBytes: streamStats.streamBytes,
+        eventCount: streamStats.eventCount,
+        usage,
+      };
+    }
+    return { text: textValue, usage };
+  }
+
+  private generateTextInternal(request: AiProviderRequest): Promise<AiProviderTextResult>;
+  private generateTextInternal(
+    request: AiProviderRequest,
+    storyLimits: StoryStreamLimits,
+    approvedBody: string,
+  ): Promise<ChatGptStoryTransportResult>;
+  private async generateTextInternal(
+    request: AiProviderRequest,
+    storyLimits?: StoryStreamLimits,
+    approvedBody?: string,
+  ): Promise<AiProviderTextResult | ChatGptStoryTransportResult> {
+    const validated = this.validateTextRequest(request);
     const lease = this.requestLease?.(request.signal);
     const operationSignal = lease?.signal ?? request.signal;
-    if (operationSignal?.aborted) { lease?.release(); throw abortError(operationSignal); }
+    if (operationSignal?.aborted) {
+      lease?.release();
+      throw abortError(operationSignal);
+    }
 
     const controller = new AbortController();
     let timeoutError: AppApiError | undefined;
@@ -393,128 +490,77 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
     const timer = setTimeout(() => {
       timeoutError = new AppApiError('TIMEOUT', `The ${this.providerLabel} Responses request exceeded its time limit.`, 504, true);
       controller.abort(timeoutError);
-    }, timeoutMs);
+    }, validated.timeoutMs);
 
-    const perform = async (): Promise<AiProviderTextResult | ChatGptStoryTransportResult> => {
+    const body = this.buildRequestBody(request, validated, approvedBody);
+    const performPromise = (async () => {
       const token = await this.accessToken();
       if (controller.signal.aborted) throw timeoutError ?? abortError(operationSignal);
-      const reasoning = reasoningParameter(model, request.reasoningLevel);
-      let response: Response;
-      try {
-        response = await this.fetchImpl(`${API_ORIGIN}/responses`, {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${token}`,
-            'content-type': 'application/json',
-            accept: 'text/event-stream',
-          },
-          body: approvedBody ?? JSON.stringify({
-            model: request.modelId,
-            input: [{ role: 'user', content: request.input }],
-            ...(instructions ? { instructions } : {}),
-            ...reasoning,
-            ...(this.connectionId === 'openai-api' ? { max_output_tokens: request.maxOutputTokens } : {}),
-            store: false,
-            stream: true,
-          }),
-          signal: controller.signal,
-        });
-      } catch {
-        if (timeoutError) throw timeoutError;
-        if (operationSignal?.aborted) throw abortError(operationSignal);
-        if (controller.signal.aborted) throw abortError(controller.signal);
-          throw new AppApiError('UPSTREAM_ERROR', `The ${this.providerLabel} Responses request failed before streaming.`, 503, true);
-      }
-      if (!response.ok) throw await this.httpError(response);
-
-      const text: string[] = [];
-      let completedEvent: SseEvent | undefined;
-      let refusal = false;
-      const streamStats = { streamBytes: 0, eventCount: 0 };
-      for await (const event of readSseEvents(response, {
-        maxStreamBytes: storyLimits?.maxStreamBytes ?? Math.min(HARD_MAX_STREAM_BYTES, maxOutputBytes * 8 + 64 * 1024),
-        maxOutputBytes: storyLimits?.maxAcceptedOutputBytes ?? maxOutputBytes,
-        ...(storyLimits ? { maxEvents: storyLimits.maxStreamEvents } : {}),
-      }, storyLimits ? streamStats : undefined)) {
-        if (controller.signal.aborted) throw timeoutError ?? abortError(operationSignal);
-        if (event.type === 'response.output_text.delta') text.push(event.delta as string);
-        else if (event.type === 'response.refusal.delta') refusal = true;
-        else if (event.type === 'response.failed') {
-          const responseBody = asRecord(event.response);
-          const error = asRecord(responseBody?.error);
-          const errorCode = diagnosticToken(error?.code);
-          const suffix = diagnosticSuffix(
-            errorCode, diagnosticToken(error?.param),
-            diagnosticToken(error?.request_id) ?? diagnosticToken(responseBody?.id),
-          );
-          if (this.connectionId === 'chatgpt-plan' && isChatGptPlanQuotaError(errorCode)) {
-            throw new AppApiError('RATE_LIMITED', 'ChatGPT plan usage is currently unavailable or exhausted; an explicit recovery decision is required' + suffix + '.', 429, false);
-          }
-          throw new AppApiError('UPSTREAM_ERROR', `The ${this.providerLabel} Responses request failed${suffix}.`, 502, false);
-        } else if (event.type === 'response.incomplete') {
-          throw new AppApiError('INVALID_RESPONSE', `The ${this.providerLabel} Responses request ended incomplete.`, 502, false);
-        } else if (event.type === 'response.completed') {
-          completedEvent = event;
-        }
-      }
-      if (!completedEvent) {
-        throw new AppApiError('INVALID_RESPONSE', 'The Responses stream ended without response.completed.', 502, false);
-      }
-      const completedResponse = asRecord(completedEvent.response);
-      const output = Array.isArray(completedResponse?.output) ? completedResponse.output : [];
-      refusal ||= output.some(item => {
-        const record = asRecord(item);
-        if (record?.type === 'refusal') return true;
-        return Array.isArray(record?.content) && record.content.some(part => asRecord(part)?.type === 'refusal');
+      const response = await this.fetchResponsesStream({
+        token,
+        body,
+        signal: controller.signal,
+        getTimeoutError: () => timeoutError,
+        operationSignal,
       });
-      const textValue = text.join('');
-      if (storyLimits) return {
-        text: textValue,
-        terminalEvent: 'response.completed',
-        refusal,
-        streamBytes: streamStats.streamBytes,
-        eventCount: streamStats.eventCount,
-        usage: readUsage(completedResponse?.usage),
-      };
-      return { text: textValue, usage: readUsage(completedResponse?.usage) };
-    };
+      if (!response.ok) throw await this.httpError(response);
+      return this.consumeResponsesStream({
+        response,
+        maxOutputBytes: validated.maxOutputBytes,
+        signal: controller.signal,
+        getTimeoutError: () => timeoutError,
+        operationSignal,
+        storyLimits,
+      });
+    })();
 
-    let cleanupTimeoutListener = () => {};
-    const timeout = new Promise<never>((_resolve, reject) => {
-      const check = () => {
-        if (timeoutError) reject(timeoutError);
-        else if (operationSignal?.aborted) reject(abortError(operationSignal));
-      };
-      const onAbort = () => check();
-      controller.signal.addEventListener('abort', onAbort, { once: true });
-      cleanupTimeoutListener = () => controller.signal.removeEventListener('abort', onAbort);
-    });
-
-    const performPromise = perform();
+    const timeoutRace = createAbortTimeoutRace(controller, () => timeoutError, operationSignal);
+    let primaryResult: AiProviderTextResult | ChatGptStoryTransportResult | undefined;
+    let primaryError: unknown;
+    let hasPrimaryError = false;
     try {
-      return await Promise.race([performPromise, timeout]);
+      primaryResult = await Promise.race([performPromise, timeoutRace.promise]);
+    } catch (err) {
+      hasPrimaryError = true;
+      primaryError = err;
     } finally {
       clearTimeout(timer);
       operationSignal?.removeEventListener('abort', onExternalAbort);
-      cleanupTimeoutListener();
+      timeoutRace.cleanup();
       controller.abort();
-      // The authority may already have returned a cancellation/timeout to its
-      // caller. Keep this transport promise (and its request lease) alive until
-      // the local fetch/body reader actually settles, so SRB single-flight
-      // ownership cannot be released while an abort-ignoring transport runs.
-      if (storyLimits && controller.signal.aborted) await performPromise.catch(() => undefined);
+    }
+    if (storyLimits && controller.signal.aborted) {
+      const lateError = await performPromise.then(() => undefined, (err: unknown) => err);
+      lease?.release();
+      if (lateError instanceof AppApiError && lateError.code === 'RATE_LIMITED') throw lateError;
+    } else {
       lease?.release();
     }
+    if (hasPrimaryError) throw primaryError;
+    return primaryResult as AiProviderTextResult | ChatGptStoryTransportResult;
   }
 
   private async httpError(response: Response): Promise<AppApiError> {
     let error: Record<string, unknown> | undefined;
-    try { error = asRecord(asRecord(await response.clone().json())?.error); } catch { /* Admission failures may return plain diagnostic text. */ }
+    try {
+      error = asRecord(asRecord(await response.clone().json())?.error);
+    } catch { /* Admission failures may return plain diagnostic text. */ }
+    return this.buildHttpError(response.status, response.headers, error);
+  }
+
+  private async boundedHttpError(response: { status: number; headers: Headers; body: string }): Promise<AppApiError> {
+    let error: Record<string, unknown> | undefined;
+    try {
+      error = asRecord(asRecord(JSON.parse(response.body))?.error);
+    } catch { /* Admission failures may return plain diagnostic text. */ }
+    return this.buildHttpError(response.status, response.headers, error);
+  }
+
+  private buildHttpError(status: number, headers: Headers, error?: Record<string, unknown>): AppApiError {
     const code = diagnosticToken(error?.code);
     const parameter = diagnosticToken(error?.param);
-    const requestId = diagnosticToken(response.headers.get('x-request-id')) ?? diagnosticToken(error?.request_id);
+    const requestId = diagnosticToken(headers.get('x-request-id')) ?? diagnosticToken(error?.request_id);
     const suffix = diagnosticSuffix(code, parameter, requestId);
-    const status = response.status;
     if (status === 401 || status === 403) {
       return new AppApiError('AUTH_ERROR', `${this.providerLabel} access was not authorized for this request${suffix}.`, status, false);
     }
@@ -524,6 +570,7 @@ export class ChatGptResponsesAdapter implements AiProviderAdapter {
     if (status === 400) {
       return new AppApiError('VALIDATION_ERROR', `The ${this.providerLabel} Responses request was not accepted${suffix}.`, status, false);
     }
-    return new AppApiError('UPSTREAM_ERROR', `The ChatGPT endpoint returned an unsuccessful response${suffix}.`, status, status >= 500);
+    const endpointLabel = this.connectionId === 'openai-api' ? 'OpenAI API endpoint' : 'ChatGPT endpoint';
+    return new AppApiError('UPSTREAM_ERROR', `The ${endpointLabel} returned an unsuccessful response${suffix}.`, status, status >= 500);
   }
 }

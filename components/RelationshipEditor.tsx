@@ -26,6 +26,9 @@ const RelationshipEditor: React.FC<RelationshipEditorProps> = ({
   isLoading,
 }) => {
   const editorRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
   const [customLabel, setCustomLabel] = useState('');
   const [adjustedStyle, setAdjustedStyle] = useState<React.CSSProperties>({
     left: position.x,
@@ -35,14 +38,38 @@ const RelationshipEditor: React.FC<RelationshipEditorProps> = ({
   });
 
   useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+
     const handleClickOutside = (event: MouseEvent) => {
       if (editorRef.current && !editorRef.current.contains(event.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key === 'Tab' && editorRef.current) {
+        const focusables = editorRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -50,8 +77,9 @@ const RelationshipEditor: React.FC<RelationshipEditorProps> = ({
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
       window.removeEventListener('keydown', handleKeyDown);
+      previousFocusRef.current?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   useLayoutEffect(() => {
     if (editorRef.current && containerDimensions.width > 0) {
@@ -104,6 +132,7 @@ const RelationshipEditor: React.FC<RelationshipEditorProps> = ({
     <div
       ref={editorRef}
       role="dialog"
+      aria-modal="false"
       aria-label={`Edit relationship between ${rel.source} and ${rel.target}`}
       className="absolute bg-white/95 dark:bg-gray-800/95 backdrop-blur-sm p-3.5 rounded-lg border border-gray-300 dark:border-gray-600 shadow-xl z-40 w-64 max-h-[300px] overflow-y-auto flex flex-col"
       style={adjustedStyle}
@@ -115,6 +144,7 @@ const RelationshipEditor: React.FC<RelationshipEditorProps> = ({
           Edit Relationship
         </h4>
         <button
+          ref={closeButtonRef}
           type="button"
           onClick={onClose}
           className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100 text-lg leading-none px-1.5 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"

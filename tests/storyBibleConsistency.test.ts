@@ -481,4 +481,36 @@ describe('T2: Actionable Consistency Issue Target Navigation & Safety (IS-01 thr
     });
     assert.equal(missingRes.ok, false);
   });
+
+  it('F-W7-CH02: consistencyChecker matches excluded İpek against lowercase ipek/i\\u0307pek and lowercase ipek against İpek without boundary or English Iris false positives', () => {
+    const base = createSampleProject().snapshot;
+    const withExcluded = {
+      ...base,
+      entities: [
+        ...base.entities,
+        { id: 'ent_ipek', name: 'İpek', category: 'character' as const, description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+        { id: 'ent_iris', name: 'Iris', category: 'character' as const, description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+      ],
+    };
+
+    const lcConflict = updateStoryBibleField(withExcluded, 'centralConflict', 'ipek guards the gate', 'user-edit');
+    assert.equal(evaluateProjectConsistency(lcConflict).some((i) => i.id === 'issue_excl_conflict_ent_ipek'), true);
+
+    const nfdConflict = updateStoryBibleField(withExcluded, 'centralConflict', 'i\u0307pek guards the gate', 'user-edit');
+    assert.equal(evaluateProjectConsistency(nfdConflict).some((i) => i.id === 'issue_excl_conflict_ent_ipek'), true);
+
+    const boundaryConflict = updateStoryBibleField(withExcluded, 'centralConflict', 'İpeksi ve ırıs motifs', 'user-edit');
+    assert.equal(evaluateProjectConsistency(boundaryConflict).some((i) => i.id === 'issue_excl_conflict_ent_ipek'), false);
+    assert.equal(evaluateProjectConsistency(boundaryConflict).some((i) => i.id === 'issue_excl_conflict_ent_iris'), false);
+
+    const lcExcluded = {
+      ...base,
+      entities: [
+        ...base.entities,
+        { id: 'ent_ipek_lc', name: 'ipek', category: 'character' as const, description: '', excluded: true, presence_in_prompt: false, alternatives: null, attributes: [] },
+      ],
+    };
+    const ucConflict = updateStoryBibleField(lcExcluded, 'centralConflict', 'İpek guards the gate', 'user-edit');
+    assert.equal(evaluateProjectConsistency(ucConflict).some((i) => i.id === 'issue_excl_conflict_ent_ipek_lc'), true);
+  });
 });

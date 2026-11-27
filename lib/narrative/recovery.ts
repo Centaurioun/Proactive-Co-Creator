@@ -111,9 +111,23 @@ export function setBackupPin(backup: ProjectBackup, pinned: boolean): void {
   const key = prefix + backup.id;
   const current = localStorage.getItem(key);
   if (!current) throw new Error('This backup no longer exists.');
-  const value = JSON.stringify({ ...JSON.parse(current), pinned });
+  const parsed = JSON.parse(current) as Partial<ProjectBackup> | null;
+  if (!parsed || typeof parsed !== 'object' || parsed.id !== backup.id || parsed.projectId !== backup.projectId || parsed.format !== 'pcc-project-backup' || parsed.version !== 1) {
+    throw new Error('Stored backup record does not match the expected backup identity.');
+  }
+  const value = JSON.stringify({ ...parsed, pinned });
   localStorage.setItem(key, value);
   if (localStorage.getItem(key) !== value) throw new Error('Could not verify the updated backup.');
+}
+
+export async function setBackupPinLocked(backup: ProjectBackup, pinned: boolean): Promise<void> {
+  if (!navigator.locks) {
+    setBackupPin(backup, pinned);
+    return;
+  }
+  await navigator.locks.request(prefix + backup.projectId, async () => {
+    setBackupPin(backup, pinned);
+  });
 }
 
 export async function deleteBackup(backup: ProjectBackup): Promise<void> {
@@ -122,6 +136,11 @@ export async function deleteBackup(backup: ProjectBackup): Promise<void> {
     const verified = await listBackups(backup.projectId);
     const current = verified.find(({ id }) => id === backup.id);
     if (!current || current.pinned || verified.length <= 1) {
+      throw new Error('Keep at least one verified backup. Unpin a backup before deleting it.');
+    }
+    const rawLatest = localStorage.getItem(prefix + backup.id);
+    const latest = rawLatest ? (JSON.parse(rawLatest) as Partial<ProjectBackup>) : null;
+    if (!latest || latest.id !== backup.id || latest.projectId !== backup.projectId || latest.pinned) {
       throw new Error('Keep at least one verified backup. Unpin a backup before deleting it.');
     }
     localStorage.removeItem(prefix + backup.id);

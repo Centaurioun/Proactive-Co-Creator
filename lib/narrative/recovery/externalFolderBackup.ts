@@ -13,12 +13,18 @@ export interface ExternalBackupDestinationResult {
   error?: string;
 }
 
+interface WritableFileStreamLike {
+  write: (data: BlobPart) => Promise<void>;
+  close: () => Promise<void>;
+  abort?: () => Promise<void>;
+}
+
 interface DirectoryHandleLike {
   name: string;
   queryPermission?: (desc: { mode: 'readwrite' }) => Promise<'granted' | 'denied' | 'prompt'>;
   requestPermission?: (desc: { mode: 'readwrite' }) => Promise<'granted' | 'denied' | 'prompt'>;
   getFileHandle: (name: string, options?: { create?: boolean }) => Promise<{
-    createWritable: () => Promise<{ write: (data: BlobPart) => Promise<void>; close: () => Promise<void> }>;
+    createWritable: () => Promise<WritableFileStreamLike>;
     getFile: () => Promise<File>;
   }>;
 }
@@ -103,8 +109,13 @@ export async function writeVerifiedExternalFolderBackup(
     const writable = await fileHandle.createWritable();
     const writeCopy = new Uint8Array(bytes.byteLength);
     writeCopy.set(bytes);
-    await writable.write(writeCopy);
-    await writable.close();
+    try {
+      await writable.write(writeCopy);
+      await writable.close();
+    } catch (writeErr) {
+      await (writable.abort?.() ?? writable.close()).catch(() => undefined);
+      throw writeErr;
+    }
 
     // Immediate readback verification
     const readFile = await fileHandle.getFile();

@@ -19,6 +19,29 @@ export type ResolvedConsistencyTarget =
   | { ok: true; kind: 'story_bible'; storyField: keyof StoryBibleFields }
   | { ok: false; reason: string };
 
+const ANTONYM_PAIRS: Array<[RegExp, RegExp, string]> = [
+  [/\byoung\b/i, /\b(?:elderly|ancient|old)\b/i, 'age (young vs. elderly)'],
+  [/\b(?:friendly|warm|gracious)\b/i, /\b(?:hostile|cruel|violent)\b/i, 'demeanor (friendly vs. hostile)'],
+  [/\b(?:cheerful|joyful)\b/i, /\b(?:grim|miserable|bleak)\b/i, 'mood (cheerful vs. grim)'],
+];
+
+const NEVER_MATCH_REGEX = /(?!)/;
+
+export function buildEntityMentionRegex(entityName: string): RegExp {
+  const trimmed = entityName.trim();
+  if (!trimmed) return NEVER_MATCH_REGEX;
+  const canonical = trimmed.replace(/[iI]\u0307/g, '\u0130');
+  const pattern = canonical
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/[i\u0130]/g, '(?:i\u0307|[i\u0130])');
+  return new RegExp(`(?<!\\p{L}|\\p{N}|_|\\p{M})${pattern}(?!\\p{L}|\\p{N}|_|\\p{M})`, 'iu');
+}
+
+function mentionsEntityName(text: string, entityName: string): boolean {
+  if (!text) return false;
+  return buildEntityMentionRegex(entityName).test(text);
+}
+
 /**
  * Resolves an issue navigation target strictly by stable ID or canonical Story Bible key.
  * Pure & read-only: never guesses another entity or mutates the snapshot.
@@ -69,19 +92,11 @@ export function resolveConsistencyIssueTarget(
   return { ok: false, reason: 'This target is no longer available.' };
 }
 
-/**
- * Lightweight deterministic consistency checker for the Story Bible and Belief Graph.
- * Detects:
- * 1. Conflicting character traits (e.g., attribute contradicts entity description or another attribute).
- * 2. Incompatible setting information (Story Bible setting vs Location entity).
- * 3. Contradictory relationships.
- * 4. Violated explicit exclusions (an excluded entity is still referenced in active story elements).
- * 5. Unresolved core story-level decisions.
- */
-export function evaluateProjectConsistency(snapshot: ProjectSnapshot): ConsistencyIssue[] {
-  const issues: ConsistencyIssue[] = [];
-  const entityIds = new Set(snapshot.entities.flatMap((entity) => entity.id ? [entity.id] : []));
-
+function checkRelationshipEndpoints(
+  snapshot: ProjectSnapshot,
+  entityIds: Set<string>,
+  issues: ConsistencyIssue[]
+): void {
   // Structural check only: never infer an endpoint from a relationship's display name.
   // Pending, rejected, or legacy name-only relationships remain outside this assertion.
   for (const relationship of snapshot.relationships) {
@@ -111,12 +126,20 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
       suggestedFix: 'Review the relationship endpoints and select existing entities before confirming it.',
     });
   }
+}
 
-  // 1. Check for violated explicit exclusions
-  const manualExclusions = snapshot.storyBible.explicitExclusions.value
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
+function checkViolatedExclusions(
+  snapshot: ProjectSnapshot,
+  issues: ConsistencyIssue[]
+): void {
+  const manualExclusionSet = new Set(
+    snapshot.storyBible.explicitExclusions.value
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const centralConflictConfirmed = snapshot.storyBible.centralConflict.status === 'confirmed';
+  const centralConflictText = snapshot.storyBible.centralConflict.value;
 
   for (const entity of snapshot.entities) {
     if (isSceneEntityName(entity.name)) continue;
@@ -128,10 +151,7 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
       !entity.excluded &&
       (!exAttr || getEffectiveAttributeValue(exAttr) === 'true');
 
-    if (
-      isMarkedPresent &&
-      manualExclusions.includes(entity.name.toLowerCase())
-    ) {
+    if (isMarkedPresent && manualExclusionSet.has(entity.name.toLowerCase())) {
       const targets: ConsistencyIssueTarget[] = [];
       if (entity.id) {
         targets.push({
@@ -159,83 +179,84 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
       });
     }
 
-    if (entity.excluded) {
-      const conflictMention = snapshot.storyBible.centralConflict.value
-        .toLowerCase()
-        .includes(entity.name.toLowerCase());
-      if (conflictMention && snapshot.storyBible.centralConflict.status === 'confirmed') {
-        const targets: ConsistencyIssueTarget[] = [
-          {
-            id: 'target_bible_centralConflict',
-            kind: 'story_bible',
-            label: 'Edit Central Conflict',
-            storyField: 'centralConflict',
-          },
-        ];
-        if (entity.id) {
-          targets.push({
-            id: `target_entity_${entity.id}`,
-            kind: 'entity',
-            label: `Inspect ${entity.name}`,
-            entityId: entity.id,
-          });
-        }
-        issues.push({
-          id: `issue_excl_conflict_${entity.id ?? entity.name}`,
-          severity: 'warning',
-          category: 'violated_exclusion',
-          title: `Excluded entity "${entity.name}" is referenced in Central Conflict`,
-          description: `"${entity.name}" is excluded from the project, but the Story Bible Central Conflict still mentions "${entity.name}".`,
-          affectedEntityIds: entity.id ? [entity.id] : [],
-          targets,
-          suggestedFix: `Update Central Conflict in the Story Bible to remove references to "${entity.name}".`,
+    if (entity.excluded && centralConflictConfirmed && mentionsEntityName(centralConflictText, entity.name)) {
+      const targets: ConsistencyIssueTarget[] = [
+        {
+          id: 'target_bible_centralConflict',
+          kind: 'story_bible',
+          label: 'Edit Central Conflict',
+          storyField: 'centralConflict',
+        },
+      ];
+      if (entity.id) {
+        targets.push({
+          id: `target_entity_${entity.id}`,
+          kind: 'entity',
+          label: `Inspect ${entity.name}`,
+          entityId: entity.id,
         });
       }
+      issues.push({
+        id: `issue_excl_conflict_${entity.id ?? entity.name}`,
+        severity: 'warning',
+        category: 'violated_exclusion',
+        title: `Excluded entity "${entity.name}" is referenced in Central Conflict`,
+        description: `"${entity.name}" is excluded from the project, but the Story Bible Central Conflict still mentions "${entity.name}".`,
+        affectedEntityIds: entity.id ? [entity.id] : [],
+        targets,
+        suggestedFix: `Update Central Conflict in the Story Bible to remove references to "${entity.name}".`,
+      });
     }
   }
+}
 
-  // 2. Check for conflicting character traits (e.g., age or personality contradictions)
-  const antonymPairs: Array<[RegExp, RegExp, string]> = [
-    [/\byoung\b/i, /\belderly|ancient|old\b/i, 'age (young vs. elderly)'],
-    [/\bfriendly|warm|gracious\b/i, /\bhostile|cruel|violent\b/i, 'demeanor (friendly vs. hostile)'],
-    [/\bcheerful|joyful\b/i, /\bgrim|miserable|bleak\b/i, 'mood (cheerful vs. grim)'],
-  ];
-
+function checkTraitContradictions(
+  snapshot: ProjectSnapshot,
+  issues: ConsistencyIssue[]
+): void {
   for (const entity of snapshot.entities) {
     if (entity.excluded || isSceneEntityName(entity.name)) continue;
     const confirmedSummary = entity.attributes
       .filter((a) => a.status === 'confirmed')
       .map((a) => `${a.name}: ${getEffectiveAttributeValue(a)}`)
       .join(' | ');
+    if (!confirmedSummary) continue;
     const fullText = `${entity.description} | ${confirmedSummary}`;
 
-    for (const [patA, patB, label] of antonymPairs) {
-      if (patA.test(confirmedSummary) && patB.test(fullText)) {
-        const targets: ConsistencyIssueTarget[] = entity.id
-          ? [
-              {
-                id: `target_entity_${entity.id}`,
-                kind: 'entity',
-                label: `Inspect ${entity.name}`,
-                entityId: entity.id,
-              },
-            ]
-          : [];
-        issues.push({
-          id: `issue_trait_${entity.id ?? entity.name}_${label}`,
-          severity: 'warning',
-          category: 'trait_conflict',
-          title: `Potential trait contradiction on "${entity.name}"`,
-          description: `Confirmed attributes and description for "${entity.name}" contain contrasting signals for ${label}.`,
-          affectedEntityIds: entity.id ? [entity.id] : [],
-          targets,
-          suggestedFix: `Inspect "${entity.name}" to align its description and confirmed attributes.`,
-        });
-      }
+    for (const [patA, patB, label] of ANTONYM_PAIRS) {
+      const conflicts =
+        (patA.test(confirmedSummary) && patB.test(fullText)) ||
+        (patB.test(confirmedSummary) && patA.test(fullText));
+      if (!conflicts) continue;
+
+      const targets: ConsistencyIssueTarget[] = entity.id
+        ? [
+            {
+              id: `target_entity_${entity.id}`,
+              kind: 'entity',
+              label: `Inspect ${entity.name}`,
+              entityId: entity.id,
+            },
+          ]
+        : [];
+      issues.push({
+        id: `issue_trait_${entity.id ?? entity.name}_${label}`,
+        severity: 'warning',
+        category: 'trait_conflict',
+        title: `Potential trait contradiction on "${entity.name}"`,
+        description: `Confirmed attributes and description for "${entity.name}" contain contrasting signals for ${label}.`,
+        affectedEntityIds: entity.id ? [entity.id] : [],
+        targets,
+        suggestedFix: `Inspect "${entity.name}" to align its description and confirmed attributes.`,
+      });
     }
   }
+}
 
-  // 3. Setting consistency check
+function checkSettingAndCoreBible(
+  snapshot: ProjectSnapshot,
+  issues: ConsistencyIssue[]
+): void {
   const confirmedBibleSetting =
     snapshot.storyBible.setting.status === 'confirmed'
       ? snapshot.storyBible.setting.value.trim()
@@ -244,11 +265,11 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
     (e) => !e.excluded && e.category === 'location' && e.status === 'confirmed'
   );
   if (confirmedBibleSetting && locationEntities.length > 0) {
-    const matchesAnyLocation = locationEntities.some(
-      (loc) =>
-        confirmedBibleSetting.toLowerCase().includes(loc.name.toLowerCase()) ||
-        loc.name.toLowerCase().includes(confirmedBibleSetting.toLowerCase())
-    );
+    const bibleSettingLower = confirmedBibleSetting.toLowerCase();
+    const matchesAnyLocation = locationEntities.some((loc) => {
+      const locLower = loc.name.toLowerCase();
+      return bibleSettingLower.includes(locLower) || locLower.includes(bibleSettingLower);
+    });
     if (!matchesAnyLocation) {
       const targets: ConsistencyIssueTarget[] = [
         {
@@ -279,7 +300,6 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
     }
   }
 
-  // 4. Unresolved foundational story properties
   const requiredCoreFields: Array<{ key: 'genre' | 'tone' | 'setting'; label: string }> = [
     { key: 'genre', label: 'Genre' },
     { key: 'tone', label: 'Tone' },
@@ -305,6 +325,25 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
       suggestedFix: 'Accept the suggested values in the Decision Inbox or edit them in the Story Bible tab.',
     });
   }
+}
+
+/**
+ * Lightweight deterministic consistency checker for the Story Bible and Belief Graph.
+ * Detects:
+ * 1. Conflicting character traits (e.g., attribute contradicts entity description or another attribute).
+ * 2. Incompatible setting information (Story Bible setting vs Location entity).
+ * 3. Contradictory relationships.
+ * 4. Violated explicit exclusions (an excluded entity is still referenced in active story elements).
+ * 5. Unresolved core story-level decisions.
+ */
+export function evaluateProjectConsistency(snapshot: ProjectSnapshot): ConsistencyIssue[] {
+  const issues: ConsistencyIssue[] = [];
+  const entityIds = new Set(snapshot.entities.flatMap((entity) => (entity.id ? [entity.id] : [])));
+
+  checkRelationshipEndpoints(snapshot, entityIds, issues);
+  checkViolatedExclusions(snapshot, issues);
+  checkTraitContradictions(snapshot, issues);
+  checkSettingAndCoreBible(snapshot, issues);
 
   return issues;
 }

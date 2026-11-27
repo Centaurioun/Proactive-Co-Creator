@@ -21,14 +21,15 @@ export async function projectContentBundle(
   const names = files.map(file => file.name);
   if (new Set(names).size !== names.length) throw new Error('Selected content produces duplicate filenames.');
 
-  const manifestEntries = await Promise.all(files.map(async file => {
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(file.text));
+  const encodedFiles = files.map(file => ({ file, bytes: strToU8(file.text) }));
+  const manifestEntries = await Promise.all(encodedFiles.map(async ({ file, bytes }) => {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>);
     const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-    return { path: file.name, mediaType: file.mediaType, provenance: file.provenance, byteLength: new TextEncoder().encode(file.text).byteLength, sha256 };
+    return { path: file.name, mediaType: file.mediaType, provenance: file.provenance, byteLength: bytes.byteLength, sha256 };
   }));
   const manifest = `${JSON.stringify({ format: 'proactive-co-creator-content-bundle', version: 1, projectId: project.id, files: manifestEntries }, null, 2)}\n`;
   const archive: Record<string, Uint8Array> = { 'manifest.json': strToU8(manifest) };
-  for (const file of files) archive[file.name] = strToU8(file.text);
+  for (const { file, bytes } of encodedFiles) archive[file.name] = bytes;
   return {
     name: safeFilename(project.name, 'selected-content-bundle', 'json').replace(/\.json$/u, '.zip'),
     bytes: zipSync(archive, { level: 6 }),

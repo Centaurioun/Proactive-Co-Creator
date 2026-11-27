@@ -11,6 +11,7 @@ import {
 import type { CreativeProject } from '../../shared/types.ts';
 import { createSampleProject } from '../canonicalModel.ts';
 import { hasRevisionLineage, isAutoSeededUntouchedSample } from './cacheParity.ts';
+import { areStableValuesEqual } from './casPolicy.ts';
 
 function ensureUndoStateFromProject(
   project: CreativeProject,
@@ -80,7 +81,7 @@ function mergeLocalAndIdbProjects(params: {
     } else if (idbRev === localRev) {
       const sameSnapshot =
         isSnapshotSemanticallyEqual(lp.snapshot, ip.snapshot) &&
-        JSON.stringify(lp.narrative) === JSON.stringify(ip.narrative);
+        areStableValuesEqual(lp.narrative, ip.narrative);
       if (!sameSnapshot && !ignoreDivergenceConflict) {
         divergenceConflictsById.set(ip.id, normalizedIp);
       } else {
@@ -96,9 +97,9 @@ function mergeLocalAndIdbProjects(params: {
       }
     } else {
       if (!ignoreDivergenceConflict && !hasRevisionLineage(lp, ip)) {
-        divergenceConflictsById.set(lp.id, normalizedIp);
+        divergenceConflictsById.set(ip.id, normalizedIp);
       }
-      mergedById.set(lp.id, {
+      mergedById.set(ip.id, {
         ...lp,
         persistedRevision: Math.max(
           lp.persistedRevision ?? localRev,
@@ -109,6 +110,51 @@ function mergeLocalAndIdbProjects(params: {
   }
 
   return { mergedById, divergenceConflictsById };
+}
+
+function handleLocalEditsReconciliation(params: {
+  savedProjects: CreativeProject[];
+  activeProject: CreativeProject;
+  activeUndoState: UndoRedoState;
+  idbMatch: CreativeProject | undefined;
+  localMatch: CreativeProject | undefined;
+}): {
+  savedProjects: CreativeProject[];
+  activeProject: CreativeProject;
+  activeUndoState: UndoRedoState;
+  upgradedFromIndexedDb: boolean;
+  conflictWithHydrated: CreativeProject | null;
+} {
+  const { savedProjects, activeProject, activeUndoState, idbMatch, localMatch } = params;
+  const idbRev = idbMatch?.revision ?? 0;
+  const basePersistedRev = activeProject.persistedRevision ?? 1;
+
+  const idbDivergedFromBase =
+    Boolean(idbMatch) &&
+    (idbRev > basePersistedRev ||
+      (idbRev === basePersistedRev &&
+        localMatch !== undefined &&
+        (!isSnapshotSemanticallyEqual(idbMatch!.snapshot, localMatch.snapshot) ||
+          !areStableValuesEqual(idbMatch!.narrative, localMatch.narrative) ||
+          (idbMatch!.name ?? '') !== (localMatch.name ?? ''))));
+
+  if (idbDivergedFromBase && idbMatch) {
+    return {
+      savedProjects,
+      activeProject,
+      activeUndoState,
+      upgradedFromIndexedDb: false,
+      conflictWithHydrated: idbMatch,
+    };
+  }
+
+  return {
+    savedProjects: savedProjects.map((p) => (p.id === activeProject.id ? activeProject : p)),
+    activeProject,
+    activeUndoState,
+    upgradedFromIndexedDb: false,
+    conflictWithHydrated: null,
+  };
 }
 
 /**
@@ -146,6 +192,20 @@ export function reconcileHydratedProjectsCore(params: {
   const validIdb = idbProjects.filter((p) => !deletedSet.has(p.id));
 
   if (validIdb.length === 0) {
+    if (deletedSet.has(activeProject.id)) {
+      const fallback = validLocal[0] ?? createSampleProject();
+      return {
+        savedProjects: validLocal,
+        activeProject: fallback,
+        activeUndoState: createUndoRedoState(
+          fallback.snapshot,
+          fallback.revisions,
+          fallback.undoHistory
+        ),
+        upgradedFromIndexedDb: false,
+        conflictWithHydrated: null,
+      };
+    }
     return {
       savedProjects: validLocal,
       activeProject,
@@ -189,34 +249,14 @@ export function reconcileHydratedProjectsCore(params: {
     };
   }
 
-  const idbRev = idbMatch?.revision ?? 0;
-  const activeRev = activeProject.revision ?? 1;
-  const basePersistedRev = activeProject.persistedRevision ?? 1;
-
   if (hasLocalEditsSinceMount) {
-    const idbDivergedFromBase =
-      Boolean(idbMatch) &&
-      (idbRev > basePersistedRev ||
-        (idbRev === basePersistedRev &&
-          localMatch !== undefined &&
-          !isSnapshotSemanticallyEqual(idbMatch!.snapshot, localMatch.snapshot)));
-
-    if (idbDivergedFromBase && idbMatch) {
-      return {
-        savedProjects,
-        activeProject,
-        activeUndoState,
-        upgradedFromIndexedDb: false,
-        conflictWithHydrated: idbMatch,
-      };
-    }
-    return {
-      savedProjects: savedProjects.map((p) => (p.id === activeProject.id ? activeProject : p)),
+    return handleLocalEditsReconciliation({
+      savedProjects,
       activeProject,
       activeUndoState,
-      upgradedFromIndexedDb: false,
-      conflictWithHydrated: null,
-    };
+      idbMatch,
+      localMatch,
+    });
   }
 
   const divergenceConflict = divergenceConflictsById.get(activeProject.id) ?? null;
@@ -230,6 +270,8 @@ export function reconcileHydratedProjectsCore(params: {
     };
   }
 
+  const idbRev = idbMatch?.revision ?? 0;
+  const activeRev = activeProject.revision ?? 1;
   const upgradedFromIndexedDb =
     Boolean(idbMatch) &&
     (localWasOnlyAutoSample ||
@@ -300,7 +342,7 @@ function selectReloadActiveProject(params: {
 
 export function upsertReloadedProject(projects: CreativeProject[], project: CreativeProject): CreativeProject[] {
   return projects.some((entry) => entry.id === project.id)
-    ? projects.map((entry) => entry.id === project.id ? project : entry)
+    ? projects.map((entry) => (entry.id === project.id ? project : entry))
     : [project, ...projects];
 }
 
@@ -313,21 +355,31 @@ export function planStorageReload(params: {
   deletedSet: ReadonlySet<string>;
 }) {
   const { localProjects, idbProjects, targetId, inMemoryActive, resolution, deletedSet } = params;
-  const initial = inMemoryActive ??
-    localProjects.find((project) => project.id === targetId) ??
-    idbProjects.find((project) => project.id === targetId) ??
-    localProjects[0] ?? idbProjects[0] ?? createSampleProject();
+  const validLocal = localProjects.filter((p) => !deletedSet.has(p.id));
+  const validIdb = idbProjects.filter((p) => !deletedSet.has(p.id));
+  const validInMemory =
+    inMemoryActive && !deletedSet.has(inMemoryActive.id) ? inMemoryActive : undefined;
+
+  const initial = validInMemory ??
+    validLocal.find((project) => project.id === targetId) ??
+    validIdb.find((project) => project.id === targetId) ??
+    validLocal[0] ?? validIdb[0] ?? createSampleProject();
   const reconciled = reconcileHydratedProjectsCore({
-    localProjects,
-    idbProjects,
+    localProjects: validLocal,
+    idbProjects: validIdb,
     activeProject: initial,
     activeUndoState: createUndoRedoState(initial.snapshot, initial.revisions, initial.undoHistory),
-    hasLocalEditsSinceMount: Boolean(inMemoryActive),
+    hasLocalEditsSinceMount: Boolean(validInMemory),
     ignoreDivergenceConflict: Boolean(resolution),
     deletedSet,
   });
-  const localMatch = localProjects.find((project) => project.id === reconciled.activeProject.id);
-  const idbMatch = idbProjects.find((project) => project.id === reconciled.activeProject.id);
-  const chosen = selectReloadActiveProject({ reconciledActive: reconciled.activeProject, localMatch, idbMatch, resolution });
+  const localMatch = validLocal.find((project) => project.id === reconciled.activeProject.id);
+  const idbMatch = validIdb.find((project) => project.id === reconciled.activeProject.id);
+  const chosen = selectReloadActiveProject({
+    reconciledActive: reconciled.activeProject,
+    localMatch,
+    idbMatch,
+    resolution,
+  });
   return { reconciled, localMatch, idbMatch, chosen };
 }

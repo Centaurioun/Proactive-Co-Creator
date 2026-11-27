@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { VerifiedExtraction } from '../lib/narrative/import/proposalValidator.ts';
 import {
-  createImportCheckpoint, matchesImportCheckpointIdentity,
-  validateCheckpoint, validateCheckpointEvidence, type ImportCheckpointIdentityInput,
+  createImportCheckpoint, getImportCheckpoint, listImportCheckpoints,
+  matchesImportCheckpointIdentity, reserveImportSegmentAttempt, saveImportCheckpoint,
+  sha256HexSync, sha256Text, validateCheckpoint, validateCheckpointEvidence,
+  type ImportCheckpointIdentityInput,
 } from '../lib/narrative/import/analysisCheckpoints.ts';
 
 const identity: ImportCheckpointIdentityInput = {
@@ -146,4 +148,207 @@ test('checkpoint persists a bounded 12-segment schedule and binds omitted sugges
   assert.equal(await matchesImportCheckpointIdentity(attempted, input), true, 'failed attempts restore under the same immutable plan identity');
   assert.equal(attempted.budget.callsUsed, 1);
   assert.equal(attempted.segments[0].attempts, 1);
+});
+
+function createCheckpointFakeIdb(options: { fireOnBlockedThenLateSuccess?: boolean } = {}) {
+  const records = new Map<string, unknown>();
+  let dbClosed = false;
+  let postBlockedPutCount = 0;
+  let lateSuccessTrigger: (() => void) | null = null;
+  let blockedFired = false;
+
+  const createTx = () => {
+    const tx = {
+      error: null as Error | null,
+      oncomplete: null as (() => void) | null,
+      onerror: null as (() => void) | null,
+      onabort: null as (() => void) | null,
+      aborted: false,
+      pendingOps: 0,
+      hasScheduledCompletion: false,
+      abort() {
+        if (tx.aborted) return;
+        tx.aborted = true;
+        tx.error = tx.error ?? new Error('Transaction aborted');
+        setTimeout(() => tx.onabort?.(), 0);
+      },
+      objectStore: () => storeApi,
+    };
+    const scheduleCompleteIfIdle = () => {
+      if (tx.aborted || tx.pendingOps > 0 || tx.hasScheduledCompletion) return;
+      tx.hasScheduledCompletion = true;
+      setTimeout(() => {
+        tx.hasScheduledCompletion = false;
+        if (!tx.aborted && tx.pendingOps === 0) tx.oncomplete?.();
+      }, 0);
+    };
+    const makeReq = <T,>(runOp: () => T) => {
+      tx.pendingOps += 1;
+      const req = { result: undefined as unknown as T, error: null as Error | null, onsuccess: null as (() => void) | null, onerror: null as (() => void) | null };
+      setTimeout(() => {
+        if (tx.aborted) return;
+        req.result = runOp();
+        req.onsuccess?.();
+        tx.pendingOps -= 1;
+        scheduleCompleteIfIdle();
+      }, 0);
+      return req;
+    };
+    const storeApi = {
+      get: (key: string) => makeReq(() => {
+        const val = records.get(key);
+        return val ? structuredClone(val) : undefined;
+      }),
+      getAll: () => makeReq(() => Array.from(records.values()).map(v => structuredClone(v))),
+      put: (val: { id: string }) => makeReq(() => {
+        if (blockedFired) postBlockedPutCount += 1;
+        records.set(val.id, structuredClone(val));
+        return val.id;
+      }),
+      delete: (key: string) => makeReq(() => {
+        records.delete(key);
+        return undefined;
+      }),
+    };
+    return tx;
+  };
+
+  const factory = {
+    open() {
+      const db = {
+        objectStoreNames: { contains: () => true },
+        createObjectStore: () => ({}),
+        transaction: createTx,
+        close: () => { dbClosed = true; },
+      };
+      const req: Record<string, unknown> = {
+        result: db,
+        error: null,
+        onsuccess: null,
+        onerror: null,
+        onblocked: null,
+        onupgradeneeded: null,
+      };
+      setTimeout(() => {
+        if (options.fireOnBlockedThenLateSuccess) {
+          blockedFired = true;
+          (req.onblocked as (() => void) | null)?.();
+          lateSuccessTrigger = () => { (req.onsuccess as (() => void) | null)?.(); };
+        } else {
+          (req.onupgradeneeded as (() => void) | null)?.();
+          (req.onsuccess as (() => void) | null)?.();
+        }
+      }, 0);
+      return req as unknown as IDBOpenDBRequest;
+    },
+  } as unknown as IDBFactory;
+
+  return {
+    factory,
+    records,
+    get dbClosed() { return dbClosed; },
+    get postBlockedPutCount() { return postBlockedPutCount; },
+    triggerLateSuccess: () => lateSuccessTrigger?.(),
+  };
+}
+
+test('R04: onblocked followed by late onsuccess must not mutate IDB or leak open handle', async () => {
+  const idb = createCheckpointFakeIdb({ fireOnBlockedThenLateSuccess: true });
+  const cp = await createImportCheckpoint(identity);
+  const res = await saveImportCheckpoint(idb.factory, cp);
+  assert.equal(res.ok, false);
+  idb.triggerLateSuccess();
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(idb.postBlockedPutCount, 0, 'Late onsuccess after onblocked must not write to IDB');
+  assert.equal(idb.dbClosed, true, 'Late onsuccess after onblocked must close the leaked IDBDatabase handle');
+});
+
+test('R05: checkpoint eviction protects live leases and consumed-budget checkpoints, failing closed if all 8 hold live leases', async () => {
+  const idb = createCheckpointFakeIdb();
+  const makeCp = (tag: string) => createImportCheckpoint({
+    ...identity,
+    source: { digest: `digest-${tag}`, filename: `${tag}.txt`, mediaType: 'text/plain', byteLength: 31 },
+  });
+
+  // (a) cp0 has live in-flight lease, cp1..cp8 are idle -> cp0 must be preserved, oldest idle cp1 evicted
+  const cp0 = await makeCp('live-0');
+  assert.equal((await saveImportCheckpoint(idb.factory, cp0)).ok, true);
+  assert.equal((await reserveImportSegmentAttempt(idb.factory, cp0.id, 'chunk-1', 'tab-a', false, 60_000)).ok, true);
+
+  const idleIds: string[] = [];
+  for (let i = 1; i <= 8; i += 1) {
+    const idle = await makeCp(`idle-${i}`);
+    idleIds.push(idle.id);
+    assert.equal((await saveImportCheckpoint(idb.factory, idle)).ok, true);
+  }
+  const listedA = await listImportCheckpoints(idb.factory);
+  assert.equal(listedA.ok, true);
+  if (listedA.ok) {
+    assert.equal(listedA.value.length, 8);
+    assert.equal(listedA.value.some(item => item.id === cp0.id), true, 'Live in-flight checkpoint must not be evicted');
+    assert.equal(listedA.value.some(item => item.id === idleIds[0]), false, 'Oldest idle checkpoint should be evicted first');
+  }
+
+  // (b) cpUsed has callsUsed=1 (failed, non-active), saved before 8 idle callsUsed=0 checkpoints -> cpUsed preserved
+  const idbB = createCheckpointFakeIdb();
+  const cpUsed = await makeCp('used-0');
+  cpUsed.budget.callsUsed = 1;
+  cpUsed.segments[0].attempts = 1;
+  cpUsed.segments[0].attemptId = 'att-1';
+  cpUsed.segments[0].status = 'failed';
+  assert.equal((await saveImportCheckpoint(idbB.factory, cpUsed)).ok, true);
+  for (let i = 1; i <= 8; i += 1) {
+    const idle = await makeCp(`used-idle-${i}`);
+    assert.equal((await saveImportCheckpoint(idbB.factory, idle)).ok, true);
+  }
+  const gotUsed = await getImportCheckpoint(idbB.factory, cpUsed.id);
+  assert.equal(gotUsed.ok && Boolean(gotUsed.value), true, 'Consumed-budget checkpoint must not be evicted before unused callsUsed=0 checkpoints');
+
+  // (c) 8 live in-flight checkpoints + 9th save -> fails closed
+  const idbC = createCheckpointFakeIdb();
+  for (let i = 0; i < 8; i += 1) {
+    const live = await makeCp(`all-live-${i}`);
+    assert.equal((await saveImportCheckpoint(idbC.factory, live)).ok, true);
+    assert.equal((await reserveImportSegmentAttempt(idbC.factory, live.id, 'chunk-1', `tab-${i}`, false, 60_000)).ok, true);
+  }
+  const ninth = await makeCp('ninth');
+  const ninthRes = await saveImportCheckpoint(idbC.factory, ninth);
+  assert.equal(ninthRes.ok, false, 'Saving a 9th checkpoint when all 8 hold live leases must fail closed');
+});
+
+test('W3-NEW-02: corrupt record missing updatedAt does not poison saveImportCheckpoint with NaN', async () => {
+  const idb = createCheckpointFakeIdb();
+  idb.records.set('corrupt-legacy', { id: 'corrupt-legacy' });
+  const cp = await createImportCheckpoint(identity);
+  const saved = await saveImportCheckpoint(idb.factory, cp);
+  assert.equal(saved.ok, true);
+  const fetched = await getImportCheckpoint(idb.factory, cp.id);
+  assert.equal(fetched.ok, true);
+  if (fetched.ok) {
+    assert.ok(fetched.value, 'Saved checkpoint must remain valid and retrievable despite corrupt sibling record');
+    assert.equal(Number.isFinite(fetched.value?.updatedAt), true);
+  }
+});
+
+test('R10: sha256HexSync matches WebCrypto and node:crypto bit-for-bit across NIST and UTF-8 vectors', async () => {
+  const { createHash } = await import('node:crypto');
+  const vectors = [
+    '',
+    'abc',
+    'a'.repeat(55),
+    'a'.repeat(56),
+    'a'.repeat(63),
+    'a'.repeat(64),
+    'a'.repeat(65),
+    'a'.repeat(119),
+    'a'.repeat(120),
+    'a'.repeat(128),
+    'İpek 🦉 🇹🇷 👩🏽‍🚀 şafakta rüzgâr kıyıdaki feneri söndürdü.',
+    'Türkçe öykü '.repeat(400),
+  ];
+  for (const vector of vectors) {
+    const expected = createHash('sha256').update(vector, 'utf8').digest('hex');
+    assert.equal(sha256HexSync(vector), expected);
+    assert.equal(await sha256Text(vector), expected);
+  }
 });

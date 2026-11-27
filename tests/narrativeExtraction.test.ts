@@ -150,3 +150,83 @@ test('project assembly preserves source and manuscript, confirms only reviewed f
   assert.equal(project.narrative?.issues.some(issue => issue.title.startsWith('Possible same identity: Ada')), true);
   assert.ok(project.narrative?.claims.every(claim => claim.anchors[0].excerpt.length > 0));
 });
+
+test('W3-NEW-07 & W3-NEW-08: append preserves issues & Stage 2 opportunities, and overlapping/same-span IDs do not collide', async () => {
+  const { applyAppendToExistingProject, appendTargetBase } = await import('../lib/narrative/import/appendApply.ts');
+  const { attachAcceptedStage2Opportunities } = await import('../lib/narrative/import/stage2Enhancements.ts');
+  const { validateNarrativeRecords } = await import('../lib/narrative/evidenceRegistry.ts');
+  const { createSampleProject } = await import('../lib/canonicalModel.ts');
+
+  const text = 'Ada met Mina at the harbor. Mina carried a lantern.';
+  const source = await parseNarrativeSource(new TextEncoder().encode(text), 'harbor.txt');
+  const sharedQuote = 'Ada met Mina at the harbor.';
+  const rawCollision = NarrativeExtractionSchema.parse({
+    findings: [],
+    entities: [
+      {
+        id: 'e-ada', name: 'Ada', category: 'character', description: 'Harbor visitor.', aliases: [],
+        attributes: [{ id: 'a1', name: 'role', value: 'visitor', kind: 'explicit', rationale: 'Direct.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } }],
+        kind: 'explicit', rationale: 'Named.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote },
+      },
+      {
+        id: 'e-mina', name: 'Mina', category: 'character', description: 'Lantern bearer.', aliases: [],
+        attributes: [{ id: 'a2', name: 'item', value: 'lantern', kind: 'explicit', rationale: 'Direct.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } }],
+        kind: 'explicit', rationale: 'Named.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote },
+      },
+    ],
+    relationships: [
+      { id: 'r1', source: 'Ada', target: 'Ghost1', label: 'met', kind: 'explicit', rationale: 'Unresolved target 1.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } },
+      { id: 'r2', source: 'Ada', target: 'Ghost2', label: 'knew', kind: 'explicit', rationale: 'Unresolved target 2.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } },
+    ],
+    ambiguities: [
+      { id: 'amb1', title: 'Same title', detail: 'First.', severity: 'medium', certainty: 'possible', rationale: 'First.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } },
+      { id: 'amb2', title: 'Same title', detail: 'Second.', severity: 'medium', certainty: 'possible', rationale: 'Second.', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } },
+    ],
+  });
+  const checked = verifyExtractionEvidence(rawCollision, { id: 'chunk-1', index: 0, start: 0, end: text.length, text }, { id: 'src-col', version: 'v1', digest: source.digest });
+  const accepted = new Set([checked.entities[0].id, checked.relationships[0].id, checked.relationships[1].id]);
+  const incoming = assembleImportedProject(source, checked, [], {
+    sourceId: 'src-col',
+    acceptedIds: accepted,
+    rejectedIds: new Set(),
+    projectName: 'Collision Test',
+    coverage: { complete: false, scope: 'complete', categories: ['characters'], totalCharacters: text.length, processedSpans: [{ start: 0, end: sharedQuote.length }], failedSegments: 1, calls: 1 },
+  }, 5000);
+  validateNarrativeRecords(incoming);
+
+  attachAcceptedStage2Opportunities(incoming, [
+    { id: 'enhancement-alpha-1', category: 'pacing', title: 'Tighten 1', rationale: 'R1', beforeExcerpt: sharedQuote, afterExcerpt: 'Ada met Mina.', assumptions: [] },
+    { id: 'enhancement-alpha-2', category: 'clarity', title: 'Tighten 2', rationale: 'R2', beforeExcerpt: sharedQuote, afterExcerpt: 'Mina held the light.', assumptions: [] },
+  ], 'src-col', 5000);
+  const oppIds = (incoming.narrative?.opportunities ?? []).map(o => o.id);
+  assert.equal(new Set(oppIds).size, 2, 'Stage 2 opportunity IDs must be unique even with shared 12-char prefix');
+  validateNarrativeRecords(incoming);
+
+  const overlapA = verifyExtractionEvidence(NarrativeExtractionSchema.parse({
+    findings: [],
+    entities: [{ id: 'e1', name: 'Ada', category: 'character', description: '', aliases: [], attributes: [{ id: 'a1', name: 'role', value: 'guard', kind: 'explicit', rationale: 'A', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } }], kind: 'explicit', rationale: 'R', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } }],
+    relationships: [], ambiguities: [],
+  }), { id: 'c1', index: 0, start: 0, end: text.length, text }, { id: 's1', version: 'v1', digest: 'd'.repeat(64) });
+  const overlapB = verifyExtractionEvidence(NarrativeExtractionSchema.parse({
+    findings: [],
+    entities: [{ id: 'e2', name: 'Mina', category: 'character', description: '', aliases: [], attributes: [{ id: 'a2', name: 'role', value: 'guard', kind: 'explicit', rationale: 'B', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } }], kind: 'explicit', rationale: 'R', evidence: { start: 0, end: sharedQuote.length, quote: sharedQuote } }],
+    relationships: [], ambiguities: [],
+  }), { id: 'c2', index: 1, start: 0, end: text.length, text }, { id: 's1', version: 'v1', digest: 'd'.repeat(64) });
+  assert.notEqual(overlapA.entities[0].attributes[0].id, overlapB.entities[0].attributes[0].id, 'Distinct entities across chunks must not share identical attribute.id');
+
+  const target = createSampleProject(1000);
+  const base = appendTargetBase(target);
+  const appended = applyAppendToExistingProject({
+    targetProject: target,
+    incomingProject: incoming,
+    insertPosition: 'end',
+    identityDecisions: {},
+    expectedBaseRevision: base.expectedBaseRevision,
+    expectedManuscriptVersionId: base.expectedManuscriptVersionId,
+    expectedBaseSnapshotDigest: base.expectedBaseSnapshotDigest,
+  });
+  assert.ok((appended.candidateProject.narrative?.issues.length ?? 0) >= incoming.narrative!.issues.length, 'Appended project must retain incoming issues');
+  assert.ok(appended.candidateProject.narrative!.issues.some(i => i.title === 'Narrative analysis incomplete'));
+  assert.equal(appended.candidateProject.narrative?.opportunities?.length, 2, 'Appended project must retain Stage 2 opportunities');
+  assert.ok(appended.candidateProject.narrative!.opportunities!.every(o => o.projectId === target.id));
+});

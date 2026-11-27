@@ -34,8 +34,15 @@ const app = createApp({
 app.get('/__qa/story-observations', (_req, res) => res.json({ count: observations.length, calls: observations }));
 const vite = await createViteServer({ server: { middlewareMode: true, hmr: false }, appType: 'spa' });
 app.use(vite.middlewares);
+const port = Number(process.env.PORT || 4311);
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error(`Invalid PORT value: ${process.env.PORT}`);
+}
 const server = http.createServer(app);
-server.listen(4311, '127.0.0.1', () => console.log('Synthetic Story qualification at http://127.0.0.1:4311'));
+server.listen(port, '127.0.0.1', () => console.log(`Synthetic Story qualification at http://127.0.0.1:${port}`));
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => {
-  void vite.close().finally(() => server.close(() => process.exit(0)));
+  void vite.close().finally(() => {
+    server.close(() => process.exit(0));
+    server.closeAllConnections?.();
+  });
 });

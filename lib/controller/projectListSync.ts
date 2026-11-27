@@ -4,7 +4,7 @@
  */
 
 import { getDeletedProjectIds, type IndexedDbLoadStatus } from '../storageEngine.ts';
-import { stableIntentSerialization } from '../storage/casPolicy.ts';
+import { areStableValuesEqual } from '../storage/casPolicy.ts';
 import { isSnapshotSemanticallyEqual } from '../historyEngine.ts';
 import type { CreativeProject } from '../../shared/types.ts';
 
@@ -86,10 +86,10 @@ export function sameProjectVersion(first: CreativeProject, second: CreativeProje
   return first.id === second.id && first.revision === second.revision &&
     first.name === second.name &&
     isSnapshotSemanticallyEqual(first.snapshot, second.snapshot) &&
-    stableIntentSerialization(first.narrative) === stableIntentSerialization(second.narrative) &&
-    stableIntentSerialization(first.artifacts) === stableIntentSerialization(second.artifacts) &&
-    stableIntentSerialization(first.revisions) === stableIntentSerialization(second.revisions) &&
-    stableIntentSerialization(first.undoHistory) === stableIntentSerialization(second.undoHistory);
+    areStableValuesEqual(first.narrative, second.narrative) &&
+    areStableValuesEqual(first.artifacts, second.artifacts) &&
+    areStableValuesEqual(first.revisions, second.revisions) &&
+    areStableValuesEqual(first.undoHistory, second.undoHistory);
 }
 
 function acknowledges(project: CreativeProject, committed: CreativeProject): boolean {

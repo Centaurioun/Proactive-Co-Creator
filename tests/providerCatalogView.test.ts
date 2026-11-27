@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import * as catalogView from '../lib/providerCatalogView.ts';
 import { catalogStateLabel, isCatalogSelectable, modelsForConnection, isEligibleTextModel, isSelectableTextPreferenceModel } from '../lib/providerCatalogView.ts';
 
 test('refreshing a different catalog does not change the active model choices', () => {
@@ -46,4 +49,46 @@ test('catalog entries cannot be selected while a refresh is loading or has faile
   assert.equal(isCatalogSelectable('connected', 'failed'), false);
   assert.equal(isCatalogSelectable('connected', 'stale'), false);
   assert.equal(isCatalogSelectable('expired', 'fresh'), false);
+});
+
+test('W1-D01: PROVIDER_PREFERENCE_OPERATIONS uses polish (not refine) and AiConnectionsPanel consumes it', () => {
+  const mod = catalogView as Record<string, unknown>;
+  const ops = mod.PROVIDER_PREFERENCE_OPERATIONS as ReadonlyArray<readonly [string, string]> | undefined;
+  assert.ok(Array.isArray(ops), 'PROVIDER_PREFERENCE_OPERATIONS must be exported');
+  assert.equal(ops.some(([op]) => op === 'polish'), true);
+  assert.equal(ops.some(([op]) => op === 'refine'), false);
+
+  const panelSource = fs.readFileSync(path.join(process.cwd(), 'components/settings/AiConnectionsPanel.tsx'), 'utf8');
+  assert.equal(panelSource.includes("['refine', 'Prompt refinement']"), false);
+});
+
+test('W1-D13: safeEvidenceHref permits only http(s) URLs and rejects plain text or javascript URLs', () => {
+  const mod = catalogView as Record<string, unknown>;
+  const safeEvidenceHref = mod.safeEvidenceHref as ((ref: string) => string | undefined) | undefined;
+  assert.equal(typeof safeEvidenceHref, 'function');
+  assert.equal(safeEvidenceHref!('https://developers.openai.com/api/docs/models/gpt-6-luna'), 'https://developers.openai.com/api/docs/models/gpt-6-luna');
+  assert.equal(safeEvidenceHref!('Gemini API models.list response'), undefined);
+  assert.equal(safeEvidenceHref!('javascript:alert(1)'), undefined);
+});
+
+test('W1-D10 & W1-D14: preference save preserves fresh catalog phases and Story override treats undefined reasoning as default', () => {
+  const mod = catalogView as Record<string, unknown>;
+  const preservePhases = mod.catalogPhasesForStatusRefresh as
+    | ((connections: readonly { id: string; models: unknown[] }[], current: Record<string, string | undefined>, preserveFresh: boolean) => Record<string, string>)
+    | undefined;
+  assert.equal(typeof preservePhases, 'function');
+  const next = preservePhases!(
+    [{ id: 'gemini-managed', models: [{ id: 'm1' }] }, { id: 'openai-api', models: [{ id: 'm2' }] }],
+    { 'gemini-managed': 'fresh', 'openai-api': 'failed' },
+    true,
+  );
+  assert.equal(next['gemini-managed'], 'fresh');
+  assert.equal(next['openai-api'], 'stale');
+
+  const canSelectStory = mod.isChatGptStoryModelSelectable as
+    | ((model: { id: string; availability: { state: string }; textGeneration: { state: string } }, preferredReasoning?: string) => boolean)
+    | undefined;
+  assert.equal(typeof canSelectStory, 'function');
+  assert.equal(canSelectStory!({ id: 'gpt-6-luna', availability: { state: 'supported' }, textGeneration: { state: 'supported' } }, undefined), true);
+  assert.equal(canSelectStory!({ id: 'gpt-6-luna', availability: { state: 'supported' }, textGeneration: { state: 'supported' } }, 'medium'), false);
 });

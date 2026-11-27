@@ -1,3 +1,109 @@
+import type { AiCapability, AiConnectionId, AiModelDescriptor, AiReasoningLevel, ProviderPreferences } from '../server/providers/contracts';
+import type { AiOperation } from '../server/aiBudget';
+
+export const PROVIDER_PREFERENCE_OPERATIONS = [
+  ['analyze', 'Analysis'],
+  ['clarify', 'Clarifications'],
+  ['polish', 'Prompt refinement'],
+  ['batch-edit', 'Batch editing'],
+  ['story', 'Story generation'],
+  ['image', 'Image generation'],
+  ['narrative-import', 'Narrative import'],
+  ['writing', 'Writing assistance'],
+] as const;
+
+export function safeEvidenceHref(reference: string): string | undefined {
+  try {
+    const parsed = new URL(reference);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function supportedReasoningLevels(
+  capability?: Pick<AiCapability<readonly AiReasoningLevel[]>, 'state'> & { value?: unknown },
+): AiReasoningLevel[] {
+  return capability?.state === 'supported' && Array.isArray(capability.value)
+    ? ['default', ...capability.value.filter((level): level is AiReasoningLevel => typeof level === 'string')]
+    : ['default'];
+}
+
+export function catalogPhasesForStatusRefresh(
+  connections: readonly { id: string; models: unknown[] }[],
+  currentPhases: Partial<Record<string, CatalogRefreshPhase>>,
+  preserveFresh: boolean,
+): Partial<Record<AiConnectionId, CatalogRefreshPhase>> {
+  const next: Partial<Record<AiConnectionId, CatalogRefreshPhase>> = {};
+  for (const connection of connections) {
+    const existing = currentPhases[connection.id];
+    if (preserveFresh && existing === 'fresh') {
+      next[connection.id as AiConnectionId] = 'fresh';
+    } else if (connection.models.length > 0 || preserveFresh) {
+      next[connection.id as AiConnectionId] = 'stale';
+    }
+  }
+  return next;
+}
+
+export function isChatGptStoryModelSelectable(
+  model: { id: string; availability: { state: string }; textGeneration: { state: string } },
+  preferredReasoning?: string,
+): boolean {
+  return model.id === 'gpt-6-luna' &&
+    model.availability.state === 'supported' &&
+    model.textGeneration.state === 'supported' &&
+    (preferredReasoning ?? 'default') === 'default';
+}
+
+export function buildDefaultConnectionPreferences(
+  connectionId: AiConnectionId,
+  models: readonly AiModelDescriptor[],
+  preferences: ProviderPreferences,
+): { ok: true; preferences: ProviderPreferences } | { ok: false; error: string } {
+  if (connectionId === 'chatgpt-plan') {
+    const preferredModelId = preferences.preferredTextModelsByConnection?.['chatgpt-plan'];
+    const preferredModel = models.find(model => model.id === preferredModelId && isSelectableTextPreferenceModel(model));
+    const preferredReasoning = preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'];
+    const reasoningIsValid = Boolean(preferredModel && preferredReasoning &&
+      supportedReasoningLevels(preferredModel.reasoning).includes(preferredReasoning));
+    return {
+      ok: true,
+      preferences: {
+        ...preferences,
+        defaultConnectionId: connectionId,
+        defaultTextModelId: reasoningIsValid ? preferredModel!.id : undefined,
+        defaultReasoningLevel: reasoningIsValid ? preferredReasoning : undefined,
+      },
+    };
+  }
+  const modelId = models.find(isEligibleTextModel)?.id;
+  if (!modelId) {
+    return {
+      ok: false,
+      error: 'No model has a verified PCC operation for this connection. Refresh its catalog or choose another connection.',
+    };
+  }
+  return {
+    ok: true,
+    preferences: { ...preferences, defaultConnectionId: connectionId, defaultTextModelId: modelId, defaultReasoningLevel: 'default' },
+  };
+}
+
+export function isModelSupportedForOperation(
+  operation: string,
+  connectionId: AiConnectionId,
+  model: AiModelDescriptor | undefined,
+  preferredChatGptReasoning?: string,
+): boolean {
+  if (!model || model.availability.state !== 'supported') return false;
+  if (operation === 'story' && connectionId === 'chatgpt-plan') {
+    return isChatGptStoryModelSelectable(model, preferredChatGptReasoning);
+  }
+  const opCap = model.operationCapabilities[operation as AiOperation];
+  return opCap?.state === 'supported' && opCap.value === true;
+}
+
 /** The inspected catalog never changes the active connection's model options. */
 export function modelsForConnection<M>(connections: readonly { id: string; models: M[] }[], connectionId?: string): M[] {
   return connections.find(connection => connection.id === connectionId)?.models ?? [];

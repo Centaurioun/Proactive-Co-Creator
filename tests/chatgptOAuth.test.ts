@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSign, generateKeyPairSync } from 'node:crypto';
-import { ChatGptOAuthClient, CHATGPT_OAUTH_ISSUER, discoverOpenId } from '../server/auth/chatgpt/oauth.ts';
+import { ChatGptOAuthClient, CHATGPT_OAUTH_ISSUER, discoverOpenId, verifyIdToken } from '../server/auth/chatgpt/oauth.ts';
 import { ChatGptSessionStore, createPkcePair, readTokenResponse } from '../server/auth/chatgpt/sessionStore.ts';
 import { ChatGptResponsesAdapter } from '../server/providers/chatgptResponses.ts';
 
@@ -405,4 +405,58 @@ test('session store rejects untrusted OAuth endpoint and malformed token fields'
   await assert.rejects(() => store.getAccessToken(CLIENT_ID, 'https://attacker.example/token'), /temporarily unavailable/);
   assert.equal(store.snapshot().connected, true);
   assert.throws(() => store.install({ accessToken: '', expiresAt: 1, tokenType: 'Bearer' }));
+});
+
+test('W1-D06: OAuth client bounds pending authorization flows and verifyIdToken enforces nbf and JWK key type', async () => {
+  const now = fixedNow();
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'test-key', use: 'sig', alg: 'RS256' };
+  const mockFetch: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/.well-known/openid-configuration')) return jsonResponse({
+      issuer: OFFICIAL_ISSUER,
+      authorization_endpoint: 'https://auth.openai.com/oauth/authorize',
+      token_endpoint: 'https://auth.openai.com/oauth/token',
+      jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',
+      response_types_supported: ['code'],
+      code_challenge_methods_supported: ['S256'],
+    });
+    if (url.endsWith('/.well-known/jwks.json')) return jsonResponse({ keys: [jwk] });
+    throw new Error('unexpected url');
+  };
+
+  const client = new ChatGptOAuthClient({
+    redirectUri: REDIRECT,
+    extAgentHostId: 'urn:uuid:host-test',
+    agentNameHint: 'Proactive Co-Creator',
+    fetch: mockFetch,
+    now: () => now,
+  });
+  const first = await client.createAuthorizationRequest();
+  for (let i = 0; i < 64; i += 1) {
+    await client.createAuthorizationRequest();
+  }
+  await assert.rejects(
+    client.completeAuthorization({ code: 'code-1', state: first.state, clientId: ISSUED_CLIENT_ID }),
+    /invalid or expired/i,
+  );
+
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'test-key', typ: 'JWT' })).toString('base64url');
+  const futureNbfClaims = Buffer.from(JSON.stringify({
+    iss: OFFICIAL_ISSUER,
+    sub: 'user-1',
+    aud: ISSUED_CLIENT_ID,
+    exp: Math.floor(now / 1000) + 7200,
+    iat: Math.floor(now / 1000),
+    nbf: Math.floor(now / 1000) + 3600,
+    nonce: 'nonce-1',
+  })).toString('base64url');
+  const signer = createSign('RSA-SHA256');
+  signer.update(`${header}.${futureNbfClaims}`);
+  signer.end();
+  const futureNbfToken = `${header}.${futureNbfClaims}.${signer.sign(privateKey).toString('base64url')}`;
+  await assert.rejects(
+    verifyIdToken(futureNbfToken, { clientId: ISSUED_CLIENT_ID, expectedNonce: 'nonce-1', fetch: mockFetch, now: () => now }),
+    /claims are invalid/i,
+  );
 });

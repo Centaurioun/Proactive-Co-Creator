@@ -86,6 +86,12 @@ const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_unused, index) => {
 
 function invalid(message: string): never { throw new Error(message); }
 
+function abortError(): Error {
+  const error = new Error('EPUB ZIP member read was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
 function assertLimits(limits: EpubZipReaderLimits): void {
   for (const [key, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value <= 0) invalid(`Invalid EPUB ZIP reader limit: ${key}.`);
@@ -108,18 +114,17 @@ function isSafeName(name: string, maxPathLength: number): boolean {
 }
 
 function decodeName(bytes: Uint8Array, flags: number): string {
-  if (!(flags & UTF8_FLAG) && bytes.some(byte => byte > 0x7f)) return invalid('EPUB ZIP member uses unsupported non-UTF-8 legacy filename encoding.');
+  if (!(flags & UTF8_FLAG) && bytes.some(byte => byte > 0x7f)) invalid('EPUB ZIP member uses unsupported non-UTF-8 legacy filename encoding.');
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-  catch { return invalid('EPUB ZIP member name is not valid UTF-8.'); }
+  catch { invalid('EPUB ZIP member name is not valid UTF-8.'); }
 }
 
-function checkExtras(bytes: Uint8Array, start: number, length: number, context: string): void {
+function checkExtras(bytes: Uint8Array, view: DataView, start: number, length: number, context: string): void {
   const end = start + length;
   if (end > bytes.length) invalid(`EPUB ZIP ${context} extra field is truncated.`);
   let offset = start;
   while (offset < end) {
     if (offset + 4 > end) invalid(`EPUB ZIP ${context} extra field is malformed.`);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const id = view.getUint16(offset, true);
     const fieldLength = view.getUint16(offset + 2, true);
     offset += 4 + fieldLength;
@@ -138,7 +143,114 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
-function parseCentralDirectory(bytes: Uint8Array, limits: EpubZipReaderLimits): { records: CentralRecord[]; archiveBytes: number; expandedBytes: number; centralOffset: number } {
+function assertValidCentralFields(
+  flags: number,
+  method: number,
+  uncompressedBytes: number,
+  compressedBytes: number,
+  limits: EpubZipReaderLimits,
+  name: string,
+): void {
+  if ((flags & 1) || (flags & ~ALLOWED_FLAGS) || (flags & 0x0008)) {
+    invalid('Encrypted, descriptor-based, or unsupported ZIP flags are not supported.');
+  }
+  if (method !== 0 && method !== 8) invalid('EPUB ZIP uses an unsupported compression method.');
+  if (uncompressedBytes > limits.maxMemberBytes) invalid(`EPUB member exceeds the per-member size limit: ${name}.`);
+  const invalidZero = compressedBytes === 0 && uncompressedBytes > 0;
+  const badRatio = compressedBytes > 0 && uncompressedBytes / compressedBytes > limits.maxCompressionRatio;
+  if (invalidZero || badRatio) invalid(`EPUB member exceeds the configured compression ratio: ${name}.`);
+}
+
+function validateCentralRecordEntry(
+  bytes: Uint8Array,
+  view: DataView,
+  offset: number,
+  eocd: number,
+  limits: EpubZipReaderLimits,
+  paths: Set<string>,
+): { record: CentralRecord; nextOffset: number } {
+  if (offset + 46 > eocd || view.getUint32(offset, true) !== CENTRAL) invalid('EPUB central directory record is malformed.');
+  const flags = view.getUint16(offset + 8, true);
+  const method = view.getUint16(offset + 10, true);
+  const crc32 = view.getUint32(offset + 16, true);
+  const compressedBytes = view.getUint32(offset + 20, true);
+  const uncompressedBytes = view.getUint32(offset + 24, true);
+  const nameLength = view.getUint16(offset + 28, true);
+  const extraLength = view.getUint16(offset + 30, true);
+  const commentLength = view.getUint16(offset + 32, true);
+  const diskStart = view.getUint16(offset + 34, true);
+  const localOffset = view.getUint32(offset + 42, true);
+  const recordEnd = offset + 46 + nameLength + extraLength + commentLength;
+  if (!nameLength || recordEnd > eocd || diskStart !== 0) invalid('EPUB central directory contains an unsupported or truncated record.');
+  if (localOffset === 0xffffffff || compressedBytes === 0xffffffff || uncompressedBytes === 0xffffffff) {
+    invalid('EPUB central directory contains an unsupported or truncated record.');
+  }
+  checkExtras(bytes, view, offset + 46 + nameLength, extraLength, 'central');
+  const localName = bytes.slice(offset + 46, offset + 46 + nameLength);
+  const name = decodeName(localName, flags);
+  if (!isSafeName(name, limits.maxPathLength)) invalid(`EPUB ZIP contains an unsafe member path: ${name}.`);
+  if (paths.has(name)) invalid(`EPUB ZIP contains a duplicate member path: ${name}.`);
+  paths.add(name);
+  assertValidCentralFields(flags, method, uncompressedBytes, compressedBytes, limits, name);
+  return {
+    record: {
+      path: name, flags, compressedBytes, uncompressedBytes,
+      compression: method === 0 ? 'stored' : 'deflate', encrypted: false,
+      crc32, localOffset, localName, dataOffset: 0, dataEnd: 0,
+    },
+    nextOffset: recordEnd,
+  };
+}
+
+function verifySingleLocalHeader(
+  bytes: Uint8Array,
+  view: DataView,
+  record: CentralRecord,
+  expectedLocalOffset: number,
+  centralOffset: number,
+): number {
+  const local = record.localOffset;
+  if (local !== expectedLocalOffset || local + 30 > centralOffset || view.getUint32(local, true) !== LOCAL) {
+    invalid('EPUB local header ordering or offset is invalid; records must be contiguous from byte zero.');
+  }
+  const flags = view.getUint16(local + 6, true);
+  const method = view.getUint16(local + 8, true);
+  const crc32 = view.getUint32(local + 14, true);
+  const compressedBytes = view.getUint32(local + 18, true);
+  const uncompressedBytes = view.getUint32(local + 22, true);
+  const nameLength = view.getUint16(local + 26, true);
+  const extraLength = view.getUint16(local + 28, true);
+  if (record.path === 'mimetype' && extraLength !== 0) invalid('EPUB mimetype local header must not contain an extra field.');
+  const nameStart = local + 30;
+  const extraStart = nameStart + nameLength;
+  const dataOffset = extraStart + extraLength;
+  const dataEnd = dataOffset + record.compressedBytes;
+  if (dataOffset > centralOffset || dataEnd > centralOffset) invalid(`EPUB local header metadata is malformed for ${record.path}.`);
+  const flagsMatch = flags === record.flags && !(flags & 1) && !(flags & ~ALLOWED_FLAGS) && !(flags & 0x0008);
+  const sizesMatch = method === (record.compression === 'stored' ? 0 : 8) && crc32 === record.crc32 &&
+    compressedBytes === record.compressedBytes && uncompressedBytes === record.uncompressedBytes;
+  if (!flagsMatch || !sizesMatch) invalid(`EPUB local and central header metadata disagree for ${record.path}.`);
+  if (!equalBytes(bytes.subarray(nameStart, extraStart), record.localName)) {
+    invalid(`EPUB local and central filenames disagree for ${record.path}.`);
+  }
+  checkExtras(bytes, view, extraStart, extraLength, 'local');
+  record.dataOffset = dataOffset;
+  record.dataEnd = dataEnd;
+  return dataEnd;
+}
+
+function verifyLocalHeaders(bytes: Uint8Array, view: DataView, records: CentralRecord[], centralOffset: number): void {
+  records.sort((left, right) => left.localOffset - right.localOffset);
+  let expectedLocalOffset = 0;
+  for (const record of records) {
+    expectedLocalOffset = verifySingleLocalHeader(bytes, view, record, expectedLocalOffset, centralOffset);
+  }
+  if (expectedLocalOffset !== centralOffset) invalid('EPUB ZIP local records overlap or leave unaccounted bytes before the central directory.');
+  if (records[0]?.path !== 'mimetype' || records[0].localOffset !== 0) invalid('EPUB mimetype must be the first physical local-header member.');
+  if (records[0].compression !== 'stored' || records[0].encrypted) invalid('EPUB mimetype must be stored and unencrypted.');
+}
+
+function parseCentralDirectory(bytes: Uint8Array, limits: EpubZipReaderLimits): { records: CentralRecord[] } {
   if (bytes.byteLength > limits.maxArchiveBytes) invalid('EPUB archive exceeds the compressed-size limit.');
   if (bytes.byteLength < 22) invalid('EPUB ZIP archive is too short.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -149,9 +261,9 @@ function parseCentralDirectory(bytes: Uint8Array, limits: EpubZipReaderLimits): 
   const entryCount = view.getUint16(eocd + 10, true);
   const centralSize = view.getUint32(eocd + 12, true);
   const centralOffset = view.getUint32(eocd + 16, true);
-  if (disk || centralDisk || diskEntries !== entryCount || entryCount === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
-    invalid('Multi-disk and ZIP64 EPUB archives are unsupported.');
-  }
+  const multiDiskOrZip64 = disk !== 0 || centralDisk !== 0 || diskEntries !== entryCount ||
+    entryCount === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff;
+  if (multiDiskOrZip64) invalid('Multi-disk and ZIP64 EPUB archives are unsupported.');
   if (!entryCount || entryCount > limits.maxEntries) invalid('EPUB archive exceeds the entry-count limit.');
   if (centralOffset + centralSize !== eocd) invalid('EPUB central directory does not end at its EOCD record.');
 
@@ -160,97 +272,173 @@ function parseCentralDirectory(bytes: Uint8Array, limits: EpubZipReaderLimits): 
   let offset = centralOffset;
   let expandedBytes = 0;
   for (let index = 0; index < entryCount; index += 1) {
-    if (offset + 46 > eocd || view.getUint32(offset, true) !== CENTRAL) invalid('EPUB central directory record is malformed.');
-    const flags = view.getUint16(offset + 8, true);
-    const method = view.getUint16(offset + 10, true);
-    const crc32 = view.getUint32(offset + 16, true);
-    const compressedBytes = view.getUint32(offset + 20, true);
-    const uncompressedBytes = view.getUint32(offset + 24, true);
-    const nameLength = view.getUint16(offset + 28, true);
-    const extraLength = view.getUint16(offset + 30, true);
-    const commentLength = view.getUint16(offset + 32, true);
-    const diskStart = view.getUint16(offset + 34, true);
-    const localOffset = view.getUint32(offset + 42, true);
-    const recordEnd = offset + 46 + nameLength + extraLength + commentLength;
-    if (!nameLength || recordEnd > eocd || diskStart || localOffset === 0xffffffff || compressedBytes === 0xffffffff || uncompressedBytes === 0xffffffff) {
-      invalid('EPUB central directory contains an unsupported or truncated record.');
+    const parsed = validateCentralRecordEntry(bytes, view, offset, eocd, limits, paths);
+    expandedBytes += parsed.record.uncompressedBytes;
+    if (!Number.isSafeInteger(expandedBytes) || expandedBytes > limits.maxExpandedBytes) {
+      invalid('EPUB archive exceeds the total expanded-size limit.');
     }
-    if (flags & 1 || flags & ~ALLOWED_FLAGS || (flags & 0x0008)) invalid('Encrypted, descriptor-based, or unsupported ZIP flags are not supported.');
-    if (method !== 0 && method !== 8) invalid('EPUB ZIP uses an unsupported compression method.');
-    checkExtras(bytes, offset + 46 + nameLength, extraLength, 'central');
-    const localName = bytes.slice(offset + 46, offset + 46 + nameLength);
-    const name = decodeName(localName, flags);
-    if (!isSafeName(name, limits.maxPathLength)) invalid(`EPUB ZIP contains an unsafe member path: ${name}.`);
-    if (paths.has(name)) invalid(`EPUB ZIP contains a duplicate member path: ${name}.`);
-    paths.add(name);
-    if (uncompressedBytes > limits.maxMemberBytes) invalid(`EPUB member exceeds the per-member size limit: ${name}.`);
-    if ((!compressedBytes && uncompressedBytes) || (compressedBytes && uncompressedBytes / compressedBytes > limits.maxCompressionRatio)) {
-      invalid(`EPUB member exceeds the configured compression ratio: ${name}.`);
-    }
-    expandedBytes += uncompressedBytes;
-    if (!Number.isSafeInteger(expandedBytes) || expandedBytes > limits.maxExpandedBytes) invalid('EPUB archive exceeds the total expanded-size limit.');
-    records.push({
-      path: name,
-      flags,
-      compressedBytes,
-      uncompressedBytes,
-      compression: method === 0 ? 'stored' : 'deflate',
-      encrypted: false,
-      crc32,
-      localOffset,
-      localName,
-      dataOffset: 0,
-      dataEnd: 0,
-    });
-    offset = recordEnd;
+    records.push(parsed.record);
+    offset = parsed.nextOffset;
   }
   if (offset !== centralOffset + centralSize) invalid('EPUB central directory size does not match its records.');
-
-  records.sort((left, right) => left.localOffset - right.localOffset);
-  let expectedLocalOffset = 0;
-  for (const record of records) {
-    const local = record.localOffset;
-    if (local !== expectedLocalOffset || local + 30 > centralOffset || view.getUint32(local, true) !== LOCAL) {
-      invalid('EPUB local header ordering or offset is invalid; records must be contiguous from byte zero.');
-    }
-    const flags = view.getUint16(local + 6, true);
-    const method = view.getUint16(local + 8, true);
-    const crc32 = view.getUint32(local + 14, true);
-    const compressedBytes = view.getUint32(local + 18, true);
-    const uncompressedBytes = view.getUint32(local + 22, true);
-    const nameLength = view.getUint16(local + 26, true);
-    const extraLength = view.getUint16(local + 28, true);
-    if (record.path === 'mimetype' && extraLength !== 0) invalid('EPUB mimetype local header must not contain an extra field.');
-    const nameStart = local + 30;
-    const extraStart = nameStart + nameLength;
-    const dataOffset = extraStart + extraLength;
-    const dataEnd = dataOffset + record.compressedBytes;
-    if (dataOffset > centralOffset || dataEnd > centralOffset) {
-      invalid(`EPUB local header metadata is malformed for ${record.path}.`);
-    }
-    if (flags !== record.flags || flags & 1 || flags & ~ALLOWED_FLAGS || (flags & 0x0008) || method !== (record.compression === 'stored' ? 0 : 8) ||
-      crc32 !== record.crc32 || compressedBytes !== record.compressedBytes || uncompressedBytes !== record.uncompressedBytes) {
-      invalid(`EPUB local and central header metadata disagree for ${record.path}.`);
-    }
-    const localName = bytes.subarray(nameStart, extraStart);
-    if (!equalBytes(localName, record.localName)) invalid(`EPUB local and central filenames disagree for ${record.path}.`);
-    checkExtras(bytes, extraStart, extraLength, 'local');
-    record.dataOffset = dataOffset;
-    record.dataEnd = dataEnd;
-    expectedLocalOffset = dataEnd;
-  }
-  if (expectedLocalOffset !== centralOffset) invalid('EPUB ZIP local records overlap or leave unaccounted bytes before the central directory.');
-  if (records[0]?.path !== 'mimetype' || records[0].localOffset !== 0) invalid('EPUB mimetype must be the first physical local-header member.');
-  if (records[0].compression !== 'stored' || records[0].encrypted) invalid('EPUB mimetype must be stored and unencrypted.');
-  return { records, archiveBytes: bytes.byteLength, expandedBytes, centralOffset };
+  verifyLocalHeaders(bytes, view, records, centralOffset);
+  return { records };
 }
-
-function abortError(): Error { return new Error('EPUB ZIP member read was aborted.'); }
 
 function createInflateWorker(options: EpubZipReaderOptions): EpubInflateWorkerLike {
   if (options.workerFactory) return options.workerFactory();
   if (typeof Worker === 'undefined') throw new Error('EPUB DEFLATE requires a dedicated Worker.');
   return new Worker(new URL('./epubInflate.worker.ts', import.meta.url), { type: 'module' });
+}
+
+async function readStoredEntry(
+  bytes: Uint8Array,
+  record: CentralRecord,
+  limits: EpubZipReaderLimits,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  if (record.compressedBytes !== record.uncompressedBytes) {
+    throw new Error(`EPUB stored member has inconsistent sizes: ${record.path}.`);
+  }
+  const result = new Uint8Array(record.uncompressedBytes);
+  let copied = 0;
+  let crc = 0xffffffff;
+  while (copied < record.uncompressedBytes) {
+    if (signal?.aborted) throw abortError();
+    const amount = Math.min(limits.maxOutputChunkBytes, record.uncompressedBytes - copied);
+    const chunk = bytes.subarray(record.dataOffset + copied, record.dataOffset + copied + amount);
+    result.set(chunk, copied);
+    crc = crcUpdate(crc, chunk);
+    copied += amount;
+    if (copied < record.uncompressedBytes) await new Promise<void>(resolve => setTimeout(resolve, 0));
+  }
+  if (signal?.aborted) throw abortError();
+  if (((crc ^ 0xffffffff) >>> 0) !== record.crc32) throw new Error(`EPUB ZIP member CRC check failed: ${record.path}.`);
+  return result;
+}
+
+function readDeflateEntryInWorker(
+  bytes: Uint8Array,
+  record: CentralRecord,
+  outputLimit: number,
+  limits: EpubZipReaderLimits,
+  options: EpubZipReaderOptions,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const result = new Uint8Array(outputLimit);
+  return new Promise<Uint8Array>((resolve, reject) => {
+    let settled = false;
+    let ready = false;
+    let lastChunkAcknowledged = false;
+    let finalSeen = false;
+    let sequence = 0;
+    let awaitingSequence: number | undefined;
+    let inputOffset = 0;
+    let outputOffset = 0;
+    let crc = 0xffffffff;
+    let worker: EpubInflateWorkerLike | undefined;
+
+    const cleanup = () => {
+      clearTimeout(initTimer);
+      clearTimeout(readTimer);
+      signal?.removeEventListener('abort', onAbort);
+      if (!worker) return;
+      const activeWorker = worker;
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.onmessageerror = null;
+      worker = undefined;
+      try { activeWorker.terminate(); } catch { /* settlement must not depend on host cleanup */ }
+    };
+    const settle = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const onAbort = () => settle(abortError());
+    const fail = (message: string) => settle(new Error(message));
+    const verifyAndSettle = () => {
+      if (!finalSeen || !lastChunkAcknowledged || settled) return;
+      if (outputOffset !== record.uncompressedBytes) { fail(`EPUB DEFLATE output size disagrees with central directory: ${record.path}.`); return; }
+      if (((crc ^ 0xffffffff) >>> 0) !== record.crc32) { fail(`EPUB ZIP member CRC check failed: ${record.path}.`); return; }
+      settle();
+    };
+    const sendNext = () => {
+      if (!worker || !ready || awaitingSequence !== undefined || settled) return;
+      if (inputOffset >= record.dataEnd - record.dataOffset) return;
+      const length = Math.min(DEFLATE_INPUT_CHUNK_BYTES, record.compressedBytes - inputOffset);
+      const chunk = bytes.slice(record.dataOffset + inputOffset, record.dataOffset + inputOffset + length);
+      const isFinal = inputOffset + length === record.compressedBytes;
+      const nextSequence = ++sequence;
+      awaitingSequence = nextSequence;
+      inputOffset += length;
+      try { worker.postMessage({ type: 'chunk', sequence: nextSequence, bytes: chunk.buffer, final: isFinal }, [chunk.buffer]); }
+      catch (error) { fail(error instanceof Error ? `EPUB DEFLATE Worker input dispatch failed: ${error.message}` : 'EPUB DEFLATE Worker input dispatch failed.'); }
+    };
+
+    const handleReady = () => {
+      if (ready) { fail('EPUB DEFLATE Worker sent duplicate readiness.'); return; }
+      ready = true;
+      clearTimeout(initTimer);
+      try {
+        worker?.postMessage({
+          type: 'start', maxOutputBytes: outputLimit, compressedBytes: record.compressedBytes,
+          maxCompressionRatio: limits.maxCompressionRatio, outputChunkBytes: limits.maxOutputChunkBytes,
+          maxOutputBurstBytes: MAX_DEFLATE_OUTPUT_BURST_BYTES,
+        });
+      } catch (error) {
+        fail(error instanceof Error ? `EPUB DEFLATE Worker initialization failed: ${error.message}` : 'EPUB DEFLATE Worker initialization failed.');
+        return;
+      }
+      sendNext();
+    };
+
+    const handleData = (rawBytes: unknown) => {
+      if (!ready || !(rawBytes instanceof ArrayBuffer)) { fail('EPUB DEFLATE Worker returned invalid output.'); return; }
+      const chunk = new Uint8Array(rawBytes);
+      const nextOffset = outputOffset + chunk.byteLength;
+      if (nextOffset > outputLimit || nextOffset / record.compressedBytes > limits.maxCompressionRatio) {
+        fail(`EPUB DEFLATE output exceeds its actual member or compression-ratio limit: ${record.path}.`);
+        return;
+      }
+      result.set(chunk, outputOffset);
+      crc = crcUpdate(crc, chunk);
+      outputOffset = nextOffset;
+    };
+
+    const initTimer = setTimeout(() => fail('EPUB DEFLATE Worker readiness timed out.'), limits.workerInitTimeoutMs);
+    const readTimer = setTimeout(() => fail('EPUB DEFLATE Worker read timed out.'), limits.workerReadTimeoutMs);
+    try { worker = createInflateWorker(options); }
+    catch (error) {
+      fail(error instanceof Error ? `EPUB DEFLATE Worker could not start: ${error.message}` : 'EPUB DEFLATE Worker could not start.');
+      return;
+    }
+
+    worker.onmessage = event => {
+      if (settled || !event.data || typeof event.data.type !== 'string') return;
+      const msg = event.data as { type: string; message?: string; bytes?: ArrayBuffer; sequence?: number; outputBytes?: number };
+      if (msg.type === 'ready') handleReady();
+      else if (msg.type === 'error') fail(`EPUB DEFLATE Worker failed: ${msg.message ?? 'unknown worker error'}`);
+      else if (msg.type === 'data') handleData(msg.bytes);
+      else if (msg.type === 'done') {
+        if (msg.outputBytes !== outputOffset || finalSeen) { fail('EPUB DEFLATE Worker returned an invalid final byte count.'); return; }
+        finalSeen = true;
+        verifyAndSettle();
+      } else if (msg.type === 'ack') {
+        if (msg.sequence !== awaitingSequence || awaitingSequence === undefined) { fail('EPUB DEFLATE Worker returned an unexpected input acknowledgement.'); return; }
+        awaitingSequence = undefined;
+        if (inputOffset === record.compressedBytes) lastChunkAcknowledged = true;
+        else sendNext();
+        verifyAndSettle();
+      } else fail(`EPUB DEFLATE Worker sent an unsupported message: ${msg.type}.`);
+    };
+    worker.onerror = event => { event.preventDefault(); fail(`EPUB DEFLATE Worker error: ${event.message || 'unknown worker error'}`); };
+    worker.onmessageerror = () => fail('EPUB DEFLATE Worker message could not be decoded.');
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 export function createEpubZipReader(input: Uint8Array, options: EpubZipReaderOptions = {}): EpubZipArchiveReader {
@@ -264,6 +452,7 @@ export function createEpubZipReader(input: Uint8Array, options: EpubZipReaderOpt
     path, compressedBytes, uncompressedBytes, compression, encrypted,
   }));
   let readQueue: Promise<void> = Promise.resolve();
+  let pendingReads = 0;
 
   const readEntryNow = async (path: string, maxBytes: number, requestSignal?: AbortSignal): Promise<Uint8Array> => {
     const signal = requestSignal ?? options.signal;
@@ -272,139 +461,12 @@ export function createEpubZipReader(input: Uint8Array, options: EpubZipReaderOpt
     const record = byPath.get(path);
     if (!record) throw new Error(`EPUB ZIP member does not exist: ${path}.`);
     if (record.uncompressedBytes > maxBytes) throw new Error(`EPUB ZIP member exceeds the requested read limit: ${path}.`);
-    if (record.compression === 'stored') {
-      if (record.compressedBytes !== record.uncompressedBytes) throw new Error(`EPUB stored member has inconsistent sizes: ${path}.`);
-      const result = new Uint8Array(record.uncompressedBytes);
-      let copied = 0;
-      let crc = 0xffffffff;
-      while (copied < record.uncompressedBytes) {
-        if (signal?.aborted) throw abortError();
-        const amount = Math.min(limits.maxOutputChunkBytes, record.uncompressedBytes - copied);
-        const chunk = bytes.subarray(record.dataOffset + copied, record.dataOffset + copied + amount);
-        result.set(chunk, copied);
-        crc = crcUpdate(crc, chunk);
-        copied += amount;
-        if (copied < record.uncompressedBytes) await new Promise<void>(resolve => setTimeout(resolve, 0));
-      }
-      if (signal?.aborted) throw abortError();
-      if (((crc ^ 0xffffffff) >>> 0) !== record.crc32) throw new Error(`EPUB ZIP member CRC check failed: ${path}.`);
-      return result;
-    }
+    if (record.compression === 'stored') return readStoredEntry(bytes, record, limits, signal);
     if (record.compression !== 'deflate') throw new Error(`EPUB member compression is unsupported: ${path}.`);
     if (record.compressedBytes === 0) throw new Error(`EPUB DEFLATE member has no compressed data: ${path}.`);
     const outputLimit = Math.min(maxBytes, limits.maxMemberBytes, record.uncompressedBytes);
-    const result = new Uint8Array(outputLimit);
-    return await new Promise<Uint8Array>((resolve, reject) => {
-      let settled = false;
-      let ready = false;
-      let lastChunkAcknowledged = false;
-      let finalSeen = false;
-      let sequence = 0;
-      let awaitingSequence: number | undefined;
-      let inputOffset = 0;
-      let outputOffset = 0;
-      let crc = 0xffffffff;
-      let worker: EpubInflateWorkerLike | undefined;
-      const cleanup = () => {
-        if (initTimer) clearTimeout(initTimer);
-        if (readTimer) clearTimeout(readTimer);
-        signal?.removeEventListener('abort', onAbort);
-        if (worker) {
-          const activeWorker = worker;
-          worker.onmessage = null;
-          worker.onerror = null;
-          worker.onmessageerror = null;
-          worker = undefined;
-          try { activeWorker.terminate(); } catch { /* settlement must not depend on host cleanup */ }
-        }
-      };
-      const settle = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (error) reject(error);
-        else resolve(result);
-      };
-      const onAbort = () => settle(abortError());
-      const fail = (message: string) => settle(new Error(message));
-      const verifyAndSettle = () => {
-        if (!finalSeen || !lastChunkAcknowledged || settled) return;
-        if (outputOffset !== record.uncompressedBytes) { fail(`EPUB DEFLATE output size disagrees with central directory: ${path}.`); return; }
-        if (((crc ^ 0xffffffff) >>> 0) !== record.crc32) { fail(`EPUB ZIP member CRC check failed: ${path}.`); return; }
-        settle();
-      };
-      const sendNext = () => {
-        if (!worker || !ready || awaitingSequence !== undefined || settled) return;
-        if (inputOffset >= record.dataEnd - record.dataOffset) return;
-        const length = Math.min(DEFLATE_INPUT_CHUNK_BYTES, record.compressedBytes - inputOffset);
-        const chunk = bytes.slice(record.dataOffset + inputOffset, record.dataOffset + inputOffset + length);
-        const isFinal = inputOffset + length === record.compressedBytes;
-        const nextSequence = ++sequence;
-        awaitingSequence = nextSequence;
-        inputOffset += length;
-        try { worker.postMessage({ type: 'chunk', sequence: nextSequence, bytes: chunk.buffer, final: isFinal }, [chunk.buffer]); }
-        catch (error) { fail(error instanceof Error ? `EPUB DEFLATE Worker input dispatch failed: ${error.message}` : 'EPUB DEFLATE Worker input dispatch failed.'); }
-      };
-      const initTimer = setTimeout(() => fail('EPUB DEFLATE Worker readiness timed out.'), limits.workerInitTimeoutMs);
-      const readTimer = setTimeout(() => fail('EPUB DEFLATE Worker read timed out.'), limits.workerReadTimeoutMs);
-      try {
-        worker = createInflateWorker(options);
-      } catch (error) {
-        fail(error instanceof Error ? `EPUB DEFLATE Worker could not start: ${error.message}` : 'EPUB DEFLATE Worker could not start.');
-        return;
-      }
-      worker.onmessage = event => {
-        if (settled || !event.data || typeof event.data.type !== 'string') return;
-        const message = event.data as { type: string; message?: string; bytes?: ArrayBuffer; sequence?: number; outputBytes?: number };
-        if (message.type === 'ready') {
-          if (ready) { fail('EPUB DEFLATE Worker sent duplicate readiness.'); return; }
-          ready = true;
-          if (initTimer) clearTimeout(initTimer);
-          try {
-            worker?.postMessage({
-              type: 'start', maxOutputBytes: outputLimit, compressedBytes: record.compressedBytes,
-              maxCompressionRatio: limits.maxCompressionRatio, outputChunkBytes: limits.maxOutputChunkBytes,
-              maxOutputBurstBytes: MAX_DEFLATE_OUTPUT_BURST_BYTES,
-            });
-          } catch (error) { fail(error instanceof Error ? `EPUB DEFLATE Worker initialization failed: ${error.message}` : 'EPUB DEFLATE Worker initialization failed.'); return; }
-          sendNext();
-          return;
-        }
-        if (message.type === 'error') { fail(`EPUB DEFLATE Worker failed: ${message.message ?? 'unknown worker error'}`); return; }
-        if (message.type === 'data') {
-          if (!ready || !(message.bytes instanceof ArrayBuffer)) { fail('EPUB DEFLATE Worker returned invalid output.'); return; }
-          const chunk = new Uint8Array(message.bytes);
-          if (outputOffset + chunk.byteLength > outputLimit || (outputOffset + chunk.byteLength) / record.compressedBytes > limits.maxCompressionRatio) {
-            fail(`EPUB DEFLATE output exceeds its actual member or compression-ratio limit: ${path}.`); return;
-          }
-          result.set(chunk, outputOffset);
-          crc = crcUpdate(crc, chunk);
-          outputOffset += chunk.byteLength;
-          return;
-        }
-        if (message.type === 'done') {
-          if (message.outputBytes !== outputOffset || finalSeen) { fail('EPUB DEFLATE Worker returned an invalid final byte count.'); return; }
-          finalSeen = true;
-          verifyAndSettle();
-          return;
-        }
-        if (message.type === 'ack') {
-          if (message.sequence !== awaitingSequence || awaitingSequence === undefined) { fail('EPUB DEFLATE Worker returned an unexpected input acknowledgement.'); return; }
-          awaitingSequence = undefined;
-          if (inputOffset === record.compressedBytes) lastChunkAcknowledged = true;
-          else sendNext();
-          verifyAndSettle();
-          return;
-        }
-        fail(`EPUB DEFLATE Worker sent an unsupported message: ${message.type}.`);
-      };
-      worker.onerror = event => { event.preventDefault(); fail(`EPUB DEFLATE Worker error: ${event.message || 'unknown worker error'}`); };
-      worker.onmessageerror = () => fail('EPUB DEFLATE Worker message could not be decoded.');
-      signal?.addEventListener('abort', onAbort, { once: true });
-      if (signal?.aborted) onAbort();
-    });
+    return readDeflateEntryInWorker(bytes, record, outputLimit, limits, options, signal);
   };
-  let pendingReads = 0;
 
   return {
     archiveBytes: bytes.byteLength,

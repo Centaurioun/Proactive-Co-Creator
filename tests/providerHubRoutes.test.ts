@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
+import { createSign, generateKeyPairSync } from 'node:crypto';
+import fs from 'node:fs/promises';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import express from 'express';
 import { createApiRouter } from '../server/routes.ts';
-import { createProviderHubRouter } from '../server/providerHubRoutes.ts';
+import { createProviderHubRouter, type ProviderHubRouterOptions } from '../server/providerHubRoutes.ts';
 import { ChatGptSessionStore } from '../server/auth/chatgpt/sessionStore.ts';
-import { getChatGptModels, getPreferences, setChatGptModels, setOpenAiApiKey, setPersonalGeminiKey, setPreferences } from '../server/providers/runtime.ts';
+import { createChatGptAdapter, getChatGptModels, getPreferences, setChatGptModels, setOpenAiApiKey, setPersonalGeminiKey, setPreferences } from '../server/providers/runtime.ts';
 import { describeChatGptModel } from '../server/providers/policy.ts';
 import { setSessionGeminiKey } from '../server/geminiClient.ts';
 
@@ -257,4 +261,162 @@ test('explicit ChatGPT selection without a verified catalog model fails before p
     assert.equal(response.status, 422);
     assert.match((await response.text()), /select a model|model list/i);
   });
+});
+
+test('W1-D01 & W1-D17: preferences accept polish (reject refine), validate standalone ChatGPT reasoning, and normalize stored shape', async () => {
+  const previousPreferences = getPreferences();
+  const previousModels = getChatGptModels();
+  try {
+    setChatGptModels([describeChatGptModel({ id: 'gpt-6-luna', displayName: 'GPT-6 Luna' }, 'chatgpt-plan')]);
+    await withServer(async (baseUrl) => {
+      const refineOverride = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: {
+          defaultConnectionId: 'gemini-managed',
+          operationOverrides: { refine: { connectionId: 'gemini-managed', modelId: 'gemini-4-hydrogen', reasoningLevel: 'default' } },
+        } }),
+      });
+      assert.equal(refineOverride.status, 400);
+
+      const reasoningWithoutModel = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: {
+          defaultConnectionId: 'gemini-managed',
+          preferredReasoningLevelsByConnection: { 'chatgpt-plan': 'high' },
+        } }),
+      });
+      assert.equal(reasoningWithoutModel.status, 400);
+
+      const withExtra = await fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+        method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
+        body: JSON.stringify({ preferences: {
+          defaultConnectionId: 'gemini-managed',
+          preferredTextModelsByConnection: { 'chatgpt-plan': 'gpt-6-luna' },
+          preferredReasoningLevelsByConnection: { 'chatgpt-plan': 'default' },
+          operationOverrides: { story: { connectionId: 'chatgpt-plan', modelId: 'gpt-6-luna', reasoningLevel: 'default' } },
+          unexpectedField: 'should-not-persist',
+        } }),
+      });
+      assert.equal(withExtra.status, 200, await withExtra.clone().text());
+      const saved = (await withExtra.json() as { preferences: Record<string, unknown> }).preferences;
+      assert.equal('unexpectedField' in saved, false);
+    });
+  } finally {
+    setChatGptModels(previousModels);
+    setPreferences(previousPreferences);
+  }
+});
+
+test('W1-D17: OAuth callback rejects Origin with userinfo', async () => {
+  await withServer(async (baseUrl) => {
+    const port = new URL(baseUrl).port;
+    const res = await fetch(`${baseUrl}/api/ai/provider-hub/auth/callback?state=missing`, {
+      headers: { origin: `http://evil@127.0.0.1:${port}` },
+    });
+    assert.equal(res.status, 403);
+  });
+});
+
+test('W1-D05 (R11): isolated host identity repairs malformed hostId, OAuth callback registers adapter factory, and duplicate callback cannot clobber winner', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pcc-provider-hub-test-'));
+  const identityFilePath = path.join(tmpDir, 'host-identity.json');
+  await fs.writeFile(identityFilePath, JSON.stringify({ hostId: '', issuedClientId: 123 }), 'utf8');
+  const originalHome = process.env.HOME;
+  const originalFetch = globalThis.fetch;
+  process.env.HOME = tmpDir;
+
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'test-key', use: 'sig', alg: 'RS256' };
+  const sessionStore = new ChatGptSessionStore();
+  let releaseTokenExchange!: () => void;
+  let markTokenExchangeStarted!: () => void;
+  const tokenExchangeStarted = new Promise<void>(resolve => { markTokenExchangeStarted = resolve; });
+  let expectedNonce = '';
+
+  const oauthFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/.well-known/openid-configuration')) {
+      return new Response(JSON.stringify({
+        issuer: 'https://auth.openai.com',
+        authorization_endpoint: 'https://auth.openai.com/oauth/authorize',
+        token_endpoint: 'https://auth.openai.com/oauth/token',
+        jwks_uri: 'https://auth.openai.com/.well-known/jwks.json',
+        response_types_supported: ['code'],
+        code_challenge_methods_supported: ['S256'],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (url.endsWith('/api/accounts/oauth/token')) {
+      markTokenExchangeStarted();
+      await new Promise<void>(resolve => { releaseTokenExchange = resolve; });
+      const body = new URLSearchParams(String(init?.body ?? ''));
+      const clientId = body.get('client_id') ?? 'oaiapp_test';
+      const nowSec = Math.floor(Date.now() / 1000);
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'test-key', typ: 'JWT' })).toString('base64url');
+      const claims = Buffer.from(JSON.stringify({
+        iss: 'https://auth.openai.com', sub: 'user-1', aud: clientId, exp: nowSec + 600, iat: nowSec, nonce: expectedNonce,
+      })).toString('base64url');
+      const signer = createSign('RSA-SHA256');
+      signer.update(`${header}.${claims}`);
+      signer.end();
+      const idToken = `${header}.${claims}.${signer.sign(privateKey).toString('base64url')}`;
+      return new Response(JSON.stringify({
+        access_token: 'synthetic-access',
+        refresh_token: 'synthetic-refresh',
+        id_token: idToken,
+        token_type: 'Bearer',
+        expires_in: 3600,
+        scope: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (url.endsWith('/.well-known/jwks.json')) {
+      return new Response(JSON.stringify({ keys: [jwk] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return originalFetch(input, init);
+  };
+
+  globalThis.fetch = oauthFetch;
+  const app = express();
+  app.use(express.json());
+  app.use('/api/ai/provider-hub', createProviderHubRouter({
+    sessionStore,
+    disconnectSessionStore: sessionStore,
+    identityFilePath,
+    oauthFetch,
+  } as ProviderHubRouterOptions));
+  const server = http.createServer(app);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    const authRes = await originalFetch(`${baseUrl}/api/ai/provider-hub/chatgpt/authorize`, {
+      method: 'POST', headers: sameOrigin(baseUrl),
+    });
+    assert.equal(authRes.status, 200);
+    const { authorizationUrl } = await authRes.json() as { authorizationUrl: string };
+    const authUrl = new URL(authorizationUrl);
+    const state = authUrl.searchParams.get('state')!;
+    expectedNonce = authUrl.searchParams.get('nonce')!;
+    assert.match(authUrl.searchParams.get('ext_agent_host_id') ?? '', /^urn:uuid:/);
+
+    const savedIdentity = JSON.parse(await fs.readFile(identityFilePath, 'utf8')) as { hostId: string; issuedClientId?: unknown };
+    assert.match(savedIdentity.hostId, /^urn:uuid:/);
+    assert.equal(savedIdentity.issuedClientId, undefined);
+
+    const firstCallback = originalFetch(`${baseUrl}/api/ai/provider-hub/auth/callback?code=code-1&state=${encodeURIComponent(state)}&client_id=oaiapp_test`);
+    await tokenExchangeStarted;
+    const duplicateCallback = await originalFetch(`${baseUrl}/api/ai/provider-hub/auth/callback?code=code-2&state=${encodeURIComponent(state)}&client_id=oaiapp_test`);
+    assert.equal(duplicateCallback.status, 400);
+    releaseTokenExchange();
+    const firstResult = await firstCallback;
+    assert.equal(firstResult.status, 200);
+    assert.equal(sessionStore.snapshot().connected, true);
+    assert.doesNotThrow(() => createChatGptAdapter(sessionStore.getGeneration()));
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.HOME = originalHome;
+    await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });

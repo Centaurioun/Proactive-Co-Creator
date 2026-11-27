@@ -1,4 +1,4 @@
-import type { AiConnectionDescriptor, AiConnectionId, AiModelDescriptor, AiProviderAdapter, AiProviderSelection } from './contracts.ts';
+import type { AiConnectionDescriptor, AiConnectionId, AiModelDescriptor, AiProviderAdapter, AiProviderSelection, ProviderPreferences } from './contracts.ts';
 import { AI_OPERATION_POLICIES, type AiOperation } from '../aiBudget.ts';
 import { createGeminiAdapter } from './geminiAdapter.ts';
 import { ChatGptResponsesAdapter } from './chatgptResponses.ts';
@@ -8,15 +8,7 @@ import { AppApiError } from '../errors.ts';
 import { randomUUID } from 'node:crypto';
 import { CAPABILITY_POLICY_VERSION } from './policy.ts';
 
-export interface ProviderPreferences {
-  defaultConnectionId: AiConnectionId;
-  defaultTextModelId?: string;
-  defaultReasoningLevel?: AiProviderSelection['reasoningLevel'];
-  /** Inert per-connection preferences; never used as execution authorization. */
-  preferredTextModelsByConnection?: Partial<Record<AiConnectionId, string>>;
-  preferredReasoningLevelsByConnection?: Partial<Record<AiConnectionId, AiProviderSelection['reasoningLevel']>>;
-  operationOverrides?: Record<string, AiProviderSelection>;
-}
+export type { ProviderPreferences };
 
 const DEFAULT_PREFERENCES: ProviderPreferences = { defaultConnectionId: 'gemini-managed' };
 let preferences: ProviderPreferences = { ...DEFAULT_PREFERENCES };

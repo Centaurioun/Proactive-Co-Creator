@@ -1,11 +1,18 @@
-import * as pdfjs from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-
 export const MAX_PDF_PAGES = 200;
 export const MAX_PDF_TEXT_BYTES = 8 * 1024 * 1024;
 const MAX_PDF_INPUT_BYTES = 12 * 1024 * 1024;
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+let workerConfigured = false;
+
+async function loadPdfJs() {
+  const pdfjs = await import('pdfjs-dist');
+  if (!workerConfigured && !pdfjs.GlobalWorkerOptions.workerSrc) {
+    const mod = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+    pdfjs.GlobalWorkerOptions.workerSrc = mod.default;
+  }
+  workerConfigured = true;
+  return pdfjs;
+}
 
 export interface PdfPageTextBlock {
   id: string;
@@ -20,6 +27,18 @@ export interface PdfTextExtraction {
   text: string;
   blocks: PdfPageTextBlock[];
   warnings: string[];
+}
+
+export interface PdfPageLike {
+  getTextContent(params?: { includeMarkedContent?: boolean }): Promise<{
+    items: Array<{ str?: unknown; hasEOL?: boolean } | object>;
+  }>;
+  cleanup(): void;
+}
+
+export interface PdfDocumentLike {
+  numPages: number;
+  getPage(pageNumber: number): Promise<PdfPageLike>;
 }
 
 function abortError(): Error {
@@ -52,12 +71,68 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
+async function extractPageText(page: PdfPageLike, currentBytes: number, signal?: AbortSignal): Promise<{ text: string; nextBytes: number }> {
+  try {
+    const content = await page.getTextContent({ includeMarkedContent: false });
+    if (signal?.aborted) throw abortError();
+    let pageText = '';
+    let utf8Bytes = currentBytes;
+    for (const item of content.items) {
+      if (!('str' in item) || typeof item.str !== 'string') continue;
+      utf8Bytes += utf8ByteLength(item.str);
+      if (item.hasEOL) utf8Bytes += 1;
+      if (utf8Bytes > MAX_PDF_TEXT_BYTES) throw new Error('Extracted PDF text exceeds the 8 MiB limit.');
+      pageText += item.str;
+      if (item.hasEOL) pageText += '\n';
+    }
+    return { text: pageText.trim(), nextBytes: utf8Bytes };
+  } finally {
+    page.cleanup();
+  }
+}
+
+export async function extractPdfTextFromDocument(document: PdfDocumentLike, signal?: AbortSignal): Promise<PdfTextExtraction> {
+  if (signal?.aborted) throw abortError();
+  if (!Number.isSafeInteger(document.numPages) || document.numPages < 1) throw new Error('PDF has no readable pages.');
+  if (document.numPages > MAX_PDF_PAGES) throw new Error(`The PDF has more than ${MAX_PDF_PAGES} pages; split it into smaller files and retry.`);
+
+  const blocks: PdfPageTextBlock[] = [];
+  let text = '';
+  let utf8Bytes = 0;
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+    if (signal?.aborted) throw abortError();
+    const page = await document.getPage(pageNumber);
+    const extracted = await extractPageText(page, utf8Bytes, signal);
+    utf8Bytes = extracted.nextBytes;
+    if (!extracted.text) continue;
+    if (text) {
+      text += '\n\n';
+      utf8Bytes += 2;
+      if (utf8Bytes > MAX_PDF_TEXT_BYTES) throw new Error('Extracted PDF text exceeds the 8 MiB limit.');
+    }
+    const start = text.length;
+    text += extracted.text;
+    const end = text.length;
+    blocks.push({ id: `pdf-page-${pageNumber}`, start, end, kind: 'paragraph', label: `Page ${pageNumber}`, pageNumber });
+  }
+  if (!text.trim()) throw new Error('No selectable text was found in this PDF. Scanned/image-only PDFs are unsupported; OCR is not performed.');
+  return {
+    text,
+    blocks,
+    warnings: [
+      'PDF text order is approximate for columns, tables, unusual layouts, and ligatures. Page labels preserve the source page for each extracted text block.',
+      'Scanned/image-only pages are not recognized; OCR and PDF rendering are not performed.',
+    ],
+  };
+}
+
 export async function extractPdfText(input: Uint8Array, signal?: AbortSignal): Promise<PdfTextExtraction> {
   if (signal?.aborted) throw abortError();
   if (!input.byteLength) throw new Error('The PDF file is empty.');
   if (input.byteLength > MAX_PDF_INPUT_BYTES) throw new Error('The PDF exceeds the 12 MiB source limit.');
   const header = new TextDecoder('ascii').decode(input.subarray(0, 5));
   if (header !== '%PDF-') throw new Error('The selected .pdf file does not have a PDF signature.');
+  const pdfjs = await loadPdfJs();
 
   // PDF.js may transfer its input buffer to the worker. Keep the caller's bytes intact
   // for the original-source digest and retention path.
@@ -82,55 +157,16 @@ export async function extractPdfText(input: Uint8Array, signal?: AbortSignal): P
 
   try {
     const document = await loadingTask.promise;
-    if (!Number.isSafeInteger(document.numPages) || document.numPages < 1) throw new Error('PDF has no readable pages.');
-    if (document.numPages > MAX_PDF_PAGES) throw new Error(`The PDF has more than ${MAX_PDF_PAGES} pages; split it into smaller files and retry.`);
-
-    const blocks: PdfPageTextBlock[] = [];
-    let text = '';
-    let utf8Bytes = 0;
-    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      if (signal?.aborted) throw abortError();
-      const page = await document.getPage(pageNumber);
-      const content = await page.getTextContent({ includeMarkedContent: false });
-      if (signal?.aborted) throw abortError();
-      let pageText = '';
-      for (const item of content.items) {
-        if (!('str' in item) || typeof item.str !== 'string') continue;
-        utf8Bytes += utf8ByteLength(item.str);
-        if (item.hasEOL) utf8Bytes += 1;
-        if (utf8Bytes > MAX_PDF_TEXT_BYTES) throw new Error('Extracted PDF text exceeds the 8 MiB limit.');
-        pageText += item.str;
-        if (item.hasEOL) pageText += '\n';
-      }
-      pageText = pageText.trim();
-      if (!pageText) {
-        page.cleanup();
-        continue;
-      }
-      if (text) {
-        text += '\n\n';
-        utf8Bytes += 2;
-      }
-      const start = text.length;
-      text += pageText;
-      const end = text.length;
-      if (utf8Bytes > MAX_PDF_TEXT_BYTES) throw new Error('Extracted PDF text exceeds the 8 MiB limit.');
-      blocks.push({ id: `pdf-page-${pageNumber}`, start, end, kind: 'paragraph', label: `Page ${pageNumber}`, pageNumber });
-      page.cleanup();
-    }
-    if (!text.trim()) throw new Error('No selectable text was found in this PDF. Scanned/image-only PDFs are unsupported; OCR is not performed.');
-    return {
-      text,
-      blocks,
-      warnings: [
-        'PDF text order is approximate for columns, tables, unusual layouts, and ligatures. Page labels preserve the source page for each extracted text block.',
-        'Scanned/image-only pages are not recognized; OCR and PDF rendering are not performed.',
-      ],
-    };
+    return await extractPdfTextFromDocument(document, signal);
   } catch (error) {
     if (signal?.aborted || (error instanceof Error && error.name === 'AbortException')) throw abortError();
     if (passwordRequired) throw new Error('Password-protected or encrypted PDFs are unsupported. Remove protection and try again.', { cause: error });
-    if (error instanceof Error && (error.name === 'AbortError' || /No selectable text|more than 200 pages|8 MiB limit/.test(error.message))) throw error;
+    if (error instanceof Error && (
+      error.name === 'AbortError' ||
+      /No selectable text|no readable pages|more than 200 pages|8 MiB limit/i.test(error.message)
+    )) {
+      throw error;
+    }
     throw pdfError(error);
   } finally {
     signal?.removeEventListener('abort', onAbort);

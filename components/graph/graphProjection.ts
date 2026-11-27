@@ -102,7 +102,8 @@ export function filterVisibleGraphEntities(
         .join(' ');
       const relMatch = (allRelationships ?? []).some(
         (r) =>
-          (r.source.toLowerCase() === e.name.toLowerCase() ||
+          ((Boolean(e.id) && (r.sourceId === e.id || r.targetId === e.id)) ||
+            r.source.toLowerCase() === e.name.toLowerCase() ||
             r.target.toLowerCase() === e.name.toLowerCase()) &&
           r.label.toLowerCase().includes(q)
       );

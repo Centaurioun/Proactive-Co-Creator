@@ -27,7 +27,6 @@ export interface ConsistencyFixPreview {
 
 export interface ChecksPanelProps {
   project: CreativeProject;
-  snapshotJson: string;
   readinessItems: ReadinessItem[];
   actualConsistencyIssues: ConsistencyIssue[];
   consistencyFixPreview: ConsistencyFixPreview | null;
@@ -39,7 +38,6 @@ export interface ChecksPanelProps {
 
 const ChecksPanel: React.FC<ChecksPanelProps> = ({
   project,
-  snapshotJson,
   readinessItems,
   actualConsistencyIssues,
   consistencyFixPreview,
@@ -171,12 +169,13 @@ const ChecksPanel: React.FC<ChecksPanelProps> = ({
                         (attribute) =>
                           attribute.name === 'existence' || attribute.name === 'existence_in_image'
                       );
+                      const currentSnapshotJson = JSON.stringify(snapshot);
                       onSetConsistencyFixPreview({
                         issueId: issue.id,
                         projectId: project.id,
                         baseRevision: project.revision ?? 1,
-                        baseSnapshotDigest: computePromptDigest(snapshotJson, snapshot.mode),
-                        baseSnapshotJson: snapshotJson,
+                        baseSnapshotDigest: computePromptDigest(currentSnapshotJson, snapshot.mode),
+                        baseSnapshotJson: currentSnapshotJson,
                         entityId: resolved.entity.id!,
                         before: existence
                           ? `Present (${getEffectiveAttributeValue(existence)})`

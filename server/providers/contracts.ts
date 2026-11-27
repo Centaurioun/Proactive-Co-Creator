@@ -102,3 +102,74 @@ export interface AiProviderAdapter {
   generateText(request: AiProviderRequest): Promise<AiProviderTextResult>;
   generateImage?(request: AiProviderRequest): Promise<unknown>;
 }
+
+export interface ProviderPreferences {
+  defaultConnectionId: AiConnectionId;
+  defaultTextModelId?: string;
+  defaultReasoningLevel?: AiReasoningLevel;
+  /** Inert per-connection preferences; never used as execution authorization. */
+  preferredTextModelsByConnection?: Partial<Record<AiConnectionId, string>>;
+  preferredReasoningLevelsByConnection?: Partial<Record<AiConnectionId, AiReasoningLevel>>;
+  operationOverrides?: Record<string, AiProviderSelection>;
+}
+
+export interface ProviderHubUsageSummary {
+  observedByConnection: Record<string, number>;
+  quota: { state: 'known' | 'unknown'; remaining?: number; resetsAt?: string };
+}
+
+export interface ProviderHubStatus {
+  localPersonalConnectionsAvailable: boolean;
+  capabilityPolicyVersion: string;
+  credentialAuthorityIds: Record<AiConnectionId, string>;
+  connections: AiConnectionDescriptor[];
+  preferences: ProviderPreferences;
+  usage: ProviderHubUsageSummary;
+}
+
+export interface ProviderModelsResponse {
+  models: AiModelDescriptor[];
+}
+
+export interface ProviderPreferencesResponse {
+  preferences: ProviderPreferences;
+}
+
+export interface ChatGptAuthorizeResponse {
+  authorizationUrl: string;
+}
+
+export interface ChatGptDisconnectResponse {
+  clearedLocally: boolean;
+  remoteRevocation: 'acknowledged' | 'not-confirmed' | 'endpoint-unavailable' | 'not-connected';
+}
+
+export interface SessionKeySavedResponse {
+  acceptedForThisSession: boolean;
+  persistentStorage: boolean;
+}
+
+export interface SessionKeyClearedResponse {
+  cleared: boolean;
+}
+
+export interface AiCapabilitiesOperationPolicy {
+  model: string;
+  maxInputChars: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  timeoutMs: number;
+  maxConcurrent: number;
+  maxCallsPerMinute: number;
+  description: string;
+}
+
+export interface AiCapabilitiesResponse {
+  configured: boolean;
+  textModel: string;
+  imageModel: string;
+  providerLimitsVerifiedLive: boolean;
+  note: string;
+  chatGptStoryLocalActivation: boolean;
+  operations: Record<string, AiCapabilitiesOperationPolicy>;
+}

@@ -43,277 +43,9 @@ import {
   verifyProjectCacheParity,
 } from '../lib/storageEngine.ts';
 import type { CreativeProject, GenerationArtifact } from '../shared/types.ts';
+import { FakeIndexedDB, MockLocalStorage } from './helpers/mockBrowserStorage.ts';
 
 const SCHEMA_VERSION = 3;
-
-class MockLocalStorage {
-  private store = new Map<string, string>();
-  public quotaLimitBytes: number | null = null;
-  public failNextSetItemError: string | null = null;
-  public setItemCalls = 0;
-  public rejectedKey: string | null = null;
-
-  getItem(key: string): string | null {
-    return this.store.get(key) ?? null;
-  }
-
-  setItem(key: string, value: string): void {
-    this.setItemCalls += 1;
-    if (key === this.rejectedKey) throw new Error("Mock storage key write failed");
-    if (this.failNextSetItemError) {
-      const msg = this.failNextSetItemError;
-      this.failNextSetItemError = null;
-      throw new Error(msg);
-    }
-    if (this.quotaLimitBytes !== null) {
-      let currentTotal = 0;
-      for (const [k, v] of this.store.entries()) {
-        if (k !== key) currentTotal += v.length;
-      }
-      if (value.length > this.quotaLimitBytes || currentTotal + value.length > this.quotaLimitBytes) {
-        const err = new Error('QuotaExceededError: Mock localStorage quota exceeded');
-        err.name = 'QuotaExceededError';
-        throw err;
-      }
-    }
-    this.store.set(key, value);
-  }
-
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-
-  clear(): void {
-    this.store.clear();
-    this.quotaLimitBytes = null;
-    this.failNextSetItemError = null;
-    this.setItemCalls = 0;
-    this.rejectedKey = null;
-  }
-}
-
-interface FakeIDBRequest<T = unknown> {
-  result: T;
-  error: Error | null;
-  onsuccess: (() => void) | null;
-  onerror: (() => void) | null;
-  onupgradeneeded?: (() => void) | null;
-}
-
-class FakeIndexedDB {
-  public records = new Map<string, unknown>();
-  public failNextDelete: string | null = null;
-  public failNextPut: string | null = null;
-  public failNextGetAll: string | null = null;
-  public abortNextPutWithQuota = false;
-  public afterReadAll?: () => void;
-  public afterPut?: () => void;
-  public putCalls = 0;
-  public openDelayMs = 0;
-  public getDelayMs = 0;
-
-  reset(): void {
-    this.records.clear();
-    this.failNextDelete = null;
-    this.failNextPut = null;
-    this.failNextGetAll = null;
-    this.abortNextPutWithQuota = false;
-    this.afterReadAll = undefined;
-    this.afterPut = undefined;
-    this.putCalls = 0;
-    this.openDelayMs = 0;
-    this.getDelayMs = 0;
-  }
-
-  open(_name: string, _version?: number): FakeIDBRequest {
-    const objectStoreNames = {
-      contains: () => true,
-    };
-
-    const createTx = (_storeName: string, _mode: string) => {
-      const tx: {
-        error: Error | null;
-        oncomplete: (() => void) | null;
-        onerror: (() => void) | null;
-        onabort: (() => void) | null;
-        aborted: boolean;
-        pendingOps: number;
-        hasScheduledCompletion: boolean;
-        abort: () => void;
-        objectStore: () => {
-          get: (key: string) => FakeIDBRequest;
-          getAll: () => FakeIDBRequest;
-          put: (val: { id: string }) => FakeIDBRequest;
-          delete: (key: string) => FakeIDBRequest;
-        };
-      } = {
-        error: null,
-        oncomplete: null,
-        onerror: null,
-        onabort: null,
-        aborted: false,
-        pendingOps: 0,
-        hasScheduledCompletion: false,
-        abort() {
-          if (tx.aborted) return;
-          tx.aborted = true;
-          tx.error = tx.error ?? new Error('Transaction aborted');
-          setTimeout(() => {
-            tx.onabort?.();
-          }, 0);
-        },
-        objectStore: () => ({
-          get: (key: string) => {
-            tx.pendingOps += 1;
-            const r: FakeIDBRequest = {
-              result: undefined,
-              error: null,
-              onsuccess: null,
-              onerror: null,
-            };
-            setTimeout(() => {
-              if (tx.aborted) return;
-              const found = this.records.get(key);
-              r.result = found ? structuredClone(found) : undefined;
-              r.onsuccess?.();
-              tx.pendingOps -= 1;
-              scheduleCompleteIfIdle();
-            }, this.getDelayMs);
-            return r;
-          },
-          getAll: () => {
-            tx.pendingOps += 1;
-            const r: FakeIDBRequest = {
-              result: [],
-              error: null,
-              onsuccess: null,
-              onerror: null,
-            };
-            setTimeout(() => {
-              tx.pendingOps -= 1;
-              if (tx.aborted) return;
-              if (this.failNextGetAll) {
-                const msg = this.failNextGetAll;
-                this.failNextGetAll = null;
-                const err = new Error(msg);
-                r.error = err;
-                tx.error = err;
-                r.onerror?.();
-                tx.onerror?.();
-                return;
-              }
-              r.result = Array.from(this.records.values()).map((v) => structuredClone(v));
-              r.onsuccess?.();
-              this.afterReadAll?.();
-              scheduleCompleteIfIdle();
-            }, 0);
-            return r;
-          },
-          put: (val: { id: string }) => {
-            this.putCalls += 1;
-            tx.pendingOps += 1;
-            const r: FakeIDBRequest = {
-              result: val.id,
-              error: null,
-              onsuccess: null,
-              onerror: null,
-            };
-            setTimeout(() => {
-              tx.pendingOps -= 1;
-              if (tx.aborted) return;
-              if (this.abortNextPutWithQuota) {
-                this.abortNextPutWithQuota = false;
-                const qErr = new Error('QuotaExceededError: IndexedDB disk quota reached');
-                qErr.name = 'QuotaExceededError';
-                tx.error = qErr;
-                tx.aborted = true;
-                tx.onabort?.();
-                return;
-              }
-              if (this.failNextPut) {
-                const msg = this.failNextPut;
-                this.failNextPut = null;
-                const err = new Error(msg);
-                r.error = err;
-                tx.error = err;
-                r.onerror?.();
-                tx.onerror?.();
-                return;
-              }
-              this.records.set(val.id, structuredClone(val));
-              this.afterPut?.();
-              r.onsuccess?.();
-              scheduleCompleteIfIdle();
-            }, 0);
-            return r;
-          },
-          delete: (key: string) => {
-            tx.pendingOps += 1;
-            const r: FakeIDBRequest = {
-              result: undefined,
-              error: null,
-              onsuccess: null,
-              onerror: null,
-            };
-            setTimeout(() => {
-              tx.pendingOps -= 1;
-              if (tx.aborted) return;
-              if (this.failNextDelete) {
-                const msg = this.failNextDelete;
-                this.failNextDelete = null;
-                const err = new Error(msg);
-                r.error = err;
-                tx.error = err;
-                r.onerror?.();
-                tx.onerror?.();
-                return;
-              }
-              this.records.delete(key);
-              r.onsuccess?.();
-              scheduleCompleteIfIdle();
-            }, 0);
-            return r;
-          },
-        }),
-      };
-
-      const scheduleCompleteIfIdle = () => {
-        if (tx.aborted || tx.pendingOps > 0 || tx.hasScheduledCompletion) return;
-        tx.hasScheduledCompletion = true;
-        setTimeout(() => {
-          tx.hasScheduledCompletion = false;
-          if (!tx.aborted && tx.pendingOps === 0) {
-            tx.oncomplete?.();
-          }
-        }, 0);
-      };
-
-      return tx;
-    };
-
-    const db = {
-      objectStoreNames,
-      createObjectStore: () => ({}),
-      transaction: createTx,
-      close: () => {},
-    };
-
-    const req: FakeIDBRequest = {
-      result: db,
-      error: null,
-      onsuccess: null,
-      onerror: null,
-      onupgradeneeded: null,
-    };
-
-    setTimeout(() => {
-      req.onupgradeneeded?.();
-      req.onsuccess?.();
-    }, this.openDelayMs);
-
-    return req;
-  }
-}
 
 const mockStorage = new MockLocalStorage();
 const fakeIdb = new FakeIndexedDB();
@@ -1816,6 +1548,59 @@ describe('T4: Hydration Write Gate & Deletion Content Parity (ST-01 through ST-1
     };
     assert.equal(verifyProjectCacheParity(localProj, idbDiffRevSnap), false);
     assert.equal(verifyProjectCacheParity(localProj, structuredClone(localProj)), true);
+  });
+
+  it('F-W7-CH03: colon-containing intentId does not collide with shorter prefix intentIds', async () => {
+    const base = createSampleProject();
+    await persistProjectDurably(base, { forceOverwrite: true });
+
+    const saveColonIntent = {
+      ...base,
+      revision: 2,
+      persistedRevision: 1,
+      updatedAt: base.updatedAt + 10,
+      snapshot: updateStoryBibleField(base.snapshot, 'genre', 'Colon Intent Genre'),
+    };
+    const res1 = await persistProjectDurably(saveColonIntent, {
+      expectedPersistedRevision: 1,
+      intentId: 'batch:save',
+    });
+    assert.equal(res1.saved, true);
+
+    // Shorter prefix intentId "batch" with different content must NOT collide with "batch:save"
+    const savePrefixIntent = {
+      ...saveColonIntent,
+      revision: 3,
+      persistedRevision: 2,
+      updatedAt: base.updatedAt + 20,
+      snapshot: updateStoryBibleField(saveColonIntent.snapshot, 'tone', 'Prefix Intent Tone'),
+    };
+    const res2 = await persistProjectDurably(savePrefixIntent, {
+      expectedPersistedRevision: 2,
+      intentId: 'batch',
+    });
+    assert.equal(res2.saved, true);
+    assert.equal(Boolean(res2.conflictDetected), false);
+
+    // Exact replay of "batch:save" still hits idempotency cleanly
+    const replay1 = await persistProjectDurably(saveColonIntent, {
+      expectedPersistedRevision: 1,
+      intentId: 'batch:save',
+    });
+    assert.equal(replay1.saved, true);
+    assert.equal(replay1.idempotentHit, true);
+
+    // Reusing "batch:save" with altered content still fails closed
+    const alteredColon = {
+      ...saveColonIntent,
+      snapshot: updateStoryBibleField(saveColonIntent.snapshot, 'genre', 'Tampered Genre'),
+    };
+    const conflict1 = await persistProjectDurably(alteredColon, {
+      expectedPersistedRevision: 1,
+      intentId: 'batch:save',
+    });
+    assert.equal(conflict1.saved, false);
+    assert.equal(conflict1.conflictDetected, true);
   });
 });
 

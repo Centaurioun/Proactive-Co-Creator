@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${E2E_BASE_URL:-http://localhost:3000}"
+BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:3000}"
+SESSION_NAME="pcc-smoke-$$"
 
 if ! command -v playwright-cli >/dev/null 2>&1; then
   echo "playwright-cli not found on PATH" >&2
   exit 1
 fi
 
-trap 'playwright-cli close >/dev/null 2>&1 || true' EXIT
+trap 'playwright-cli -s="$SESSION_NAME" close >/dev/null 2>&1 || true' EXIT
 mkdir -p .playwright-cli
 
 # Preflight server health before launching Chromium
@@ -19,7 +20,7 @@ fi
 echo "E2E_PREFLIGHT_OK: $HEALTH_PAYLOAD"
 
 # Startup browser launch smoke check against /api/health with actionable diagnostic
-if ! playwright-cli open --browser=chromium "$BASE_URL/api/health"; then
+if ! playwright-cli -s="$SESSION_NAME" open --browser=chromium "$BASE_URL/api/health"; then
   echo "E2E_BROWSER_LAUNCH_FAIL: Could not launch Chromium via playwright-cli." >&2
   echo "Ensure full Chromium (chrome-for-testing) is installed, not --only-shell:" >&2
   echo "  playwright-cli install-browser chromium --with-deps" >&2
@@ -589,7 +590,7 @@ EOF
 PLAYWRIGHT_FN="${PLAYWRIGHT_FN//__BASE_URL__/$BASE_URL}"
 PLAYWRIGHT_FN="${PLAYWRIGHT_FN//__ARTIFACT_DIAGNOSTIC__/${E2E_ARTIFACT_DIAGNOSTIC:-0}}"
 
-RUN_OUT="$(playwright-cli run-code "$PLAYWRIGHT_FN" 2>&1)" || {
+RUN_OUT="$(playwright-cli -s="$SESSION_NAME" run-code "$PLAYWRIGHT_FN" 2>&1)" || {
   echo "$RUN_OUT" >&2
   exit 1
 }

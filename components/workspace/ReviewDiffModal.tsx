@@ -45,6 +45,11 @@ const ReviewDiffModal: React.FC<ReviewDiffModalProps> = ({
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -55,7 +60,7 @@ const ReviewDiffModal: React.FC<ReviewDiffModalProps> = ({
     const handleModalKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key === 'Tab' && dialogRef.current) {
@@ -84,7 +89,7 @@ const ReviewDiffModal: React.FC<ReviewDiffModalProps> = ({
 
     window.addEventListener('keydown', handleModalKeyDown);
     return () => window.removeEventListener('keydown', handleModalKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

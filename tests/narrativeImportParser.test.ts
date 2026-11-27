@@ -3,12 +3,41 @@ import test from 'node:test';
 import { strToU8, zipSync } from 'fflate';
 import { MAX_SOURCE_BYTES, parseNarrativeSource, countNarrativeWords } from '../lib/narrative/import/sourceParser.ts';
 
+function buildDuplicateEntryDocx(xml: string): Uint8Array {
+  // Build a valid 2-entry ZIP and rename the second entry (same 17-byte length) to duplicate word/document.xml
+  const bytes = zipSync({ 'word/document.xml': strToU8(xml), 'word/documen2.xml': strToU8(xml) });
+  const target = strToU8('word/documen2.xml');
+  const replacement = strToU8('word/document.xml');
+  for (let i = 0; i <= bytes.length - target.length; i += 1) {
+    if (target.every((b, idx) => bytes[i + idx] === b)) {
+      bytes.set(replacement, i);
+    }
+  }
+  return bytes;
+}
+
+function setZipDataDescriptorFlags(bytes: Uint8Array): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+  for (let i = 0; i <= copy.length - 30; i += 1) {
+    if (view.getUint32(i, true) === 0x04034b50) {
+      view.setUint16(i + 6, view.getUint16(i + 6, true) | 0x0008, true);
+    }
+    if (i <= copy.length - 46 && view.getUint32(i, true) === 0x02014b50) {
+      view.setUint16(i + 8, view.getUint16(i + 8, true) | 0x0008, true);
+    }
+  }
+  return copy;
+}
+
 test('pasted, TXT, and Markdown sources preserve Unicode and only report real structure', async () => {
   const text = 'Başlık\r\n\r\nİpek 🦉\né';
   const pasted = await parseNarrativeSource(text);
   assert.equal(pasted.text, text);
   assert.equal(pasted.retention, 'extracted-only');
-  assert.equal(pasted.blocks.length, 2);
+  // W3-NEW-01: 'Başlık\r\n\r\nİpek 🦉\né' has 3 non-empty lines; previously raw.slice(0, -0) silently dropped final line 'é'.
+  assert.equal(pasted.blocks.length, 3);
+  assert.equal(pasted.text.slice(pasted.blocks[2].start, pasted.blocks[2].end), 'é');
   const md = await parseNarrativeSource(new TextEncoder().encode('# Gerçek Başlık\n\nİçerik'), 'öykü.md');
   assert.equal(md.blocks[0].kind, 'heading');
   assert.equal(md.blocks[0].label, 'Gerçek Başlık');
@@ -110,4 +139,57 @@ test('segmentation never begins a chunk on a low surrogate and validates integer
   }
   assert.throws(() => segmentNarrativeSource('a'.repeat(200), [], 100, 0.5, 2), /limits/i);
   assert.throws(() => segmentNarrativeSource('a'.repeat(200), [], 100, 1, 1.5), /limits/i);
+});
+
+test('W3-NEW-01: blockRecords preserves final line when input lacks a trailing newline', async () => {
+  const single = await parseNarrativeSource('Ada opens the door.');
+  assert.equal(single.blocks.length, 1);
+  assert.equal(single.text.slice(single.blocks[0].start, single.blocks[0].end), 'Ada opens the door.');
+
+  const twoLines = await parseNarrativeSource('# Title\nBody');
+  assert.equal(twoLines.blocks.length, 2);
+  assert.equal(twoLines.blocks[0].kind, 'heading');
+  assert.equal(twoLines.text.slice(twoLines.blocks[1].start, twoLines.blocks[1].end), 'Body');
+});
+
+test('W3-NEW-05: parseNarrativeSource throws AbortError on mid-read EPUB cancellation', async () => {
+  const epub = zipSync({
+    mimetype: [strToU8('application/epub+zip'), { level: 0 }],
+    'META-INF/container.xml': strToU8('<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'),
+    'OEBPS/book.opf': strToU8('<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>'),
+    'OEBPS/c1.xhtml': strToU8('<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Ada waited.</p></body></html>'),
+  });
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => parseNarrativeSource(epub, 'book.epub', true, controller.signal),
+    (err: unknown) => err instanceof Error && err.name === 'AbortError',
+  );
+});
+
+test('W3-NEW-06: DOCX parser rejects duplicate document entries, data-descriptor flags, bad XML codepoints, and handles nested w:p and AbortSignal', async () => {
+  const safeXml = '<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>Safe</w:t></w:r></w:p></w:body></w:document>';
+  await assert.rejects(() => parseNarrativeSource(buildDuplicateEntryDocx(safeXml), 'dup.docx'), /duplicate/i);
+
+  const descriptorDocx = setZipDataDescriptorFlags(zipSync({ 'word/document.xml': strToU8(safeXml) }));
+  await assert.rejects(() => parseNarrativeSource(descriptorDocx, 'desc.docx'), /descriptor|unsupported/i);
+
+  const badCodePointXml = '<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>&#x110000;</w:t></w:r></w:p></w:body></w:document>';
+  const badCodePointDocx = zipSync({ 'word/document.xml': strToU8(badCodePointXml) });
+  await assert.rejects(
+    () => parseNarrativeSource(badCodePointDocx, 'badcp.docx'),
+    (err: unknown) => err instanceof Error && err.name !== 'RangeError',
+  );
+
+  const nestedXml = '<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>Outer start </w:t></w:r><w:pict><w:txbxContent><w:p><w:r><w:t>Inner</w:t></w:r></w:p></w:txbxContent></w:pict><w:r><w:t> outer end</w:t></w:r></w:p></w:body></w:document>';
+  const nestedDocx = zipSync({ 'word/document.xml': strToU8(nestedXml) });
+  const parsedNested = await parseNarrativeSource(nestedDocx, 'nested.docx');
+  assert.ok(parsedNested.text.includes('outer end'), 'Outer paragraph text after nested w:p must not be truncated');
+
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => parseNarrativeSource(zipSync({ 'word/document.xml': strToU8(safeXml) }), 'aborted.docx', true, controller.signal),
+    (err: unknown) => err instanceof Error && err.name === 'AbortError',
+  );
 });

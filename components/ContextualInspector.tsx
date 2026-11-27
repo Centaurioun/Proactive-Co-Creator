@@ -3,10 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { isSceneEntityName } from '../lib/beliefGraphUtils';
 import { splitReadinessAndIssues } from '../lib/narrative/diagnostics/engine';
-import OpportunityCenter from './opportunities/OpportunityCenter';
 import type { OpportunityProposalInput, OpportunityProposalStatus } from '../lib/narrative/opportunityProposals';
 import type { OpportunityProposal } from '../shared/narrativeTypes';
 import { computePromptDigest } from '../lib/promptBuilder';
@@ -19,13 +18,12 @@ import type {
   Relationship,
   StoryBibleFields,
 } from '../shared/types';
-import EntityRelationshipInspectorPanel from './inspector/EntityRelationshipInspectorPanel';
-import StoryBiblePanel, { type StoryBibleStatusFilter } from './inspector/StoryBiblePanel';
+import type { StoryBibleStatusFilter } from './inspector/StoryBiblePanel';
 import type { StoryBibleDomain } from './inspector/storyBibleConfig';
-import ChecksPanel, { type ConsistencyFixPreview } from './inspector/ChecksPanel';
-import MindMapPanel, { type MindMapStatusFilter } from './inspector/MindMapPanel';
-import TimelinePanel, { type TimelineViewMode } from './inspector/TimelinePanel';
-import HistoryPanel from './inspector/HistoryPanel';
+import type { ConsistencyFixPreview } from './inspector/ChecksPanel';
+import type { MindMapStatusFilter } from './inspector/MindMapPanel';
+import type { TimelineViewMode } from './inspector/TimelinePanel';
+import InspectorTabContent from './inspector/InspectorTabContent';
 
 export type RightPanelTab =
   | 'inspector'
@@ -59,6 +57,9 @@ interface ContextualInspectorProps {
   ) => void;
   onRemoveRelationship: (relIdOrSource: string, target?: string) => void;
   onUpdateStoryBible: (field: keyof StoryBibleFields, value: string) => void;
+  onConfirmPendingStoryBible?: (
+    items: Array<{ field: keyof StoryBibleFields; value: string }>
+  ) => void;
   storyBibleErrors?: Partial<Record<keyof StoryBibleFields, string>>;
   focusedStoryBibleField?: { field: keyof StoryBibleFields; seq: number } | null;
   consistencyIssues: ConsistencyIssue[];
@@ -82,60 +83,39 @@ interface ContextualInspectorProps {
   onExportContent: (id: string) => void;
   onExportContentBundle: (ids: string[]) => void;
   onCreateOpportunity: (input: OpportunityProposalInput, expectedRevision: number) => void;
+  onCreateOpportunityBatch?: (inputs: OpportunityProposalInput[], expectedRevision: number) => void;
   onTransitionOpportunity: (id: string, status: OpportunityProposalStatus, expectedRevision: number) => void;
   onPreviewProjectJson: (rawJson: string) => Promise<CreativeProject>;
   onImportProjectJson: (rawJson: string) => Promise<{ ok: boolean; error?: string }>;
   isLoading: boolean;
 }
 
-const ContextualInspector: React.FC<ContextualInspectorProps> = ({
-  activeTab,
-  onSelectTab,
-  project,
-  savedProjects,
-  selectedEntity,
-  selectedRelationship,
-  onSelectEntity,
-  onSelectRelationship,
-  onAttributeChange,
-  onRenameEntity,
-  onAddEntity,
-  onUpsertRelationship,
-  onUpdateRelationshipById,
-  onRemoveRelationship,
-  onUpdateStoryBible,
-  storyBibleErrors,
-  focusedStoryBibleField,
-  consistencyIssues,
-  onNavigateConsistencyTarget,
-  onRestoreRevision,
-  onSwitchProject,
-  onCreateNewProject,
-  onDeleteProject,
-  onExportJson,
-  onExportStoryBibleMarkdown,
-  onExportPromptText,
-  onImportProjectJson,
-  onPreviewProjectJson,
-  onExportManuscript,
-  onExportManuscriptDocx,
-  onExportManuscriptText,
-  onOpenReviewDiagnostics,
-  onJumpToSection,
-  aiConfigured = false,
-  onSendOpportunityToReview,
-  historyTarget,
-  contentExports,
-  onExportContent,
-  onExportContentBundle,
-  onCreateOpportunity,
-  onTransitionOpportunity,
-  isLoading,
-}) => {
-  const { snapshot } = project;
-  const snapshotJson = useMemo(() => JSON.stringify(snapshot), [snapshot]);
+function isConsistencyFixPreviewStale(
+  preview: ConsistencyFixPreview | null,
+  project: CreativeProject,
+  consistencyIssues: ConsistencyIssue[]
+): boolean {
+  if (!preview) return false;
+  if (preview.projectId !== project.id) return true;
+  if (preview.baseRevision !== (project.revision ?? 1)) return true;
+  if (!consistencyIssues.some((issue) => issue.id === preview.issueId)) return true;
+  if (!project.snapshot.entities.some((entity) => entity.id === preview.entityId)) return true;
 
-  // View/filter/preview states preserved across tab switches
+  const currentSnapshotJson = JSON.stringify(project.snapshot);
+  if (preview.baseSnapshotJson !== currentSnapshotJson) return true;
+  return preview.baseSnapshotDigest !== computePromptDigest(currentSnapshotJson, project.snapshot.mode);
+}
+
+const ContextualInspector: React.FC<ContextualInspectorProps> = (props) => {
+  const {
+    activeTab,
+    onSelectTab,
+    project,
+    focusedStoryBibleField,
+    consistencyIssues,
+  } = props;
+  const { snapshot } = project;
+
   const [consistencyFixPreview, setConsistencyFixPreview] =
     useState<ConsistencyFixPreview | null>(null);
   const [bibleViewMode, setBibleViewMode] = useState<'grid' | 'list'>('grid');
@@ -144,12 +124,13 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
   const [lastHandledFocusSeq, setLastHandledFocusSeq] = useState<number>(0);
   const [timelineView, setTimelineView] = useState<TimelineViewMode>('narrative');
   const [mindMapFilter, setMindMapFilter] = useState<MindMapStatusFilter>('all');
+  const tabButtonRefs = useRef<Partial<Record<RightPanelTab, HTMLButtonElement | null>>>({});
 
-  if (
-    focusedStoryBibleField &&
+  const shouldResetBibleFilters =
+    Boolean(focusedStoryBibleField) &&
     activeTab === 'story-bible' &&
-    focusedStoryBibleField.seq !== lastHandledFocusSeq
-  ) {
+    focusedStoryBibleField!.seq !== lastHandledFocusSeq;
+  if (shouldResetBibleFilters && focusedStoryBibleField) {
     setLastHandledFocusSeq(focusedStoryBibleField.seq);
     if (bibleDomainFilter !== 'all') setBibleDomainFilter('all');
     if (bibleStatusFilter !== 'all') setBibleStatusFilter('all');
@@ -167,14 +148,10 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
     return () => cancelAnimationFrame(rafId);
   }, [focusedStoryBibleField, activeTab]);
 
-  const previewIsStale =
-    consistencyFixPreview !== null &&
-    (consistencyFixPreview.projectId !== project.id ||
-      consistencyFixPreview.baseRevision !== (project.revision ?? 1) ||
-      consistencyFixPreview.baseSnapshotDigest !== computePromptDigest(snapshotJson, snapshot.mode) ||
-      consistencyFixPreview.baseSnapshotJson !== snapshotJson ||
-      !consistencyIssues.some((issue) => issue.id === consistencyFixPreview.issueId) ||
-      !snapshot.entities.some((entity) => entity.id === consistencyFixPreview.entityId));
+  const previewIsStale = useMemo(
+    () => isConsistencyFixPreviewStale(consistencyFixPreview, project, consistencyIssues),
+    [consistencyFixPreview, project, consistencyIssues]
+  );
 
   const { readiness: readinessItems, consistencyIssues: actualConsistencyIssues } = useMemo(
     () => splitReadinessAndIssues(consistencyIssues),
@@ -196,6 +173,17 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
     ['mind-map', 'Mind map'],
   ];
 
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const currentIdx = tabs.findIndex(([k]) => k === activeTab);
+    if (currentIdx < 0) return;
+    const delta = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+    if (delta === 0) return;
+    e.preventDefault();
+    const nextKey = tabs[(currentIdx + delta + tabs.length) % tabs.length][0];
+    onSelectTab(nextKey);
+    tabButtonRefs.current[nextKey]?.focus();
+  };
+
   return (
     <aside
       aria-label="Contextual Inspector and Story Bible"
@@ -205,22 +193,15 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
       <div
         role="tablist"
         aria-label="Inspector views"
-        onKeyDown={(e) => {
-          const currentIdx = tabs.findIndex(([k]) => k === activeTab);
-          if (currentIdx < 0) return;
-          if (e.key === 'ArrowRight') {
-            e.preventDefault();
-            onSelectTab(tabs[(currentIdx + 1) % tabs.length][0]);
-          } else if (e.key === 'ArrowLeft') {
-            e.preventDefault();
-            onSelectTab(tabs[(currentIdx - 1 + tabs.length) % tabs.length][0]);
-          }
-        }}
+        onKeyDown={handleTabKeyDown}
         className="flex flex-wrap items-center gap-1 p-1.5 bg-gray-100 dark:bg-gray-950 border-b border-gray-200 dark:border-gray-800 flex-shrink-0"
       >
         {tabs.map(([key, label]) => (
           <button
             key={key}
+            ref={(el) => {
+              tabButtonRefs.current[key] = el;
+            }}
             type="button"
             role="tab"
             aria-selected={activeTab === key}
@@ -236,111 +217,66 @@ const ContextualInspector: React.FC<ContextualInspectorProps> = ({
         ))}
       </div>
 
-      {activeTab === 'inspector' && (
-        <EntityRelationshipInspectorPanel
-          objectEntities={objectEntities}
-          relationships={snapshot.relationships}
-          selectedEntity={selectedEntity}
-          selectedRelationship={selectedRelationship}
-          isLoading={isLoading}
-          onSelectEntity={onSelectEntity}
-          onSelectRelationship={onSelectRelationship}
-          onAttributeChange={onAttributeChange}
-          onRenameEntity={onRenameEntity}
-          onAddEntity={onAddEntity}
-          onUpsertRelationship={onUpsertRelationship}
-          onUpdateRelationshipById={onUpdateRelationshipById}
-          onRemoveRelationship={onRemoveRelationship}
-        />
-      )}
-
-      {activeTab === 'story-bible' && (
-        <StoryBiblePanel
-          storyBible={snapshot.storyBible}
-          storyBibleErrors={storyBibleErrors}
-          viewMode={bibleViewMode}
-          domainFilter={bibleDomainFilter}
-          statusFilter={bibleStatusFilter}
-          onChangeViewMode={setBibleViewMode}
-          onChangeDomainFilter={setBibleDomainFilter}
-          onChangeStatusFilter={setBibleStatusFilter}
-          onUpdateStoryBible={onUpdateStoryBible}
-        />
-      )}
-
-      {activeTab === 'consistency' && (
-        <ChecksPanel
-          project={project}
-          snapshotJson={snapshotJson}
-          readinessItems={readinessItems}
-          actualConsistencyIssues={actualConsistencyIssues}
-          consistencyFixPreview={consistencyFixPreview}
-          previewIsStale={previewIsStale}
-          onSetConsistencyFixPreview={setConsistencyFixPreview}
-          onNavigateConsistencyTarget={onNavigateConsistencyTarget}
-          onOpenReviewDiagnostics={onOpenReviewDiagnostics}
-        />
-      )}
-
-      {activeTab === 'opportunities' && (
-        <OpportunityCenter
-          project={project}
-          projectId={project.id}
-          projectRevision={project.revision}
-          proposals={project.narrative?.opportunities ?? []}
-          aiConfigured={aiConfigured}
-          onCreate={onCreateOpportunity}
-          onTransition={onTransitionOpportunity}
-          onSendToChangeReview={onSendOpportunityToReview}
-        />
-      )}
-
-      {activeTab === 'mind-map' && (
-        <MindMapPanel
-          storyBible={snapshot.storyBible}
-          entities={snapshot.entities}
-          actualConsistencyIssues={actualConsistencyIssues}
-          filter={mindMapFilter}
-          onChangeFilter={setMindMapFilter}
-          onSelectEntityForInspector={(entity) => {
-            onSelectEntity(entity);
-            onSelectTab('inspector');
-          }}
-          onNavigateConsistencyTarget={onNavigateConsistencyTarget}
-        />
-      )}
-
-      {activeTab === 'timeline' && (
-        <TimelinePanel
-          project={project}
-          timelineView={timelineView}
-          onChangeTimelineView={setTimelineView}
-          onJumpToSection={onJumpToSection}
-        />
-      )}
-
-      {activeTab === 'history' && (
-        <HistoryPanel
-          project={project}
-          savedProjects={savedProjects}
-          historyTarget={historyTarget}
-          contentExports={contentExports}
-          onExportJson={onExportJson}
-          onExportStoryBibleMarkdown={onExportStoryBibleMarkdown}
-          onExportPromptText={onExportPromptText}
-          onExportManuscript={onExportManuscript}
-          onExportManuscriptDocx={onExportManuscriptDocx}
-          onExportManuscriptText={onExportManuscriptText}
-          onExportContent={onExportContent}
-          onExportContentBundle={onExportContentBundle}
-          onPreviewProjectJson={onPreviewProjectJson}
-          onImportProjectJson={onImportProjectJson}
-          onSwitchProject={onSwitchProject}
-          onCreateNewProject={onCreateNewProject}
-          onDeleteProject={onDeleteProject}
-          onRestoreRevision={onRestoreRevision}
-        />
-      )}
+      <InspectorTabContent
+        activeTab={activeTab}
+        project={project}
+        savedProjects={props.savedProjects}
+        objectEntities={objectEntities}
+        readinessItems={readinessItems}
+        actualConsistencyIssues={actualConsistencyIssues}
+        selectedEntity={props.selectedEntity}
+        selectedRelationship={props.selectedRelationship}
+        isLoading={props.isLoading}
+        storyBibleErrors={props.storyBibleErrors}
+        bibleViewMode={bibleViewMode}
+        bibleDomainFilter={bibleDomainFilter}
+        bibleStatusFilter={bibleStatusFilter}
+        consistencyFixPreview={consistencyFixPreview}
+        previewIsStale={previewIsStale}
+        mindMapFilter={mindMapFilter}
+        timelineView={timelineView}
+        aiConfigured={Boolean(props.aiConfigured)}
+        historyTarget={props.historyTarget}
+        contentExports={props.contentExports}
+        onSelectTab={onSelectTab}
+        onSelectEntity={props.onSelectEntity}
+        onSelectRelationship={props.onSelectRelationship}
+        onAttributeChange={props.onAttributeChange}
+        onRenameEntity={props.onRenameEntity}
+        onAddEntity={props.onAddEntity}
+        onUpsertRelationship={props.onUpsertRelationship}
+        onUpdateRelationshipById={props.onUpdateRelationshipById}
+        onRemoveRelationship={props.onRemoveRelationship}
+        onChangeBibleViewMode={setBibleViewMode}
+        onChangeBibleDomainFilter={setBibleDomainFilter}
+        onChangeBibleStatusFilter={setBibleStatusFilter}
+        onUpdateStoryBible={props.onUpdateStoryBible}
+        onConfirmPendingStoryBible={props.onConfirmPendingStoryBible}
+        onSetConsistencyFixPreview={setConsistencyFixPreview}
+        onNavigateConsistencyTarget={props.onNavigateConsistencyTarget}
+        onOpenReviewDiagnostics={props.onOpenReviewDiagnostics}
+        onCreateOpportunity={props.onCreateOpportunity}
+        onCreateOpportunityBatch={props.onCreateOpportunityBatch}
+        onTransitionOpportunity={props.onTransitionOpportunity}
+        onSendOpportunityToReview={props.onSendOpportunityToReview}
+        onChangeMindMapFilter={setMindMapFilter}
+        onChangeTimelineView={setTimelineView}
+        onJumpToSection={props.onJumpToSection}
+        onExportJson={props.onExportJson}
+        onExportStoryBibleMarkdown={props.onExportStoryBibleMarkdown}
+        onExportPromptText={props.onExportPromptText}
+        onExportManuscript={props.onExportManuscript}
+        onExportManuscriptDocx={props.onExportManuscriptDocx}
+        onExportManuscriptText={props.onExportManuscriptText}
+        onExportContent={props.onExportContent}
+        onExportContentBundle={props.onExportContentBundle}
+        onPreviewProjectJson={props.onPreviewProjectJson}
+        onImportProjectJson={props.onImportProjectJson}
+        onSwitchProject={props.onSwitchProject}
+        onCreateNewProject={props.onCreateNewProject}
+        onDeleteProject={props.onDeleteProject}
+        onRestoreRevision={props.onRestoreRevision}
+      />
     </aside>
   );
 };

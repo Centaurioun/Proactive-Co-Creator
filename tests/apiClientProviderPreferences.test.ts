@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { generateClarifications, generateImagesFromPrompt, generateStoryFromPrompt, invalidateAiProviderRequests, invalidateAiProviderRequestsForPreferenceChange } from '../services/apiClient.ts';
+import * as apiClient from '../services/apiClient.ts';
+import { ClientApiError, generateClarifications, generateImagesFromPrompt, generateStoryFromPrompt, invalidateAiProviderRequests, invalidateAiProviderRequestsForPreferenceChange, refinePromptWithAllUpdates } from '../services/apiClient.ts';
 
 function installPreferences(raw: string | null) {
   Object.defineProperty(globalThis, 'window', {
@@ -211,6 +212,143 @@ test('provider preference changes abort pending requests so stale responses cann
     invalidateAiProviderRequests();
     await assert.rejects(pending, (error: unknown) => error instanceof DOMException && error.name === 'AbortError');
     assert.equal(observedSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('W1-D03 (R06): image provider override error is preserved instead of masked as invalid preferences', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  installPreferences(JSON.stringify({
+    defaultConnectionId: 'gemini-managed',
+    operationOverrides: { image: { connectionId: 'gemini-personal', modelId: 'imagen-test' } },
+  }));
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+  try {
+    await assert.rejects(generateImagesFromPrompt('A safe image prompt.'), /Image provider overrides are unavailable/);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('W1-D03 (R06): refinePromptWithAllUpdates reads polish operation override', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  installPreferences(JSON.stringify({
+    defaultConnectionId: 'gemini-managed',
+    operationOverrides: { polish: { connectionId: 'openai-api', modelId: 'gpt-6.2-sol', reasoningLevel: 'low' } },
+  }));
+  let observedHeaders: Headers | undefined;
+  globalThis.fetch = async (_input, init) => {
+    observedHeaders = new Headers(init?.headers);
+    return new Response(JSON.stringify({ refinedPrompt: 'Polished.' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    await refinePromptWithAllUpdates('Original prompt', [], []);
+    assert.equal(observedHeaders?.get('x-pcc-ai-connection'), 'openai-api');
+    assert.equal(observedHeaders?.get('x-pcc-ai-model'), 'gpt-6.2-sol');
+    assert.equal(observedHeaders?.get('x-pcc-ai-reasoning'), 'low');
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('W1-D03 (R06): localStorage.clear() (key: null) aborts pending requests even on a swapped window object', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const raw = JSON.stringify({ defaultConnectionId: 'gemini-managed' });
+  let storageListener: ((event: { key: string | null; oldValue: string | null; newValue: string | null }) => void) | undefined;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: { getItem: () => raw, setItem: () => undefined, removeItem: () => undefined },
+      addEventListener: (name: string, listener: typeof storageListener) => { if (name === 'storage') storageListener = listener; },
+    },
+  });
+  let observedSignal: AbortSignal | undefined;
+  globalThis.fetch = async (_input, init) => new Promise<Response>((_resolve, reject) => {
+    observedSignal = init?.signal as AbortSignal;
+    observedSignal.addEventListener('abort', () => reject(observedSignal?.reason), { once: true });
+  });
+  try {
+    const pending = generateClarifications('A safe question prompt.', [], 'story');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.ok(storageListener, 'storage listener must attach to the current window');
+    storageListener({ key: null, oldValue: null, newValue: null });
+    await assert.rejects(pending, (error: unknown) => error instanceof DOMException && error.name === 'AbortError');
+    assert.equal(observedSignal?.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('W1-D04 (R03): tryGetEffectiveStoryProviderSelection returns structured error without throwing on invalid or unreadable storage', () => {
+  const originalWindow = globalThis.window;
+  const helper = (apiClient as Record<string, unknown>).tryGetEffectiveStoryProviderSelection as
+    | (() => { ok: true; selection: { connectionId: string } } | { ok: false; error: { code: string } })
+    | undefined;
+  assert.equal(typeof helper, 'function');
+  try {
+    installPreferences('{broken');
+    const badJson = helper!();
+    assert.equal(badJson.ok, false);
+    if (!badJson.ok) assert.equal(badJson.error.code, 'VALIDATION_ERROR');
+
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { localStorage: { getItem: () => { throw new DOMException('blocked', 'SecurityError'); } } },
+    });
+    const blocked = helper!();
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) assert.equal(blocked.error.code, 'UPSTREAM_ERROR');
+  } finally {
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+  }
+});
+
+test('W6-D01: caller abort while awaiting response.json() surfaces CANCELLED instead of returning stale data or INVALID_RESPONSE', async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  installPreferences(JSON.stringify({ defaultConnectionId: 'gemini-managed' }));
+
+  const callerAbortOnResolve = new AbortController();
+  const callerAbortOnReject = new AbortController();
+  let mode: 'resolve' | 'reject' = 'resolve';
+
+  globalThis.fetch = async () => {
+    const controller = mode === 'resolve' ? callerAbortOnResolve : callerAbortOnReject;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => {
+        controller.abort();
+        if (mode === 'reject') {
+          throw new DOMException('Body stream aborted', 'AbortError');
+        }
+        return { clarifications: [] };
+      },
+    } as unknown as Response;
+  };
+
+  try {
+    mode = 'resolve';
+    await assert.rejects(
+      generateClarifications('A safe question prompt.', [], 'story', callerAbortOnResolve.signal),
+      (error: unknown) => error instanceof ClientApiError && error.code === 'CANCELLED',
+    );
+
+    mode = 'reject';
+    await assert.rejects(
+      generateClarifications('A safe question prompt.', [], 'story', callerAbortOnReject.signal),
+      (error: unknown) => error instanceof ClientApiError && error.code === 'CANCELLED',
+    );
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });

@@ -108,7 +108,9 @@ export function prepareManuscriptChange(
   if (styleProfile && styleProfile.projectId !== project.id) throw new Error('Style profile belongs to a different project.');
   const styleProfileChanged = styleProfile !== undefined && JSON.stringify(styleProfile) !== JSON.stringify(previousStyleProfile);
   if (JSON.stringify(manuscriptSections(project)) === JSON.stringify(sections) && !styleProfileChanged) return null;
-  const nextStyleProfile = styleProfile?.observations.length ? styleProfile : previousVersion?.styleProfile;
+  const nextStyleProfile = styleProfile !== undefined
+    ? (styleProfile.observations.length ? styleProfile : undefined)
+    : previousVersion?.styleProfile;
   const previousSectionRefs = new Set(previousVersion?.sectionVersionIds);
   const previousBySectionId = new Map(records.sectionVersions
     .filter(record => previousSectionRefs.has(record.id))

@@ -9,33 +9,126 @@ import { NARRATIVE_SCHEMA_VERSION, type StorageSaveResult, type DurableWriteOpti
 import { migrateProjectPayload } from './migration.ts';
 
 const MAX_RECENT_INTENT_IDS = 50;
+const INTENT_EXCLUDED_KEYS = new Set(['revision', 'persistedRevision', 'updatedAt', 'recentIntentIds']);
 
 export function stableIntentSerialization(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(stableIntentSerialization).join(',')}]`;
+  if (Array.isArray(value)) {
+    let out = '[';
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) out += ',';
+      out += stableIntentSerialization(value[i]);
+    }
+    return `${out}]`;
+  }
   const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .filter((key) => record[key] !== undefined)
-    .map((key) => `${JSON.stringify(key)}:${stableIntentSerialization(record[key])}`)
-    .join(',')}}`;
+  const keys = Object.keys(record).sort();
+  let out = '{';
+  let wrote = false;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const entry = record[key];
+    if (entry === undefined) continue;
+    if (wrote) out += ',';
+    out += `${JSON.stringify(key)}:${stableIntentSerialization(entry)}`;
+    wrote = true;
+  }
+  return `${out}}`;
 }
 
-export function intentOperationFingerprint(project: CreativeProject): string {
-  const operationContent = Object.fromEntries(
-    Object.entries(project).filter(
-      ([key]) => !['revision', 'persistedRevision', 'updatedAt', 'recentIntentIds'].includes(key)
-    )
-  );
-  const text = stableIntentSerialization(operationContent);
-  let a = 0x811c9dc5;
-  let b = 0x9e3779b9;
+interface HashState {
+  a: number;
+  b: number;
+}
+
+function feedHashString(state: HashState, text: string): void {
+  let { a, b } = state;
   for (let i = 0; i < text.length; i += 1) {
     const code = text.charCodeAt(i);
     a = Math.imul(a ^ code, 0x01000193);
     b = Math.imul(b ^ code, 0x85ebca6b);
   }
-  return `${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
+  state.a = a;
+  state.b = b;
+}
+
+function feedHashChar(state: HashState, code: number): void {
+  state.a = Math.imul(state.a ^ code, 0x01000193);
+  state.b = Math.imul(state.b ^ code, 0x85ebca6b);
+}
+
+function hashStableValue(value: unknown, state: HashState, skipExcludedRootKeys: boolean): void {
+  if (value === null || typeof value !== 'object') {
+    feedHashString(state, JSON.stringify(value) ?? 'null');
+    return;
+  }
+  if (Array.isArray(value)) {
+    feedHashChar(state, 91); // '['
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) feedHashChar(state, 44); // ','
+      hashStableValue(value[i], state, false);
+    }
+    feedHashChar(state, 93); // ']'
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  feedHashChar(state, 123); // '{'
+  let wrote = false;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (skipExcludedRootKeys && INTENT_EXCLUDED_KEYS.has(key)) continue;
+    const entry = record[key];
+    if (entry === undefined) continue;
+    if (wrote) feedHashChar(state, 44); // ','
+    feedHashString(state, JSON.stringify(key));
+    feedHashChar(state, 58); // ':'
+    hashStableValue(entry, state, false);
+    wrote = true;
+  }
+  feedHashChar(state, 125); // '}'
+}
+
+export function intentOperationFingerprint(project: CreativeProject): string {
+  const state: HashState = { a: 0x811c9dc5, b: 0x9e3779b9 };
+  hashStableValue(project, state, true);
+  return `${(state.a >>> 0).toString(16)}${(state.b >>> 0).toString(16)}`;
+}
+
+function areObjectsStableEqual(recA: Record<string, unknown>, recB: Record<string, unknown>): boolean {
+  const keysA = Object.keys(recA);
+  let definedCountA = 0;
+  for (let i = 0; i < keysA.length; i++) {
+    const key = keysA[i];
+    const valA = recA[key];
+    if (valA === undefined) continue;
+    definedCountA++;
+    const valB = recB[key];
+    if (valB === undefined || !areStableValuesEqual(valA, valB)) {
+      return false;
+    }
+  }
+  const keysB = Object.keys(recB);
+  let definedCountB = 0;
+  for (let i = 0; i < keysB.length; i++) {
+    if (recB[keysB[i]] !== undefined) definedCountB++;
+  }
+  return definedCountA === definedCountB;
+}
+
+export function areStableValuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
+    return (JSON.stringify(a) ?? 'null') === (JSON.stringify(b) ?? 'null');
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!areStableValuesEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  return areObjectsStableEqual(a as Record<string, unknown>, b as Record<string, unknown>);
 }
 
 export function intentRecordId(
@@ -75,59 +168,111 @@ export function safeMigrateExisting(existing: CreativeProject): CreativeProject 
   }
 }
 
+function casConflictResult(
+  error: string,
+  storedProject?: CreativeProject
+): StorageSaveResult {
+  return {
+    ok: false,
+    saved: false,
+    conflictDetected: true,
+    ...(storedProject ? { storedProject } : {}),
+    error,
+  };
+}
+
+const INTENT_RECORD_SUFFIX_RE = /^([\s\S]+):(\d+):([0-9a-f]+)$/;
+
+function extractStoredIntentKey(recordId: string): string {
+  const match = INTENT_RECORD_SUFFIX_RE.exec(recordId);
+  return match ? match[1] : recordId;
+}
+
 function evaluateSchemaAndIntentGuard(
   existing: CreativeProject | undefined,
+  getNormalizedExisting: () => CreativeProject | undefined,
   candidate: CreativeProject,
   rawExpected: number | undefined,
   intentId: string | undefined,
   requireExactBase: boolean | undefined
 ): StorageSaveResult | null {
-  if (
-    existing &&
-    (existing.schemaVersion > NARRATIVE_SCHEMA_VERSION ||
-      (existing.schemaVersion === NARRATIVE_SCHEMA_VERSION &&
-        candidate.schemaVersion < NARRATIVE_SCHEMA_VERSION))
-  ) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      error: 'Storage contains a newer project schema.',
-    };
+  const newerSchema =
+    Boolean(existing) &&
+    (existing!.schemaVersion > NARRATIVE_SCHEMA_VERSION ||
+      (existing!.schemaVersion === NARRATIVE_SCHEMA_VERSION &&
+        candidate.schemaVersion < NARRATIVE_SCHEMA_VERSION));
+  if (newerSchema) {
+    return casConflictResult('Storage contains a newer project schema.');
   }
 
   const existingIntent = intentId
-    ? existing?.recentIntentIds?.find((id) => id.startsWith(`${intentId}:`) || id === intentId)
+    ? existing?.recentIntentIds?.find((id) => extractStoredIntentKey(id) === intentId)
     : undefined;
   if (existing && intentId && existingIntent) {
     if (existingIntent !== intentRecordId(candidate, intentId, rawExpected)) {
-      return {
-        ok: false,
-        saved: false,
-        conflictDetected: true,
-        storedProject: safeMigrateExisting(existing),
-        error: 'This intent ID was already used for different operation content.',
-      };
+      return casConflictResult(
+        'This intent ID was already used for different operation content.',
+        getNormalizedExisting()
+      );
     }
     return {
       ok: true,
       saved: true,
       idempotentHit: true,
       persistedRevision: typeof existing.revision === 'number' ? existing.revision : 1,
-      storedProject: safeMigrateExisting(existing),
+      storedProject: getNormalizedExisting(),
     };
   }
 
   if (requireExactBase && (!existing || existing.revision !== rawExpected)) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      ...(existing ? { storedProject: safeMigrateExisting(existing) } : {}),
-      error: 'The durable project revision changed. Reload storage before retrying.',
-    };
+    return casConflictResult(
+      'The durable project revision changed. Reload storage before retrying.',
+      existing ? getNormalizedExisting() : undefined
+    );
   }
 
+  return null;
+}
+
+function evaluateSameRevisionDivergence(params: {
+  existing: CreativeProject;
+  normalizedExisting: CreativeProject;
+  candidate: CreativeProject;
+  getNormalizedCandidate: () => CreativeProject;
+  existingRev: number;
+  storeLabel: 'localStorage' | 'IndexedDB';
+  requireExactBase?: boolean;
+}): StorageSaveResult | null {
+  const {
+    existing,
+    normalizedExisting,
+    candidate,
+    getNormalizedCandidate,
+    existingRev,
+    storeLabel,
+    requireExactBase,
+  } = params;
+
+  const normalizedCandidate = getNormalizedCandidate();
+  const snapshotsEqual =
+    isSnapshotSemanticallyEqual(existing.snapshot, candidate.snapshot) ||
+    isSnapshotSemanticallyEqual(normalizedExisting.snapshot, normalizedCandidate.snapshot);
+  const narrativesDiffer = Boolean(
+    requireExactBase &&
+      !areStableValuesEqual(normalizedExisting.narrative, normalizedCandidate.narrative)
+  );
+  if (!snapshotsEqual || narrativesDiffer) {
+    return casConflictResult(
+      `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with a divergent ${snapshotsEqual ? 'narrative record' : 'snapshot'}.`,
+      normalizedExisting
+    );
+  }
+  if (existing.updatedAt > candidate.updatedAt) {
+    return casConflictResult(
+      'A newer version of this project was saved in another browser tab.',
+      normalizedExisting
+    );
+  }
   return null;
 }
 
@@ -135,91 +280,123 @@ function evaluateRevisionAndSnapshotCas(params: {
   existing: CreativeProject;
   normalizedExisting: CreativeProject;
   candidate: CreativeProject;
+  getNormalizedCandidate: () => CreativeProject;
   rawExpected?: number;
   storeLabel: 'localStorage' | 'IndexedDB';
   requireExactBase?: boolean;
 }): StorageSaveResult | null {
-  const { existing, normalizedExisting, candidate, rawExpected, storeLabel, requireExactBase } = params;
+  const {
+    existing,
+    normalizedExisting,
+    candidate,
+    getNormalizedCandidate,
+    rawExpected,
+    storeLabel,
+    requireExactBase,
+  } = params;
   const existingRev = typeof existing.revision === 'number' ? existing.revision : 1;
   const candidateRev = typeof candidate.revision === 'number' ? candidate.revision : 1;
-  const isTimestampExpectation =
-    typeof rawExpected === 'number' && rawExpected > 1_000_000_000_000;
 
-  if (isTimestampExpectation) {
-    if (existing.updatedAt > rawExpected) {
-      return {
-        ok: false,
-        saved: false,
-        conflictDetected: true,
-        storedProject: normalizedExisting,
-        error: 'A newer version of this project was saved in another browser tab.',
-      };
-    }
-    return null;
+  if (typeof rawExpected === 'number' && rawExpected > 1_000_000_000_000) {
+    return existing.updatedAt > rawExpected
+      ? casConflictResult(
+          'A newer version of this project was saved in another browser tab.',
+          normalizedExisting
+        )
+      : null;
   }
 
   const baseRev = rawExpected !== undefined ? rawExpected : candidate.persistedRevision;
-
   if (baseRev !== undefined && existingRev > baseRev) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error:
-        storeLabel === 'IndexedDB'
-          ? `IndexedDB has a newer revision (r${existingRev}) than expected base r${baseRev}.`
-          : `Storage conflict detected: another tab saved revision r${existingRev} while this tab was based on r${baseRev}.`,
-    };
+    const msg =
+      storeLabel === 'IndexedDB'
+        ? `IndexedDB has a newer revision (r${existingRev}) than expected base r${baseRev}.`
+        : `Storage conflict detected: another tab saved revision r${existingRev} while this tab was based on r${baseRev}.`;
+    return casConflictResult(msg, normalizedExisting);
   }
 
   if (candidateRev < existingRev) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error: `Storage conflict detected: ${storeLabel} holds revision r${existingRev}, which is newer than candidate r${candidateRev}.`,
-    };
+    return casConflictResult(
+      `Storage conflict detected: ${storeLabel} holds revision r${existingRev}, which is newer than candidate r${candidateRev}.`,
+      normalizedExisting
+    );
   }
 
   if (baseRev !== undefined && existingRev === baseRev && candidateRev === baseRev) {
-    const snapshotsEqual =
-      isSnapshotSemanticallyEqual(existing.snapshot, candidate.snapshot) ||
-      isSnapshotSemanticallyEqual(
-        normalizedExisting.snapshot,
-        safeMigrateExisting(candidate).snapshot
-      );
-    const narrativesDiffer = requireExactBase &&
-      stableIntentSerialization(normalizedExisting.narrative) !==
-      stableIntentSerialization(safeMigrateExisting(candidate).narrative);
-    if (!snapshotsEqual || narrativesDiffer) {
-      return {
-        ok: false,
-        saved: false,
-        conflictDetected: true,
-        storedProject: normalizedExisting,
-        error: `Storage conflict detected: ${storeLabel} already holds revision r${existingRev} with a divergent ${snapshotsEqual ? 'narrative record' : 'snapshot'}.`,
-      };
-    }
-    if (existing.updatedAt > candidate.updatedAt) {
-      return {
-        ok: false,
-        saved: false,
-        conflictDetected: true,
-        storedProject: normalizedExisting,
-        error: 'A newer version of this project was saved in another browser tab.',
-      };
-    }
+    return evaluateSameRevisionDivergence({
+      existing,
+      normalizedExisting,
+      candidate,
+      getNormalizedCandidate,
+      existingRev,
+      storeLabel,
+      requireExactBase,
+    });
   }
 
   return null;
 }
 
-export function matchesObservedProject(actual: CreativeProject | undefined, expected: CreativeProject | null) {
+export function matchesObservedProject(
+  actual: CreativeProject | undefined,
+  expected: CreativeProject | null
+): boolean {
   if (expected === null) return actual === undefined;
-  return actual !== undefined &&
-    stableIntentSerialization(safeMigrateExisting(actual)) === stableIntentSerialization(safeMigrateExisting(expected));
+  if (actual === undefined) return false;
+  if (actual === expected) return true;
+  if (actual.id !== expected.id) return false;
+  return areStableValuesEqual(safeMigrateExisting(actual), safeMigrateExisting(expected));
+}
+
+function checkExpectedBaseGuards(params: {
+  existing: CreativeProject;
+  normalizedExisting: CreativeProject;
+  expectedBaseNarrative?: DurableWriteOptions['expectedBaseNarrative'];
+  expectedManuscriptVersionId?: string;
+  expectedBaseSnapshotDigest?: string;
+  storeLabel: 'localStorage' | 'IndexedDB';
+}): StorageSaveResult | null {
+  const {
+    existing,
+    normalizedExisting,
+    expectedBaseNarrative,
+    expectedManuscriptVersionId,
+    expectedBaseSnapshotDigest,
+    storeLabel,
+  } = params;
+
+  if (
+    expectedBaseNarrative !== undefined &&
+    !areStableValuesEqual(normalizedExisting.narrative ?? null, expectedBaseNarrative)
+  ) {
+    return casConflictResult(
+      'The durable narrative changed since this operation was prepared. Reload and review before retrying.',
+      normalizedExisting
+    );
+  }
+
+  if (
+    expectedManuscriptVersionId !== undefined &&
+    (normalizedExisting.snapshot.manuscriptVersionId ?? '') !== expectedManuscriptVersionId
+  ) {
+    return casConflictResult(
+      `Storage conflict detected: ${storeLabel} holds a newer manuscript version than this change expected. Re-preview before applying.`,
+      normalizedExisting
+    );
+  }
+
+  if (
+    expectedBaseSnapshotDigest !== undefined &&
+    computeSnapshotDigest(existing.snapshot) !== expectedBaseSnapshotDigest &&
+    computeSnapshotDigest(normalizedExisting.snapshot) !== expectedBaseSnapshotDigest
+  ) {
+    return casConflictResult(
+      `Storage conflict detected: ${storeLabel} snapshot changed since this operation was prepared. Re-preview before applying.`,
+      normalizedExisting
+    );
+  }
+
+  return null;
 }
 
 export function evaluateCasConflict(params: {
@@ -235,80 +412,65 @@ export function evaluateCasConflict(params: {
   forceOverwrite: boolean;
   storeLabel: 'localStorage' | 'IndexedDB';
 }): StorageSaveResult | null {
-  const {
-    existing,
-    candidate,
-    rawExpected,
-    expectedManuscriptVersionId,
-    expectedBaseSnapshotDigest,
-    expectedBaseProject,
-    expectedBaseNarrative,
-    intentId,
-    requireExactBase,
-    forceOverwrite,
-    storeLabel,
-  } = params;
+  const { existing, candidate, rawExpected, expectedBaseProject, intentId, requireExactBase, forceOverwrite, storeLabel } = params;
+
+  let cachedNormalizedExisting: CreativeProject | undefined;
+  const getNormalizedExisting = () => {
+    if (!existing) return undefined;
+    if (!cachedNormalizedExisting) cachedNormalizedExisting = safeMigrateExisting(existing);
+    return cachedNormalizedExisting;
+  };
+
+  let cachedNormalizedCandidate: CreativeProject | undefined;
+  const getNormalizedCandidate = () => {
+    if (!cachedNormalizedCandidate) cachedNormalizedCandidate = safeMigrateExisting(candidate);
+    return cachedNormalizedCandidate;
+  };
 
   const preGuard = evaluateSchemaAndIntentGuard(
     existing,
+    getNormalizedExisting,
     candidate,
     rawExpected,
     intentId,
     requireExactBase
   );
   if (preGuard) return preGuard;
-  if (expectedBaseProject !== undefined && !matchesObservedProject(existing, expectedBaseProject)) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: existing && safeMigrateExisting(existing),
-      error: 'The observed project changed in storage. Reload and review the latest version before retrying.',
-    };
+
+  if (expectedBaseProject !== undefined) {
+    const matchesObserved =
+      expectedBaseProject === null
+        ? existing === undefined
+        : existing !== undefined &&
+          (existing === expectedBaseProject ||
+            (existing.id === expectedBaseProject.id &&
+              areStableValuesEqual(getNormalizedExisting(), safeMigrateExisting(expectedBaseProject))));
+    if (!matchesObserved) {
+      return casConflictResult(
+        'The observed project changed in storage. Reload and review the latest version before retrying.',
+        getNormalizedExisting()
+      );
+    }
   }
+
   if (forceOverwrite || !existing) return null;
 
-  const normalizedExisting = safeMigrateExisting(existing);
-
-  if (expectedBaseNarrative !== undefined &&
-      stableIntentSerialization(normalizedExisting.narrative ?? null) !== stableIntentSerialization(expectedBaseNarrative)) {
-    return {
-      ok: false, saved: false, conflictDetected: true, storedProject: normalizedExisting,
-      error: 'The durable narrative changed since this operation was prepared. Reload and review before retrying.',
-    };
-  }
-
-  if (
-    expectedManuscriptVersionId !== undefined &&
-    (normalizedExisting.snapshot.manuscriptVersionId ?? '') !== expectedManuscriptVersionId
-  ) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error: `Storage conflict detected: ${storeLabel} holds a newer manuscript version than this change expected. Re-preview before applying.`,
-    };
-  }
-
-  if (
-    expectedBaseSnapshotDigest !== undefined &&
-    computeSnapshotDigest(existing.snapshot) !== expectedBaseSnapshotDigest &&
-    computeSnapshotDigest(normalizedExisting.snapshot) !== expectedBaseSnapshotDigest
-  ) {
-    return {
-      ok: false,
-      saved: false,
-      conflictDetected: true,
-      storedProject: normalizedExisting,
-      error: `Storage conflict detected: ${storeLabel} snapshot changed since this operation was prepared. Re-preview before applying.`,
-    };
-  }
+  const normalizedExisting = getNormalizedExisting()!;
+  const baseGuard = checkExpectedBaseGuards({
+    existing,
+    normalizedExisting,
+    expectedBaseNarrative: params.expectedBaseNarrative,
+    expectedManuscriptVersionId: params.expectedManuscriptVersionId,
+    expectedBaseSnapshotDigest: params.expectedBaseSnapshotDigest,
+    storeLabel,
+  });
+  if (baseGuard) return baseGuard;
 
   return evaluateRevisionAndSnapshotCas({
     existing,
     normalizedExisting,
     candidate,
+    getNormalizedCandidate,
     rawExpected,
     storeLabel,
     requireExactBase,

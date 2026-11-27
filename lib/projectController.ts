@@ -127,13 +127,17 @@ export function appendAuthoredAttributeClaims(
   const records = project.narrative;
   if (!records) return project;
   const claims = records.claims.slice();
+  const beforeEntitiesById = new Map(project.snapshot.entities.map((entity) => [entity.id, entity]));
   let changed = false;
+
   for (const nextEntity of nextSnapshot.entities) {
-    const beforeEntity = project.snapshot.entities.find((entity) => entity.id === nextEntity.id);
+    const beforeEntity = beforeEntitiesById.get(nextEntity.id);
     if (!beforeEntity) continue;
+    const beforeAttrsById = new Map(beforeEntity.attributes.map((attr) => [attr.id, attr]));
+
     for (const nextAttribute of nextEntity.attributes) {
-      const beforeAttribute = beforeEntity.attributes.find((attribute) => attribute.id === nextAttribute.id);
       const attributeId = nextAttribute.id;
+      const beforeAttribute = attributeId ? beforeAttrsById.get(attributeId) : undefined;
       if (
         !attributeId ||
         !beforeAttribute ||
@@ -173,13 +177,27 @@ export function appendAuthoredAttributeClaims(
   return changed ? { ...project, narrative: { ...records, claims } } : project;
 }
 
+function buildBatchErrorResult(
+  project: CreativeProject,
+  undoState: UndoRedoState,
+  reason: Extract<BatchCommitResult, { ok: false }>['reason'],
+  message: string,
+  errors: Extract<BatchCommitResult, { ok: false }>['errors']
+) {
+  return {
+    project,
+    undoState,
+    result: {
+      ok: false as const,
+      reason,
+      message,
+      errors,
+    },
+  };
+}
+
 /**
  * Commits a staged natural-language batch preview against the authoritative project state.
- * Enforces F-01 & U-02:
- * - Rejects cross-project apply (WRONG_PROJECT)
- * - Rejects stale base revision apply (STALE_REVISION)
- * - Rejects duplicate apply of the same proposalId (ALREADY_APPLIED)
- * - Pre-validates all selected operations atomically (VALIDATION_FAILED)
  */
 export function commitBatchPreviewToProject(params: {
   project: CreativeProject;
@@ -200,60 +218,35 @@ export function commitBatchPreviewToProject(params: {
 
   if (preview.proposalId && appliedSet.has(preview.proposalId)) {
     const msg = 'This batch preview has already been applied.';
-    return {
-      project,
-      undoState,
-      result: {
-        ok: false,
-        reason: 'ALREADY_APPLIED',
-        message: msg,
-        errors: [{ code: 'ALREADY_APPLIED', message: msg }],
-      },
-    };
+    return buildBatchErrorResult(project, undoState, 'ALREADY_APPLIED', msg, [
+      { code: 'ALREADY_APPLIED', message: msg },
+    ]);
   }
 
   if (preview.baseProjectId !== undefined && preview.baseProjectId !== project.id) {
     const msg = `Batch preview was created for project "${preview.baseProjectId}", but the active project is "${project.name}" (${project.id}). Switch back or click Re-preview for this project.`;
-    return {
-      project,
-      undoState,
-      result: {
-        ok: false,
-        reason: 'WRONG_PROJECT',
-        message: msg,
-        errors: [{ operationId: 'batch_project', code: 'WRONG_PROJECT', message: msg }],
-      },
-    };
+    return buildBatchErrorResult(project, undoState, 'WRONG_PROJECT', msg, [
+      { operationId: 'batch_project', code: 'WRONG_PROJECT', message: msg },
+    ]);
   }
 
   const currentRev = project.revision ?? 1;
   if (preview.baseRevision !== undefined && preview.baseRevision !== currentRev) {
     const msg = `Batch preview is stale: it was generated at revision r${preview.baseRevision}, while this project is now at revision r${currentRev}. Click Re-preview to recalculate against the latest state.`;
-    return {
-      project,
-      undoState,
-      result: {
-        ok: false,
-        reason: 'STALE_REVISION',
-        message: msg,
-        errors: [{ operationId: 'batch_base', code: 'STALE_BASE', message: msg }],
-      },
-    };
+    return buildBatchErrorResult(project, undoState, 'STALE_REVISION', msg, [
+      { operationId: 'batch_base', code: 'STALE_BASE', message: msg },
+    ]);
   }
 
   const selectedOps = preview.operations.filter((op) => op.selected);
   if (selectedOps.length === 0) {
-    const msg = 'Select at least one proposed operation to apply.';
-    return {
+    return buildBatchErrorResult(
       project,
       undoState,
-      result: {
-        ok: false,
-        reason: 'NO_SELECTED_OPERATIONS',
-        message: msg,
-        errors: [],
-      },
-    };
+      'NO_SELECTED_OPERATIONS',
+      'Select at least one proposed operation to apply.',
+      []
+    );
   }
 
   const applied = applyProposedOperations(project.snapshot, preview.operations, {
@@ -264,16 +257,13 @@ export function commitBatchPreviewToProject(params: {
   });
 
   if (applied.errors.length > 0) {
-    return {
+    return buildBatchErrorResult(
       project,
       undoState,
-      result: {
-        ok: false,
-        reason: 'VALIDATION_FAILED',
-        message: applied.errors[0].message,
-        errors: applied.errors,
-      },
-    };
+      'VALIDATION_FAILED',
+      applied.errors[0].message,
+      applied.errors
+    );
   }
 
   if (preview.proposalId && appliedProposalIds instanceof Set) {
@@ -301,11 +291,49 @@ export function commitBatchPreviewToProject(params: {
   };
 }
 
-/**
- * Performs an Undo step as a monotonic durable revision on the project while moving the UndoRedoState cursor.
- * Enforces F-04: Undo restores prior snapshot content, advances monotonic project.revision,
- * refreshes artifact currentness, and keeps the redo branch intact. No-op when past stack is empty.
- */
+function commitHistoryCursorStep(
+  project: CreativeProject,
+  undoState: UndoRedoState,
+  direction: 'undo' | 'redo'
+): {
+  project: CreativeProject;
+  undoState: UndoRedoState;
+  label: string | null;
+  changed: boolean;
+} {
+  const stepResult = direction === 'undo' ? performUndo(undoState) : performRedo(undoState);
+  const label = direction === 'undo'
+    ? (stepResult as { undoneLabel: string | null }).undoneLabel
+    : (stepResult as { redoneLabel: string | null }).redoneLabel;
+  if (!label) {
+    return { project, undoState, label: null, changed: false };
+  }
+
+  const nextUndoState = stepResult.state;
+  const nextSnapshot = nextUndoState.present;
+  const refreshedArtifacts = refreshArtifactsCurrentness(project.artifacts, nextSnapshot);
+  const verb = direction === 'undo' ? 'Undo' : 'Redo';
+  const pastVerb = direction === 'undo' ? 'Undid' : 'Redid';
+  const nextProject = recordProjectRevision(
+    {
+      ...project,
+      snapshot: nextSnapshot,
+      artifacts: refreshedArtifacts,
+      undoHistory: serializeUndoHistory(nextUndoState),
+    },
+    `${verb}: ${label}`,
+    `${pastVerb} "${label}"`,
+    1
+  );
+
+  return {
+    project: recordNarrativeChange(project, nextProject, direction, label),
+    undoState: nextUndoState,
+    label,
+    changed: true,
+  };
+}
+
 export function commitUndoTransaction(
   project: CreativeProject,
   undoState: UndoRedoState
@@ -315,38 +343,15 @@ export function commitUndoTransaction(
   undoneLabel: string | null;
   changed: boolean;
 } {
-  const { state: nextUndoState, undoneLabel } = performUndo(undoState);
-  if (!undoneLabel) {
-    return { project, undoState, undoneLabel: null, changed: false };
-  }
-
-  const restoredSnapshot = nextUndoState.present;
-  const refreshedArtifacts = refreshArtifactsCurrentness(project.artifacts, restoredSnapshot);
-  const nextProject = recordProjectRevision(
-    {
-      ...project,
-      snapshot: restoredSnapshot,
-      artifacts: refreshedArtifacts,
-      undoHistory: serializeUndoHistory(nextUndoState),
-    },
-    `Undo: ${undoneLabel}`,
-    `Undid "${undoneLabel}"`,
-    1
-  );
-
+  const res = commitHistoryCursorStep(project, undoState, 'undo');
   return {
-    project: recordNarrativeChange(project, nextProject, 'undo', undoneLabel),
-    undoState: nextUndoState,
-    undoneLabel,
-    changed: true,
+    project: res.project,
+    undoState: res.undoState,
+    undoneLabel: res.label,
+    changed: res.changed,
   };
 }
 
-/**
- * Performs a Redo step as a monotonic durable revision on the project while moving the UndoRedoState cursor.
- * Enforces F-04: Redo reapplies the undone snapshot, advances monotonic project.revision,
- * refreshes artifact currentness, and preserves Undo/Redo stack entries. No-op when future stack is empty.
- */
 export function commitRedoTransaction(
   project: CreativeProject,
   undoState: UndoRedoState
@@ -356,30 +361,12 @@ export function commitRedoTransaction(
   redoneLabel: string | null;
   changed: boolean;
 } {
-  const { state: nextUndoState, redoneLabel } = performRedo(undoState);
-  if (!redoneLabel) {
-    return { project, undoState, redoneLabel: null, changed: false };
-  }
-
-  const redoneSnapshot = nextUndoState.present;
-  const refreshedArtifacts = refreshArtifactsCurrentness(project.artifacts, redoneSnapshot);
-  const nextProject = recordProjectRevision(
-    {
-      ...project,
-      snapshot: redoneSnapshot,
-      artifacts: refreshedArtifacts,
-      undoHistory: serializeUndoHistory(nextUndoState),
-    },
-    `Redo: ${redoneLabel}`,
-    `Redid "${redoneLabel}"`,
-    1
-  );
-
+  const res = commitHistoryCursorStep(project, undoState, 'redo');
   return {
-    project: recordNarrativeChange(project, nextProject, 'redo', redoneLabel),
-    undoState: nextUndoState,
-    redoneLabel,
-    changed: true,
+    project: res.project,
+    undoState: res.undoState,
+    redoneLabel: res.label,
+    changed: res.changed,
   };
 }
 
@@ -398,6 +385,7 @@ export function createSerializedProjectSaveQueue(
 ) {
   const chains = new Map<string, Promise<StorageSaveResult>>();
   const lastCommittedRevisions = new Map<string, number>();
+  const projectGenerations = new Map<string, number>();
 
   const enqueue = (
     project: CreativeProject,
@@ -416,6 +404,7 @@ export function createSerializedProjectSaveQueue(
           };
         }
 
+        const generation = projectGenerations.get(project.id) ?? 0;
         const lastKnown = lastCommittedRevisions.get(project.id);
         const rawExpected = options?.expectedPersistedRevision ?? project.persistedRevision;
         const effectiveExpected =
@@ -428,7 +417,7 @@ export function createSerializedProjectSaveQueue(
           expectedPersistedRevision: effectiveExpected,
         });
 
-        if (res.saved) {
+        if (res.saved && (projectGenerations.get(project.id) ?? 0) === generation) {
           const committedRev = res.persistedRevision ?? (project.revision ?? 1);
           lastCommittedRevisions.set(
             project.id,
@@ -450,6 +439,7 @@ export function createSerializedProjectSaveQueue(
 
   const resetProject = (projectId: string) => {
     lastCommittedRevisions.delete(projectId);
+    projectGenerations.set(projectId, (projectGenerations.get(projectId) ?? 0) + 1);
   };
 
   return {

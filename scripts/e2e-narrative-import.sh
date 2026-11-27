@@ -8,8 +8,9 @@ if ! command -v playwright-cli >/dev/null 2>&1; then
 fi
 curl -fsS "$BASE_URL/api/health" | grep -q '"configured":false'
 mkdir -p .playwright-cli
-trap 'playwright-cli -s=pcc-import close >/dev/null 2>&1 || true' EXIT
-playwright-cli -s=pcc-import open --browser=chromium "$BASE_URL/api/health" >/dev/null
+SESSION="pcc-import-$$"
+trap 'playwright-cli -s="$SESSION" close >/dev/null 2>&1 || true' EXIT
+playwright-cli -s="$SESSION" open --browser=chromium "$BASE_URL/api/health" >/dev/null
 read -r -d '' scenario <<'JS' || true
 async (page) => {
   const browser = page.context().browser();
@@ -176,7 +177,7 @@ async (page) => {
 }
 JS
 scenario="${scenario//__BASE_URL__/$BASE_URL}"
-RUN_OUT="$(playwright-cli -s=pcc-import run-code "$scenario" 2>&1)" || { echo "$RUN_OUT" >&2; exit 1; }
+RUN_OUT="$(playwright-cli -s="$SESSION" run-code "$scenario" 2>&1)" || { echo "$RUN_OUT" >&2; exit 1; }
 echo "$RUN_OUT"
 IMPORT_E2E_RAW="$RUN_OUT" node -e '
 const fs = require("node:fs"); const raw = process.env.IMPORT_E2E_RAW || "";

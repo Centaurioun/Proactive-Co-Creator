@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { AppApiError } from '../server/errors.ts';
 import { AI_OPERATION_POLICIES, maxAttemptsWithinOperationBudget, reserveAggregateOperationUsage } from '../server/aiBudget.ts';
 import { runBudgetedJsonOperation, runWritingAssistant, type NarrativeAiClientLike } from '../server/narrative/narrativeAiService.ts';
 import { extractNarrativeChunk } from '../server/narrative/extractionService.ts';
@@ -204,5 +205,75 @@ describe('narrative AI budget enforcement', () => {
       },
     };
     await runWritingAssistant(request, undefined, client);
+  });
+
+  it('W1-D09 (R15): classifies malformed JSON and schema-invalid responses as INVALID_RESPONSE (502) instead of 500', async () => {
+    const baseRequest = {
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `d${Date.now().toString(16).padStart(63, '0')}`,
+      chunkId: 'schema-invalid', text: 'Ada enters.', scope: 'complete' as const, categories: [], instruction: '',
+    };
+    const badJsonClient = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10 }),
+        generateContent: async () => ({ text: '{broken' }),
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    await assert.rejects(() => extractNarrativeChunk(baseRequest, undefined, badJsonClient), (err: unknown) =>
+      err instanceof AppApiError && err.code === 'INVALID_RESPONSE' && err.statusCode === 502);
+
+    const badSchemaClient = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10 }),
+        generateContent: async () => ({ text: JSON.stringify({ wrong: true }) }),
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    await assert.rejects(() => extractNarrativeChunk({ ...baseRequest, digest: `e${Date.now().toString(16).padStart(63, '0')}` }, undefined, badSchemaClient), (err: unknown) =>
+      err instanceof AppApiError && err.code === 'INVALID_RESPONSE' && err.statusCode === 502);
+
+    const badWritingClient: NarrativeAiClientLike = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10 }),
+        generateContent: async () => ({ text: JSON.stringify({ proposals: 'not-an-array' }) }),
+      },
+    };
+    await assert.rejects(() => runWritingAssistant(request, undefined, badWritingClient), (err: unknown) =>
+      err instanceof AppApiError && err.code === 'INVALID_RESPONSE' && err.statusCode === 502);
+  });
+
+  it('W1-D09 (R15): extractNarrativeChunk preserves TIMEOUT (504) and aborts if generateContent ignores abortSignal', async () => {
+    const controller = new AbortController();
+    const timeoutReasonClient = {
+      models: {
+        countTokens: async () => {
+          controller.abort(new AppApiError('TIMEOUT', 'Timed out', 504, true));
+          return { totalTokens: 10 };
+        },
+        generateContent: async () => ({ text: JSON.stringify({ findings: [], entities: [], relationships: [], ambiguities: [] }) }),
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    await assert.rejects(() => extractNarrativeChunk({
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `a1${Date.now().toString(16).padStart(62, '0')}`,
+      chunkId: 'timeout-preserve', text: 'Ada enters.', scope: 'complete', categories: [], instruction: '',
+    }, controller.signal, timeoutReasonClient), (err: unknown) =>
+      err instanceof AppApiError && err.code === 'TIMEOUT' && err.statusCode === 504);
+
+    const hangingController = new AbortController();
+    const hangingClient = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10 }),
+        generateContent: async () => new Promise(() => undefined),
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    setTimeout(() => hangingController.abort(), 10);
+    await assert.rejects(
+      Promise.race([
+        extractNarrativeChunk({
+          sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `a2${Date.now().toString(16).padStart(62, '0')}`,
+          chunkId: 'hang-abort', text: 'Ada enters.', scope: 'complete', categories: [], instruction: '',
+        }, hangingController.signal, hangingClient),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('HANG_DETECTED')), 150)),
+      ]),
+      (err: unknown) => err instanceof AppApiError && err.code === 'CANCELLED',
+    );
   });
 });

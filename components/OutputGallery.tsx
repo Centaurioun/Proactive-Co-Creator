@@ -9,6 +9,20 @@ import type {
   GenerationArtifact,
   GenerationMode,
 } from '../shared/types';
+import GeneratedOutputView from './output/GeneratedOutputView';
+import PolishProposalBanner from './output/PolishProposalBanner';
+import PromptNotesView from './output/PromptNotesView';
+import {
+  resolveActiveArtifactSelection,
+  shouldCloseLightbox,
+  shouldResetArtifactSelection,
+} from './output/outputGalleryHelpers';
+
+export {
+  resolveActiveArtifactSelection,
+  shouldCloseLightbox,
+  shouldResetArtifactSelection,
+};
 
 interface OutputDisplayProps {
   originalIdea: string;
@@ -68,16 +82,34 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [activeView, setActiveView] = useState<'prompt' | 'output'>('output');
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
-  const placeholderCount = 4;
+  const [prevArtifactIds, setPrevArtifactIds] = useState<string[]>(() => artifacts.map((a) => a.id));
 
-  const modeArtifacts = artifacts.filter((a) => a.mode === mode);
-  const activeArtifact =
-    modeArtifacts.find((a) => a.id === selectedArtifactId) ?? modeArtifacts[0] ?? null;
+  const currentArtifactIds = artifacts.map((a) => a.id);
+  if (
+    currentArtifactIds.length !== prevArtifactIds.length ||
+    currentArtifactIds.some((id, idx) => id !== prevArtifactIds[idx])
+  ) {
+    setPrevArtifactIds(currentArtifactIds);
+    if (shouldResetArtifactSelection(prevArtifactIds, currentArtifactIds, selectedArtifactId)) {
+      setSelectedArtifactId(null);
+    }
+  }
+
+  const { modeArtifacts, activeArtifact } = resolveActiveArtifactSelection(
+    artifacts,
+    mode,
+    selectedArtifactId
+  );
   const displayedStory =
     mode === 'story' ? (activeArtifact?.storyText ?? story) : story;
   const displayedImages =
     mode === 'image' ? (activeArtifact?.images ?? images) : images;
   const displayedOutdated = activeArtifact ? activeArtifact.isOutdated : isOutdated;
+
+  if (shouldCloseLightbox(mode, displayedImages, selectedImage)) {
+    setSelectedImage(null);
+  }
+
   const chatGptStorySelected = mode === 'story' && storyProviderSelection.connectionId === 'chatgpt-plan';
   const chatGptStoryQualified = storyProviderSelection.modelId === 'gpt-6-luna' && storyProviderSelection.reasoningLevel === 'default';
   const chatGptStoryBlocked = chatGptStorySelected && (!chatGptStoryLocalActivation || !chatGptStoryQualified);
@@ -90,9 +122,24 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const lightboxDialogRef = useRef<HTMLDivElement | null>(null);
   const lightboxCloseRef = useRef<HTMLButtonElement | null>(null);
+  const copyStoryTimerRef = useRef<number | null>(null);
+  const copyPromptTimerRef = useRef<number | null>(null);
+  const downloadUrlTimerRef = useRef<{ timer: number; url: string } | null>(null);
 
   useEffect(() => {
-    if (!selectedImage) return;
+    return () => {
+      if (copyStoryTimerRef.current !== null) window.clearTimeout(copyStoryTimerRef.current);
+      if (copyPromptTimerRef.current !== null) window.clearTimeout(copyPromptTimerRef.current);
+      if (downloadUrlTimerRef.current !== null) {
+        window.clearTimeout(downloadUrlTimerRef.current.timer);
+        URL.revokeObjectURL(downloadUrlTimerRef.current.url);
+      }
+    };
+  }, []);
+
+  const lightboxOpen = Boolean(selectedImage);
+  useEffect(() => {
+    if (!lightboxOpen) return;
     previousFocusRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     lightboxCloseRef.current?.focus();
@@ -124,10 +171,14 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       previousFocusRef.current?.focus();
     };
-  }, [selectedImage]);
+  }, [lightboxOpen]);
 
   const downloadStory = () => {
     if (!displayedStory) return;
+    if (downloadUrlTimerRef.current !== null) {
+      window.clearTimeout(downloadUrlTimerRef.current.timer);
+      URL.revokeObjectURL(downloadUrlTimerRef.current.url);
+    }
     const element = document.createElement('a');
     const file = new Blob([displayedStory], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(file);
@@ -136,7 +187,13 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
     document.body.appendChild(element);
     element.click();
     document.body.removeChild(element);
-    setTimeout(() => URL.revokeObjectURL(url), 100);
+    const timer = window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      if (downloadUrlTimerRef.current?.timer === timer) {
+        downloadUrlTimerRef.current = null;
+      }
+    }, 100);
+    downloadUrlTimerRef.current = { timer, url };
   };
 
   const copyStory = async () => {
@@ -144,7 +201,11 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
     try {
       await navigator.clipboard.writeText(displayedStory);
       setCopiedStory(true);
-      setTimeout(() => setCopiedStory(false), 2000);
+      if (copyStoryTimerRef.current !== null) window.clearTimeout(copyStoryTimerRef.current);
+      copyStoryTimerRef.current = window.setTimeout(() => {
+        setCopiedStory(false);
+        copyStoryTimerRef.current = null;
+      }, 2000);
     } catch {
       setCopiedStory(false);
     }
@@ -154,11 +215,18 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
     try {
       await navigator.clipboard.writeText(refinedPrompt);
       setCopiedPrompt(true);
-      setTimeout(() => setCopiedPrompt(false), 2000);
+      if (copyPromptTimerRef.current !== null) window.clearTimeout(copyPromptTimerRef.current);
+      copyPromptTimerRef.current = window.setTimeout(() => {
+        setCopiedPrompt(false);
+        copyPromptTimerRef.current = null;
+      }, 2000);
     } catch {
       setCopiedPrompt(false);
     }
   };
+
+  const hasDisplayedOutput =
+    mode === 'story' ? Boolean(displayedStory) : displayedImages.length > 0;
 
   return (
     <>
@@ -183,7 +251,7 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
                 }`}
               >
                 {mode === 'story' ? 'Generated Story' : 'Generated Images'}
-                {isOutdated && (story || images.length > 0) ? ' · Outdated' : ''}
+                {displayedOutdated && hasDisplayedOutput ? ' · Outdated' : ''}
               </button>
               <button
                 type="button"
@@ -267,221 +335,41 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
 
         {/* Staged AI Polish Proposal Banner */}
         {polishProposal && (
-          <div
-            role="region"
-            aria-label="Staged AI Polish Proposal"
-            className={`mb-3 p-3 rounded-md border space-y-2 flex-shrink-0 ${
-              isPolishStale
-                ? 'bg-amber-50/90 dark:bg-amber-950/50 border-amber-300 dark:border-amber-800'
-                : 'bg-indigo-50/80 dark:bg-indigo-950/50 border-indigo-300 dark:border-indigo-800'
-            }`}
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span
-                className={`text-xs font-bold ${
-                  isPolishStale
-                    ? 'text-amber-900 dark:text-amber-200'
-                    : 'text-indigo-900 dark:text-indigo-200'
-                }`}
-              >
-                {isPolishStale
-                  ? 'Stale AI Polish Proposal — Story Plan Changed Since Proposal'
-                  : 'Staged AI Narrative Polish Proposal (Review Before Applying)'}
-              </span>
-              <div className="flex items-center gap-1.5">
-                {isPolishStale && onPolishPromptWithAi && (
-                  <button
-                    type="button"
-                    onClick={onPolishPromptWithAi}
-                    disabled={isPolishingPrompt}
-                    className="px-2.5 py-1 text-xs font-semibold rounded bg-amber-600 hover:bg-amber-700 text-white"
-                  >
-                    {isPolishingPrompt ? 'Re-polishing...' : 'Re-polish Current Prompt'}
-                  </button>
-                )}
-                {onAcceptPolishProposal && !isPolishStale && (
-                  <button
-                    type="button"
-                    onClick={onAcceptPolishProposal}
-                    className="px-2.5 py-1 text-xs font-semibold rounded bg-indigo-600 hover:bg-indigo-700 text-white"
-                  >
-                    Accept Polished Prompt
-                  </button>
-                )}
-                {onRejectPolishProposal && (
-                  <button
-                    type="button"
-                    onClick={onRejectPolishProposal}
-                    className="px-2.5 py-1 text-xs font-medium rounded bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700 hover:bg-gray-100"
-                  >
-                    Discard Proposal
-                  </button>
-                )}
-              </div>
-            </div>
-            {isPolishStale && polishStaleReason && (
-              <p className="text-xs text-amber-800 dark:text-amber-300" role="alert">
-                {polishStaleReason}
-              </p>
-            )}
-            <pre className="p-2 rounded bg-white dark:bg-gray-900 border border-indigo-200 dark:border-indigo-900 text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap font-mono max-h-28 overflow-y-auto">
-              {polishProposal.polishedPrompt || polishProposal.proposedPrompt}
-            </pre>
-          </div>
+          <PolishProposalBanner
+            polishProposal={polishProposal}
+            isPolishStale={isPolishStale}
+            polishStaleReason={polishStaleReason}
+            isPolishingPrompt={isPolishingPrompt}
+            onPolishPromptWithAi={onPolishPromptWithAi}
+            onAcceptPolishProposal={onAcceptPolishProposal}
+            onRejectPolishProposal={onRejectPolishProposal}
+          />
         )}
 
-        {/* View 1: Refined Prompt & Author Notes */}
         {activeView === 'prompt' ? (
-          <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-2 gap-3 min-h-0">
-            <div className="flex flex-col gap-1.5">
-              <div className="text-xs font-semibold text-gray-800 dark:text-gray-200 flex items-center justify-between">
-                <span>Derived Refined Prompt (From Confirmed Decisions)</span>
-                <span className="text-[11px] font-normal text-gray-500">
-                  Original idea: &ldquo;{originalIdea.slice(0, 38)}...&rdquo;
-                </span>
-              </div>
-              <pre className="flex-1 p-3 rounded-md bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap font-mono leading-relaxed overflow-y-auto">
-                {refinedPrompt}
-              </pre>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="freeform-author-notes"
-                className="text-xs font-semibold text-gray-800 dark:text-gray-200"
-              >
-                Freeform Author Notes (Preserved Across AI Reanalysis)
-              </label>
-              <textarea
-                id="freeform-author-notes"
-                value={freeformNotes}
-                onChange={(e) => onChangeFreeformNotes(e.target.value)}
-                placeholder="Add custom dialogue snippets, stylistic instructions, or pacing notes that AI reanalysis must never overwrite..."
-                className="flex-1 min-h-[90px] p-2.5 rounded-md bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-              />
-            </div>
-          </div>
+          <PromptNotesView
+            originalIdea={originalIdea}
+            refinedPrompt={refinedPrompt}
+            freeformNotes={freeformNotes}
+            onChangeFreeformNotes={onChangeFreeformNotes}
+          />
         ) : (
-          /* View 2: Generated Story or Images */
-          <div className="flex-1 overflow-y-auto min-h-0 relative">
-            {mode === 'story' && <div className="mb-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200" role="status">
-              <p className="font-semibold">Effective Story route: {storyProviderSelection.connectionId === 'chatgpt-plan' ? 'ChatGPT plan' : storyProviderSelection.connectionId} · model {storyProviderSelection.modelId ?? 'provider default / not selected'} · reasoning {storyProviderSelection.reasoningLevel ?? 'not selected'}.</p>
-              {chatGptStorySelected && <>
-                <p className="mt-1">A request may consume included ChatGPT allowance or eligible credits. Failed, cancelled, incomplete, or uncertain requests may still count. PCC will not retry, continue, or fall back to Gemini or API billing; local cancellation may not stop work already received upstream.</p>
-                <p className="mt-1">{chatGptStoryBlocked ? chatGptStoryBlockReason : 'This local server is enabled for explicit Story requests.'}</p>
-              </>}
-            </div>}
-            {displayedOutdated && !isLoading && (displayedImages.length > 0 || displayedStory) && (
-              <div className="mb-2.5 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-2 text-xs text-amber-900 dark:text-amber-200">
-                <span>
-                  Story plan has been updated since this output was generated. Previous output is preserved below.
-                </span>
-                <button
-                  type="button"
-                  onClick={onGenerate}
-                  disabled={chatGptStoryBlocked}
-                  className="px-2.5 py-1 font-semibold bg-amber-600 hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50 text-white rounded whitespace-nowrap"
-                >
-                  Regenerate Now
-                </button>
-              </div>
-            )}
-
-            {mode === 'image' && imageWarning && !isLoading && !error && (
-              <div
-                className="mb-2.5 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 text-xs text-amber-800 dark:text-amber-200"
-                role="status"
-              >
-                {imageWarning}
-              </div>
-            )}
-
-            {error ? (
-              <div
-                className="p-4 rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 text-xs text-red-800 dark:text-red-200"
-                role="alert"
-              >
-                <p className="font-semibold mb-1">Generation Failed</p>
-                <p>{error}</p>
-              </div>
-            ) : mode === 'story' ? (
-              isLoading ? (
-                <div className="py-8 text-center text-xs font-medium text-gray-600 dark:text-gray-300">
-                  Writing story from your confirmed Story Bible and Belief Graph...
-                </div>
-              ) : displayedStory ? (
-                <article className="p-4 bg-gray-50 dark:bg-gray-950/60 rounded-md border border-gray-200 dark:border-gray-800 space-y-2.5 leading-relaxed text-sm text-gray-800 dark:text-gray-200">
-                  {displayedStory
-                    .split('\n')
-                    .filter((line) => line.trim().length > 0)
-                    .map((paragraph, index) => (
-                      <p key={index}>{paragraph}</p>
-                    ))}
-                  {storyProviderSelection.connectionId === 'chatgpt-plan' && storyProviderUsage && displayedStory === storyProviderUsage.storyText && <p className="border-t border-gray-200 pt-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300">
-                    {storyProviderUsage.usage.source === 'provider-observed'
-                      ? `Provider-observed usage: input ${storyProviderUsage.usage.inputTokens ?? 'not reported'} tokens; output ${storyProviderUsage.usage.outputTokens ?? 'not reported'} tokens.`
-                      : 'The provider did not report token usage for this response.'}
-                  </p>}
-                </article>
-              ) : (
-                <div className="p-6 text-center rounded-md border border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-950/40 flex flex-col items-center justify-center gap-2">
-                  <p className="text-xs text-gray-600 dark:text-gray-400">
-                    No story generated yet. Confirm your creative decisions or click Generate Story when ready.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={onGenerate}
-                    disabled={chatGptStoryBlocked}
-                    className="px-3.5 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50 text-white rounded-md transition-colors"
-                  >
-                    Generate Story from Confirmed Plan
-                  </button>
-                </div>
-              )
-            ) : (
-              /* Image Mode */
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {isLoading
-                  ? Array(placeholderCount)
-                      .fill(null)
-                      .map((_, index) => (
-                        <div
-                          key={index}
-                          className="aspect-square bg-gray-100 dark:bg-gray-800 rounded-md flex items-center justify-center border border-gray-200 dark:border-gray-700 text-xs text-gray-500"
-                        >
-                          Generating...
-                        </div>
-                      ))
-                  : displayedImages.length > 0
-                    ? displayedImages.map((image, index) => (
-                        <button
-                          key={index}
-                          type="button"
-                          onClick={() => setSelectedImage(image)}
-                          aria-label={`Preview generated image ${index + 1}`}
-                          className="aspect-square bg-gray-100 dark:bg-gray-800 rounded-md overflow-hidden relative border border-gray-200 dark:border-gray-700 group cursor-zoom-in"
-                        >
-                          <img
-                            src={image}
-                            alt={`Generated output ${index + 1}`}
-                            referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover"
-                          />
-                        </button>
-                      ))
-                    : Array(placeholderCount)
-                        .fill(null)
-                        .map((_, index) => (
-                          <div
-                            key={index}
-                            className="aspect-square bg-gray-50 dark:bg-gray-950/50 rounded-md border border-gray-200 dark:border-gray-800 flex items-center justify-center text-xs text-gray-400 p-2 text-center"
-                          >
-                            Image Slot {index + 1} (Explicit user trigger required)
-                          </div>
-                        ))}
-              </div>
-            )}
-          </div>
+          <GeneratedOutputView
+            mode={mode}
+            isLoading={isLoading}
+            error={error}
+            displayedOutdated={displayedOutdated}
+            displayedStory={displayedStory}
+            displayedImages={displayedImages}
+            imageWarning={imageWarning}
+            storyProviderSelection={storyProviderSelection}
+            chatGptStorySelected={chatGptStorySelected}
+            chatGptStoryBlocked={chatGptStoryBlocked}
+            chatGptStoryBlockReason={chatGptStoryBlockReason}
+            storyProviderUsage={storyProviderUsage}
+            onGenerate={onGenerate}
+            onSelectImage={setSelectedImage}
+          />
         )}
       </div>
 

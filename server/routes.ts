@@ -5,7 +5,6 @@
 
 import express from 'express';
 import type { Request, Response, Router } from 'express';
-import { createHash } from 'node:crypto';
 import {
   AnalyzeRequestSchema,
   BatchEditRequestSchema,
@@ -44,7 +43,7 @@ import {
   type WritingAssistRequest,
   type WritingAssistResponse,
 } from '../shared/narrativeAiSchemas.ts';
-import { getAiCapabilitiesSnapshot } from './aiBudget.ts';
+import { getAiCapabilitiesSnapshot, type AiOperation } from './aiBudget.ts';
 import {
   analyzeBeliefGraph,
   generateClarificationsList,
@@ -56,15 +55,12 @@ import {
 import { AppApiError, classifyGeminiError } from './errors.ts';
 import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
-import { createProviderHubRouter, hasSameOriginLocalRequest, resolveClientSelection } from './providerHubRoutes.ts';
-import type { ProviderHubRouterOptions } from './providerHubRoutes.ts';
+import { createProviderHubRouter, resolveClientSelection, type ProviderHubRouterOptions } from './providerHubRoutes.ts';
 import { getAiProviderRequestContext, runWithAiProviderContext } from './providers/requestContext.ts';
 import { CAPABILITY_POLICY_VERSION, assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
-import { createChatGptAdapter, getCachedProviderModel, getCredentialAuthorityId } from './providers/runtime.ts';
-import { chatGptSessionStore } from './auth/chatgpt/runtime.ts';
-import { createChatGptStorySrbAuthority, type ChatGptStorySrbAuthority } from './providers/subscriptionResourceBudget.ts';
-import type { ChatGptResponsesAdapter } from './providers/chatgptResponses.ts';
-import type { AiOperation } from './aiBudget.ts';
+import { getCachedProviderModel, getCredentialAuthorityId } from './providers/runtime.ts';
+import { createChatGptStorySrbAuthority } from './providers/subscriptionResourceBudget.ts';
+import { handleChatGptStoryGeneration, type ChatGptStorySrbInjection } from './providers/storyRouteHandler.ts';
 import { extractNarrativeChunk } from './narrative/extractionService.ts';
 import {
   analyzeNarrativeSync,
@@ -138,17 +134,27 @@ const defaultHandlers: AiServiceHandlers = {
   proposeImportEnhancements,
 };
 
+export interface ApiRouterOptions {
+  rateLimitWindowMs?: number;
+  maxRequestsPerWindow?: number;
+  /** Trusted development-process gate; no HTTP endpoint can enable it. */
+  chatGptStoryLocalActivation?: boolean;
+  /** Trusted deterministic qualification seam. Production createApiRouter() never supplies it. */
+  chatGptStorySrbTestInjection?: ChatGptStorySrbInjection;
+  /** In-process synthetic account catalog for key-free browser qualification only. */
+  chatGptProviderHubTestInjection?: Pick<ProviderHubRouterOptions, 'chatGptStoryQualificationCatalog'>;
+}
+
+const MAX_RATE_LIMIT_CLIENTS = 4_096;
+const defaultChatGptStorySrbAuthority = createChatGptStorySrbAuthority();
+
 function attachRequestAbortSignal(_req: Request, res: Response): AbortController {
   const controller = new AbortController();
   const onClose = () => {
-    if (!res.writableEnded) {
-      controller.abort();
-    }
+    if (!res.writableEnded) controller.abort();
   };
   res.on('close', onClose);
-  res.once('finish', () => {
-    res.off('close', onClose);
-  });
+  res.once('finish', () => res.off('close', onClose));
   return controller;
 }
 
@@ -158,77 +164,199 @@ function sendErrorResponse(res: Response, err: unknown): void {
   res.status(classified.statusCode).json({ error: classified.toPayload() });
 }
 
-export interface ApiRouterOptions {
-  rateLimitWindowMs?: number;
-  maxRequestsPerWindow?: number;
-  /** Trusted development-process gate; no HTTP endpoint can enable it. */
-  chatGptStoryLocalActivation?: boolean;
-  /** Trusted deterministic qualification seam. Production createApiRouter() never supplies it. */
-  chatGptStorySrbTestInjection?: {
-    authority: ChatGptStorySrbAuthority;
-    currentGrantGeneration: () => number;
-    adapterFactory: (generation: number) => Pick<ChatGptResponsesAdapter, 'generateStoryText'>;
-  };
-  /** In-process synthetic account catalog for key-free browser qualification only. */
-  chatGptProviderHubTestInjection?: Pick<ProviderHubRouterOptions, 'chatGptStoryQualificationCatalog'>;
+interface ParseSchema<T> {
+  safeParse(input: unknown): { success: true; data: T } | { success: false; error: { issues: Array<{ message: string }> } };
 }
 
-const defaultChatGptStorySrbAuthority = createChatGptStorySrbAuthority();
-const CHATGPT_STORY_INSTRUCTIONS = 'Write a vivid, engaging, well-structured story based only on the supplied story brief and its creative constraints. Preserve confirmed details and exclusions. Return story text only.';
+function registerJsonPostRoute<T>(
+  router: Router,
+  routePath: string,
+  schema: ParseSchema<T>,
+  fallbackError: string,
+  execute: (data: T, signal: AbortSignal, req: Request) => Promise<unknown>,
+): void {
+  router.post(routePath, async (req, res) => {
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? fallbackError, 400, false);
+      res.status(400).json({ error: err.toPayload() });
+      return;
+    }
+    const controller = attachRequestAbortSignal(req, res);
+    try {
+      res.json(await execute(parsed.data, controller.signal, req));
+    } catch (err) {
+      sendErrorResponse(res, err);
+    }
+  });
+}
+
+export function createIpRateLimiter(windowMs: number, maxRequests: number, maxClients: number = MAX_RATE_LIMIT_CLIENTS) {
+  const clientWindows = new Map<string, { count: number; resetAt: number }>();
+
+  const pruneOrEvict = (now: number) => {
+    for (const [ip, entry] of clientWindows) {
+      if (now >= entry.resetAt) clientWindows.delete(ip);
+    }
+    while (clientWindows.size >= maxClients) {
+      const oldestIp = clientWindows.keys().next().value;
+      if (oldestIp === undefined) break;
+      clientWindows.delete(oldestIp);
+    }
+  };
+
+  return {
+    size: () => clientWindows.size,
+    check(clientIp: string, now: number = Date.now()): { allowed: true } | { allowed: false; retryAfterSec: number } {
+      if (maxRequests <= 0) return { allowed: true };
+      const existing = clientWindows.get(clientIp);
+      if (!existing || now >= existing.resetAt) {
+        if (!existing && clientWindows.size >= maxClients) pruneOrEvict(now);
+        clientWindows.set(clientIp, { count: 1, resetAt: now + windowMs });
+        return { allowed: true };
+      }
+      if (existing.count >= maxRequests) {
+        return { allowed: false, retryAfterSec: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)) };
+      }
+      existing.count += 1;
+      return { allowed: true };
+    },
+  };
+}
+
+const EXACT_OPERATION_PATHS: Record<string, AiOperation> = {
+  '/analyze': 'analyze',
+  '/clarify': 'clarify',
+  '/refine': 'polish',
+  '/batch-edit': 'batch-edit',
+  '/generate/story': 'story',
+  '/generate/images': 'image',
+  '/narrative/import/extract': 'narrative-import',
+};
+
+const PREFIX_OPERATION_PATHS: ReadonlyArray<readonly [string, AiOperation]> = [
+  ['/narrative/diagnostics/', 'diagnostics'],
+  ['/narrative/sync/', 'sync'],
+  ['/narrative/writing/', 'writing'],
+  ['/narrative/opportunities/', 'opportunities'],
+  ['/narrative/import/enhance', 'import-enhance'],
+];
+
+function resolveOperationForPath(routePath: string): AiOperation | undefined {
+  const exact = EXACT_OPERATION_PATHS[routePath];
+  if (exact) return exact;
+  return PREFIX_OPERATION_PATHS.find(([prefix]) => routePath.startsWith(prefix))?.[1];
+}
+
+function validateNarrativePlanBinding(
+  req: Request,
+  selection: { connectionId: 'gemini-managed' | 'gemini-personal' | 'chatgpt-plan' | 'openai-api'; modelId?: string; reasoningLevel?: string },
+): NarrativeExtractionRequest['providerPlanBinding'] {
+  const providerPlanBinding = req.body && typeof req.body === 'object'
+    ? (req.body as { providerPlanBinding?: unknown }).providerPlanBinding
+    : undefined;
+  if (!providerPlanBinding || typeof providerPlanBinding !== 'object' || Array.isArray(providerPlanBinding)) {
+    throw new AppApiError('VALIDATION_ERROR', 'Narrative extraction requires its approved provider plan identity.', 400, false);
+  }
+  const binding = providerPlanBinding as Record<string, unknown>;
+  const selectedReasoning = selection.reasoningLevel ?? 'default';
+  const selectedModel = selection.modelId ? getCachedProviderModel(selection.connectionId, selection.modelId) : undefined;
+  const managedMatches = selection.connectionId === 'gemini-managed' &&
+    selection.modelId === GEMINI_MODELS.text &&
+    binding.capabilityPolicyVersion === CAPABILITY_POLICY_VERSION &&
+    selectedReasoning === 'default';
+  const versionMatches = selectedModel?.capabilityPolicyVersion === binding.capabilityPolicyVersion || managedMatches;
+  if (binding.connectionId !== selection.connectionId || binding.modelId !== selection.modelId ||
+      binding.reasoningLevel !== selectedReasoning || !versionMatches ||
+      binding.credentialAuthorityId !== getCredentialAuthorityId(selection.connectionId)) {
+    throw new AppApiError(
+      'CANCELLED',
+      'The provider, model, reasoning, policy, or credential session changed after the analysis plan was approved. Preview and confirm a new plan.',
+      409,
+      false,
+    );
+  }
+  return providerPlanBinding as NarrativeExtractionRequest['providerPlanBinding'];
+}
+
+function admitProviderRequest(
+  req: Request,
+  operation: AiOperation,
+  isNarrativeExtraction: boolean,
+  options: ApiRouterOptions,
+): NarrativeExtractionRequest['providerPlanBinding'] | undefined {
+  const selection = resolveClientSelection(req);
+  if (!selection) {
+    throw new AppApiError(
+      'PROVIDER_SELECTION_INVALID' as AppApiError['code'],
+      'The selected AI connection is unavailable in this environment. Choose an available connection explicitly.',
+      403,
+      false,
+    );
+  }
+  const authorizedBoundedStory = operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
+    (options.chatGptStorySrbTestInjection !== undefined || options.chatGptStoryLocalActivation === true);
+  if (authorizedBoundedStory && (selection.reasoningLevel ?? 'default') !== 'default') {
+    throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story uses Default reasoning only.', 422, false);
+  }
+  const providerPlanBinding = isNarrativeExtraction ? validateNarrativePlanBinding(req, selection) : undefined;
+  if (!authorizedBoundedStory) assertProviderOperation(selection.connectionId, operation);
+  if (selection.connectionId !== 'gemini-managed' && !selection.modelId) {
+    throw new AppApiError('MODEL_UNSUPPORTED', 'Refresh this connection’s model list and select a model before using it.', 422, false);
+  }
+  if (selection.modelId) {
+    const model = getCachedProviderModel(selection.connectionId, selection.modelId);
+    if (!model) {
+      const managedDefault = selection.connectionId === 'gemini-managed' && selection.modelId === GEMINI_MODELS.text &&
+        (selection.reasoningLevel ?? 'default') === 'default';
+      if (!managedDefault) {
+        throw new AppApiError('MODEL_UNSUPPORTED', 'The selected model is not in the latest server-verified account catalog. Refresh the model list.', 422, false);
+      }
+    } else {
+      if (!authorizedBoundedStory) assertModelOperation(model, operation);
+      assertReasoningSelection(model, selection.reasoningLevel);
+    }
+  }
+  return providerPlanBinding;
+}
 
 export function createApiRouter(
   handlers: AiServiceHandlers = defaultHandlers,
   options: ApiRouterOptions = {}
 ): Router {
   const router = express.Router();
-  // This ledger is process-local by design. Altering the startup gate requires
-  // a server restart, which also starts a fresh request/quota identity ledger.
   const localStoryAuthority = options.chatGptStoryLocalActivation
     ? createChatGptStorySrbAuthority({ enabled: true })
     : defaultChatGptStorySrbAuthority;
   const windowMs = options.rateLimitWindowMs ?? 60_000;
   const maxRequests = options.maxRequestsPerWindow ?? 60;
-  const clientWindows = new Map<string, { count: number; resetAt: number }>();
+  const rateLimiter = createIpRateLimiter(windowMs, maxRequests);
 
   router.get('/health', (_req, res) => {
-    res.json({
-      ok: true,
-      configured: handlers.hasConfiguredGeminiKey(),
-      models: GEMINI_MODELS,
-    });
+    res.json({ ok: true, configured: handlers.hasConfiguredGeminiKey(), models: GEMINI_MODELS });
   });
 
   router.use((req, res, next) => {
-    if (maxRequests <= 0) {
-      next();
-      return;
-    }
-    const now = Date.now();
     const clientIp = req.ip || req.socket?.remoteAddress || 'local';
-    const existing = clientWindows.get(clientIp);
-    if (!existing || now >= existing.resetAt) {
-      clientWindows.set(clientIp, { count: 1, resetAt: now + windowMs });
-      next();
-      return;
-    }
-    if (existing.count >= maxRequests) {
-      const retryAfterSec = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
-      res.setHeader('Retry-After', String(retryAfterSec));
-      const err = new AppApiError(
-        'RATE_LIMITED',
-        `Rate limit exceeded (${maxRequests} requests per ${Math.round(windowMs / 1000)}s). Please wait ${retryAfterSec}s before retrying.`,
-        429,
-        true
-      );
-      res.status(429).json({ error: err.toPayload() });
-      return;
-    }
-    existing.count += 1;
-    next();
+    const result = rateLimiter.check(clientIp);
+    if (result.allowed) { next(); return; }
+    res.setHeader('Retry-After', String(result.retryAfterSec));
+    const err = new AppApiError(
+      'RATE_LIMITED',
+      `Rate limit exceeded (${maxRequests} requests per ${Math.round(windowMs / 1000)}s). Please wait ${result.retryAfterSec}s before retrying.`,
+      429,
+      true,
+    );
+    res.status(429).json({ error: err.toPayload() });
   });
 
   router.use((req, res, next) => {
-    if (req.path === '/health' || req.path.startsWith('/ai/provider-hub/')) { next(); return; }
+    if (req.path === '/health' || req.path === '/ai/capabilities' || req.path.startsWith('/ai/provider-hub/')) {
+      next();
+      return;
+    }
+    const operation = resolveOperationForPath(req.path);
+    if (!operation) { next(); return; }
     const isNarrativeExtraction = req.method === 'POST' && req.path === '/narrative/import/extract';
     const hasSelection = ['x-pcc-ai-connection', 'x-pcc-ai-model', 'x-pcc-ai-reasoning'].some((name) => req.get(name) !== undefined);
     if (!hasSelection && !isNarrativeExtraction) { next(); return; }
@@ -237,312 +365,57 @@ export function createApiRouter(
       res.status(403).json({ error: { code: 'PROVIDER_SELECTION_INVALID', message: 'The selected AI connection is unavailable in this environment. Choose an available connection explicitly.' } });
       return;
     }
-    const path = req.path;
-    const operation: AiOperation = path === '/analyze' ? 'analyze'
-      : path === '/clarify' ? 'clarify'
-      : path === '/refine' ? 'polish'
-      : path === '/batch-edit' ? 'batch-edit'
-      : path === '/generate/story' ? 'story'
-      : path === '/generate/images' ? 'image'
-      : path === '/narrative/import/extract' ? 'narrative-import'
-      : path.startsWith('/narrative/diagnostics/') ? 'diagnostics'
-      : path.startsWith('/narrative/sync/') ? 'sync'
-      : path.startsWith('/narrative/writing/') ? 'writing'
-      : path.startsWith('/narrative/opportunities/') ? 'opportunities'
-      : path.startsWith('/narrative/import/enhance') ? 'import-enhance'
-      : 'story';
     try {
-      const authorizedBoundedStory = operation === 'story' && selection.connectionId === 'chatgpt-plan' &&
-        (options.chatGptStorySrbTestInjection !== undefined || options.chatGptStoryLocalActivation === true);
-      if (authorizedBoundedStory && (selection.reasoningLevel ?? 'default') !== 'default') {
-        throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story uses Default reasoning only.', 422, false);
-      }
-      const providerPlanBinding = isNarrativeExtraction && req.body && typeof req.body === 'object'
-        ? (req.body as { providerPlanBinding?: unknown }).providerPlanBinding
-        : undefined;
-      if (isNarrativeExtraction) {
-        if (!providerPlanBinding || typeof providerPlanBinding !== 'object' || Array.isArray(providerPlanBinding)) {
-          throw new AppApiError('VALIDATION_ERROR', 'Narrative extraction requires its approved provider plan identity.', 400, false);
-        }
-        const binding = providerPlanBinding as {
-          connectionId?: unknown; modelId?: unknown; reasoningLevel?: unknown;
-          capabilityPolicyVersion?: unknown; credentialAuthorityId?: unknown;
-        };
-        const selectedReasoning = selection.reasoningLevel ?? 'default';
-        const selectedModel = selection.modelId ? getCachedProviderModel(selection.connectionId, selection.modelId) : undefined;
-        const managedModelMatches = selection.connectionId === 'gemini-managed' &&
-          selection.modelId === GEMINI_MODELS.text && binding.capabilityPolicyVersion === CAPABILITY_POLICY_VERSION &&
-          selectedReasoning === 'default';
-        if (binding.connectionId !== selection.connectionId || binding.modelId !== selection.modelId ||
-            binding.reasoningLevel !== selectedReasoning ||
-            !(selectedModel?.capabilityPolicyVersion === binding.capabilityPolicyVersion || managedModelMatches) ||
-            binding.credentialAuthorityId !== getCredentialAuthorityId(selection.connectionId)) {
-          throw new AppApiError('CANCELLED', 'The provider, model, reasoning, policy, or credential session changed after the analysis plan was approved. Preview and confirm a new plan.', 409, false);
-        }
-      }
-      if (!authorizedBoundedStory) assertProviderOperation(selection.connectionId, operation);
-      if (selection.connectionId !== 'gemini-managed' && !selection.modelId) {
-        throw new AppApiError('MODEL_UNSUPPORTED', 'Refresh this connection’s model list and select a model before using it.', 422, false);
-      }
-      if (selection.modelId) {
-        const model = getCachedProviderModel(selection.connectionId, selection.modelId);
-        if (!model) {
-          const managedDefault = selection.connectionId === 'gemini-managed' && selection.modelId === GEMINI_MODELS.text &&
-            (selection.reasoningLevel ?? 'default') === 'default';
-          if (!managedDefault) throw new AppApiError('MODEL_UNSUPPORTED', 'The selected model is not in the latest server-verified account catalog. Refresh the model list.', 422, false);
-        } else {
-          if (!authorizedBoundedStory) assertModelOperation(model, operation);
-          assertReasoningSelection(model, selection.reasoningLevel);
-        }
-      }
+      const providerPlanBinding = admitProviderRequest(req, operation, isNarrativeExtraction, options);
+      runWithAiProviderContext({ selection, operation, ...(providerPlanBinding ? { providerPlanBinding } : {}) }, next);
     } catch (error) {
       const failure = error instanceof AppApiError ? error : new AppApiError('MODEL_UNSUPPORTED', 'The selected AI model cannot run this operation.', 422, false);
       res.status(failure.statusCode).json({ error: failure.toPayload() });
-      return;
     }
-    const providerPlanBinding = isNarrativeExtraction
-      ? (req.body as { providerPlanBinding?: NarrativeExtractionRequest['providerPlanBinding'] } | undefined)?.providerPlanBinding
-      : undefined;
-    runWithAiProviderContext({ selection, operation, ...(providerPlanBinding ? { providerPlanBinding } : {}) }, next);
   });
 
   router.use('/ai/provider-hub', createProviderHubRouter(options.chatGptProviderHubTestInjection));
 
-  router.post('/analyze', async (req, res) => {
-    const parsed = AnalyzeRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError(
-        'VALIDATION_ERROR',
-        parsed.error.issues[0]?.message ?? 'Invalid analysis request.',
-        400,
-        false
-      );
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
+  registerJsonPostRoute(router, '/analyze', AnalyzeRequestSchema, 'Invalid analysis request.', async (data, signal) => ({
+    graph: await handlers.analyzeBeliefGraph(data.prompt, data.mode, signal),
+  }));
 
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const graph = await handlers.analyzeBeliefGraph(
-        parsed.data.prompt,
-        parsed.data.mode,
-        controller.signal
-      );
-      res.json({ graph });
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
+  registerJsonPostRoute(router, '/narrative/import/extract', NarrativeExtractionRequestSchema, 'Invalid narrative import request.', async (data, signal) => {
+    if (!handlers.extractNarrativeChunk) throw new AppApiError('INTERNAL_ERROR', 'Narrative extraction is unavailable.', 503, false);
+    return { extraction: await handlers.extractNarrativeChunk(data, signal) };
   });
 
-  router.post('/narrative/import/extract', async (req, res) => {
-    const parsed = NarrativeExtractionRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid narrative import request.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const handler = handlers.extractNarrativeChunk;
-      if (!handler) throw new AppApiError('INTERNAL_ERROR', 'Narrative extraction is unavailable.', 503, false);
-      const result = await handler(parsed.data, controller.signal);
-      res.json({ extraction: result });
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
+  registerJsonPostRoute(router, '/clarify', ClarifyRequestSchema, 'Invalid clarification request.', async (data, signal) => ({
+    clarifications: await handlers.generateClarificationsList(data.prompt, data.askedQuestions, data.mode, signal, data.confirmedFacts),
+  }));
+
+  registerJsonPostRoute(router, '/refine', RefineRequestSchema, 'Invalid prompt refinement request.', async (data, signal) => ({
+    refinedPrompt: await handlers.refinePromptText(data.originalPrompt, data.clarifications, data.graphUpdates, signal),
+  }));
+
+  registerJsonPostRoute(router, '/batch-edit', BatchEditRequestSchema, 'Invalid batch-edit request.', (data, signal) => {
+    const handler = handlers.interpretBatchEditInstruction ?? interpretBatchEditInstruction;
+    return handler(data.instruction, { prompt: data.prompt, entities: data.entities, relationships: data.relationships }, signal);
   });
 
-  router.post('/clarify', async (req, res) => {
-    const parsed = ClarifyRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError(
-        'VALIDATION_ERROR',
-        parsed.error.issues[0]?.message ?? 'Invalid clarification request.',
-        400,
-        false
-      );
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
+  registerJsonPostRoute(router, '/generate/images', GenerateMediaRequestSchema, 'Invalid image generation request.', (data, signal) =>
+    handlers.generateImagesBatch(data.prompt, signal),
+  );
 
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const clarifications = await handlers.generateClarificationsList(
-        parsed.data.prompt,
-        parsed.data.askedQuestions,
-        parsed.data.mode,
-        controller.signal,
-        parsed.data.confirmedFacts
-      );
-      res.json({ clarifications });
-    } catch (err) {
-      sendErrorResponse(res, err);
+  registerJsonPostRoute(router, '/generate/story', GenerateMediaRequestSchema, 'Invalid story generation request.', async (data, signal, req) => {
+    const providerContext = getAiProviderRequestContext();
+    if (providerContext?.operation === 'story' && providerContext.selection.connectionId === 'chatgpt-plan') {
+      return handleChatGptStoryGeneration({
+        req,
+        prompt: data.prompt,
+        signal,
+        providerContext,
+        localActivation: options.chatGptStoryLocalActivation === true,
+        localAuthority: localStoryAuthority,
+        injection: options.chatGptStorySrbTestInjection,
+      });
     }
-  });
-
-  router.post('/refine', async (req, res) => {
-    const parsed = RefineRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError(
-        'VALIDATION_ERROR',
-        parsed.error.issues[0]?.message ?? 'Invalid prompt refinement request.',
-        400,
-        false
-      );
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const refinedPrompt = await handlers.refinePromptText(
-        parsed.data.originalPrompt,
-        parsed.data.clarifications,
-        parsed.data.graphUpdates,
-        controller.signal
-      );
-      res.json({ refinedPrompt });
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/batch-edit', async (req, res) => {
-    const parsed = BatchEditRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError(
-        'VALIDATION_ERROR',
-        parsed.error.issues[0]?.message ?? 'Invalid batch-edit request.',
-        400,
-        false
-      );
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const handler = handlers.interpretBatchEditInstruction ?? interpretBatchEditInstruction;
-      const result = await handler(
-        parsed.data.instruction,
-        {
-          prompt: parsed.data.prompt,
-          entities: parsed.data.entities,
-          relationships: parsed.data.relationships,
-        },
-        controller.signal
-      );
-      res.json(result);
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/generate/images', async (req, res) => {
-    const parsed = GenerateMediaRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError(
-        'VALIDATION_ERROR',
-        parsed.error.issues[0]?.message ?? 'Invalid image generation request.',
-        400,
-        false
-      );
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const result = await handlers.generateImagesBatch(
-        parsed.data.prompt,
-        controller.signal
-      );
-      res.json(result);
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/generate/story', async (req, res) => {
-    const parsed = GenerateMediaRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError(
-        'VALIDATION_ERROR',
-        parsed.error.issues[0]?.message ?? 'Invalid story generation request.',
-        400,
-        false
-      );
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const providerContext = getAiProviderRequestContext();
-      if (providerContext?.operation === 'story' && providerContext.selection.connectionId === 'chatgpt-plan') {
-        if (options.chatGptStoryLocalActivation && !hasSameOriginLocalRequest(req)) {
-          throw new AppApiError('AUTH_ERROR', 'ChatGPT Story is available only from this local PCC browser origin.', 403, false);
-        }
-        const selectedModelId = providerContext.selection.modelId;
-        if (!selectedModelId) throw new AppApiError('MODEL_UNSUPPORTED', 'Select a current ChatGPT account model before using the story route.', 422, false);
-        if (selectedModelId !== 'gpt-6-luna' || (providerContext.selection.reasoningLevel ?? 'default') !== 'default') {
-          throw new AppApiError('MODEL_UNSUPPORTED', 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no substitution or provider fallback is available.', 422, false);
-        }
-        const requestId = req.get('x-pcc-story-request-id');
-        if (!requestId) throw new AppApiError('VALIDATION_ERROR', 'A stable identity is required for this explicit ChatGPT story action.', 400, false);
-        const injection = options.chatGptStorySrbTestInjection;
-        const authority = injection?.authority ?? localStoryAuthority;
-        const currentGrantGeneration = injection?.currentGrantGeneration ?? (() => chatGptSessionStore.getGeneration());
-        const grantGeneration = currentGrantGeneration();
-        const sourceDigest = createHash('sha256')
-          .update(`${CHATGPT_STORY_INSTRUCTIONS}\n${parsed.data.prompt}`)
-          .digest('hex');
-        const plan = authority.prepare({
-          requestId,
-          modelId: selectedModelId,
-          grantGeneration,
-          sourceDigest,
-          sourceText: parsed.data.prompt,
-          instructions: CHATGPT_STORY_INSTRUCTIONS,
-        });
-        const result = await authority.run({
-          plan,
-          currentGrantGeneration,
-          signal: controller.signal,
-          transport: ({ body, limits }, signal) => {
-            const adapter = injection?.adapterFactory(grantGeneration) ?? createChatGptAdapter(grantGeneration);
-            return adapter.generateStoryText({
-              requestId: plan.requestId,
-              operation: 'story',
-              modelId: plan.modelId,
-              input: plan.sourceText,
-              ...(plan.instructions ? { instructions: plan.instructions } : {}),
-              reasoningLevel: 'default',
-              maxInputBytes: limits.maxRequestBodyBytes,
-              maxOutputBytes: limits.maxAcceptedOutputBytes,
-              timeoutMs: limits.timeoutMs,
-              signal,
-            }, body, {
-              maxStreamBytes: limits.maxStreamBytes,
-              maxAcceptedOutputBytes: limits.maxAcceptedOutputBytes,
-              maxStreamEvents: limits.maxStreamEvents,
-            });
-          },
-        });
-        if (result.terminalEvent !== 'response.completed' || result.refusal || !result.text.trim()) {
-          throw new AppApiError('INVALID_RESPONSE', 'The ChatGPT story response did not contain accepted completed story text.', 502, false);
-        }
-        res.json({ story: result.text, usage: result.usage ?? { source: 'unknown' } });
-        return;
-      }
-      const story = await handlers.generateStoryText(
-        parsed.data.prompt,
-        controller.signal
-      );
-      res.json({ story });
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
+    return { story: await handlers.generateStoryText(data.prompt, signal) };
   });
 
   router.get('/ai/capabilities', (_req, res) => {
@@ -552,101 +425,24 @@ export function createApiRouter(
     });
   });
 
-  router.post('/narrative/diagnostics/analyze', async (req, res) => {
-    const parsed = DiagnosticsAnalyzeRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid diagnostics analysis request.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const fn = handlers.analyzeSemanticDiagnostics ?? analyzeSemanticDiagnostics;
-      res.json(await fn(parsed.data, controller.signal));
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/narrative/diagnostics/suggest-fixes', async (req, res) => {
-    const parsed = DiagnosticsSuggestFixesRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid fix suggestion request.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const fn = handlers.suggestDiagnosticFixes ?? suggestDiagnosticFixes;
-      res.json(await fn(parsed.data, controller.signal));
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/narrative/sync/analyze', async (req, res) => {
-    const parsed = SyncAnalyzeRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid sync analysis request.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const fn = handlers.analyzeNarrativeSync ?? analyzeNarrativeSync;
-      res.json(await fn(parsed.data, controller.signal));
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/narrative/writing/assist', async (req, res) => {
-    const parsed = WritingAssistRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid writing assistant request.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const fn = handlers.runWritingAssistant ?? runWritingAssistant;
-      res.json(await fn(parsed.data, controller.signal));
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/narrative/opportunities/explore', async (req, res) => {
-    const parsed = OpportunitiesExploreRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid opportunity exploration request.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const fn = handlers.exploreCreativeOpportunities ?? exploreCreativeOpportunities;
-      res.json(await fn(parsed.data, controller.signal));
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
-
-  router.post('/narrative/import/enhance', async (req, res) => {
-    const parsed = ImportEnhanceRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const err = new AppApiError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid import enhancement request.', 400, false);
-      res.status(400).json({ error: err.toPayload() });
-      return;
-    }
-    const controller = attachRequestAbortSignal(req, res);
-    try {
-      const fn = handlers.proposeImportEnhancements ?? proposeImportEnhancements;
-      res.json(await fn(parsed.data, controller.signal));
-    } catch (err) {
-      sendErrorResponse(res, err);
-    }
-  });
+  registerJsonPostRoute(router, '/narrative/diagnostics/analyze', DiagnosticsAnalyzeRequestSchema, 'Invalid diagnostics analysis request.', (data, signal) =>
+    (handlers.analyzeSemanticDiagnostics ?? analyzeSemanticDiagnostics)(data, signal),
+  );
+  registerJsonPostRoute(router, '/narrative/diagnostics/suggest-fixes', DiagnosticsSuggestFixesRequestSchema, 'Invalid fix suggestion request.', (data, signal) =>
+    (handlers.suggestDiagnosticFixes ?? suggestDiagnosticFixes)(data, signal),
+  );
+  registerJsonPostRoute(router, '/narrative/sync/analyze', SyncAnalyzeRequestSchema, 'Invalid sync analysis request.', (data, signal) =>
+    (handlers.analyzeNarrativeSync ?? analyzeNarrativeSync)(data, signal),
+  );
+  registerJsonPostRoute(router, '/narrative/writing/assist', WritingAssistRequestSchema, 'Invalid writing assistant request.', (data, signal) =>
+    (handlers.runWritingAssistant ?? runWritingAssistant)(data, signal),
+  );
+  registerJsonPostRoute(router, '/narrative/opportunities/explore', OpportunitiesExploreRequestSchema, 'Invalid opportunity exploration request.', (data, signal) =>
+    (handlers.exploreCreativeOpportunities ?? exploreCreativeOpportunities)(data, signal),
+  );
+  registerJsonPostRoute(router, '/narrative/import/enhance', ImportEnhanceRequestSchema, 'Invalid import enhancement request.', (data, signal) =>
+    (handlers.proposeImportEnhancements ?? proposeImportEnhancements)(data, signal),
+  );
 
   return router;
 }

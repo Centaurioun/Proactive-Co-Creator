@@ -2,10 +2,11 @@
 set -euo pipefail
 
 base_url="${E2E_BASE_URL:-http://127.0.0.1:3000}"
+session_name="pcc-narrative-$$"
 curl -fsS "$base_url/api/health" | grep -q '"configured":false'
 mkdir -p .playwright-cli
-trap 'playwright-cli -s=pcc-narrative close >/dev/null 2>&1 || true' EXIT
-playwright-cli -s=pcc-narrative open --browser=chromium "$base_url"
+trap 'playwright-cli -s="$session_name" close >/dev/null 2>&1 || true' EXIT
+playwright-cli -s="$session_name" open --browser=chromium "$base_url"
 read -r -d '' scenario <<'JS' || true
 async (page) => {
   const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -189,7 +190,7 @@ async (page) => {
 }
 JS
 scenario="${scenario//__BASE_URL__/$base_url}"
-output="$(playwright-cli -s=pcc-narrative run-code "$scenario" 2>&1)" || { echo "$output"; exit 1; }
+output="$(playwright-cli -s="$session_name" run-code "$scenario" 2>&1)" || { echo "$output"; exit 1; }
 if ! grep -Eq '^"?NARRATIVE_WORKSPACE_PASS"?[[:space:]]*$' <<< "$output"; then
   echo "$output"
   exit 1

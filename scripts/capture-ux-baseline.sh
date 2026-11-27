@@ -12,18 +12,21 @@ fi
 
 PORT_TO_USE="${STAGE0_PORT:-3100}"
 BASE_URL="${E2E_BASE_URL:-http://127.0.0.1:${PORT_TO_USE}}"
+BASELINE_DIR="${UX_BASELINE_DIR:-.playwright-cli/ux-baseline}"
+ASSETS_DIR="${BASELINE_DIR}/assets"
+SESSION_NAME="pcc-ux-$$"
 STARTED_SERVER=0
 SERVER_PID=""
 
 cleanup() {
-  playwright-cli close >/dev/null 2>&1 || true
+  playwright-cli -s="$SESSION_NAME" close >/dev/null 2>&1 || true
   if [ "$STARTED_SERVER" -eq 1 ] && [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
-mkdir -p .playwright-cli docs/ux-baseline/assets
+mkdir -p .playwright-cli "$ASSETS_DIR"
 
 # 1. Generate deterministic schema-v3 fixtures via real canonicalModel / storageEngine paths
 npx --yes tsx scripts/stage0-fixtures.ts .playwright-cli/stage0-fixtures.json
@@ -37,6 +40,11 @@ if [ -z "${E2E_BASE_URL:-}" ]; then
   SERVER_PID=$!
   STARTED_SERVER=1
   for _ in $(seq 1 40); do
+    if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+      echo "ERROR: Stage 0 capture server exited prematurely." >&2
+      cat .playwright-cli/stage0-server.log >&2 || true
+      exit 1
+    fi
     if curl -sf "$BASE_URL/api/health" >/dev/null; then
       break
     fi
@@ -51,7 +59,7 @@ echo "$HEALTH_JSON" | grep -q '"configured":false' || {
   exit 1
 }
 
-playwright-cli open --browser=chromium "$BASE_URL/api/health" >/dev/null
+playwright-cli -s="$SESSION_NAME" open --browser=chromium "$BASE_URL/api/health" >/dev/null
 
 # Helper to run a playwright-cli run-code file with JSON extraction
 run_pw_phase() {
@@ -59,7 +67,7 @@ run_pw_phase() {
   local code_file="$2"
   local out_json="$3"
   local raw_out
-  raw_out="$(playwright-cli run-code "$(cat "$code_file")" 2>&1)" || {
+  raw_out="$(playwright-cli -s="$SESSION_NAME" run-code "$(cat "$code_file")" 2>&1)" || {
     echo "PHASE_${phase_name}_FAIL" >&2
     echo "$raw_out" >&2
     exit 1
@@ -113,6 +121,7 @@ async (page) => {
           localStorage.setItem('proactive_co_creator_projects_v2', JSON.stringify(map));
           localStorage.setItem('proactive_co_creator_active_id_v2', proj.id);
         }
+        localStorage.setItem('proactive_co_creator_workspace_preference_v1', JSON.stringify({ version: 1, mode: 'plan' }));
         if (darkMode) {
           localStorage.setItem('theme', 'dark');
           document.documentElement.classList.add('dark');
@@ -165,7 +174,7 @@ async (page) => {
         extra = (await setupFn(p)) || {};
       }
       await p.waitForTimeout(200);
-      const filePath = `docs/ux-baseline/assets/${id}.png`;
+      const filePath = `__ASSETS_DIR__/${id}.png`;
       await p.screenshot({ path: filePath, fullPage: false });
       const activeEl = await p.evaluate(() => ({
         tag: document.activeElement?.tagName || '',
@@ -208,8 +217,10 @@ async (page) => {
   // SC-02: Decision Inbox with pending/confirmed
   await snap('SC-02', 'FX-SIMPLE', { width: 1440, height: 900 },
     'Decision Inbox showing pending AI inferences vs confirmed items',
-    ['seed FX-SIMPLE', 'inspect left Decision Inbox'],
+    ['seed FX-SIMPLE', 'click Inbox', 'inspect left Decision Inbox'],
     async (p) => {
+      const inboxToggle = p.getByRole('button', { name: /Inbox/ });
+      if ((await inboxToggle.getAttribute('aria-expanded')) === 'false') await inboxToggle.click();
       const inboxText = await p.getByLabel('Creative Decisions and Batch Editor').textContent();
       return { domAnchor: `pendingMentioned=${/pending/i.test(inboxText || '')}` };
     }
@@ -272,8 +283,10 @@ async (page) => {
   // SC-07: Batch preview + Review Plan & Prompt Before/After modal
   await snap('SC-07', 'FX-BUSY', { width: 1440, height: 900 },
     'Natural-language batch preview staged with Review Plan & Prompt Before/After modal open',
-    ['seed FX-BUSY', 'fill #nl-batch-input', 'click Preview', 'click Review Plan & Prompt'],
+    ['seed FX-BUSY', 'click Inbox', 'fill #nl-batch-input', 'click Preview', 'click Review Plan & Prompt'],
     async (p) => {
+      const inboxToggle = p.getByRole('button', { name: /Inbox/ });
+      if ((await inboxToggle.getAttribute('aria-expanded')) === 'false') await inboxToggle.click();
       await p.locator('#nl-batch-input').fill('Make Rabbit elderly. The party should be mysterious.');
       await p.getByRole('button', { name: 'Preview', exact: true }).click();
       await p.getByText(/Proposed Batch Operations/).waitFor({ state: 'visible' });
@@ -287,9 +300,11 @@ async (page) => {
   // SC-08: Generated story + outdated artifact badge + artifact history
   await snap('SC-08', 'FX-OUT', { width: 1440, height: 900 },
     'Output gallery showing generated story, current/outdated badges, and artifact history',
-    ['seed FX-OUT', 'open Output tab / inspect story & outdated artifact'],
+    ['seed FX-OUT', 'click Read output', 'open Generated Story tab / inspect story & outdated artifact'],
     async (p) => {
-      const outTab = p.getByRole('tab', { name: /Story Output/i });
+      const readOutput = p.getByRole('button', { name: 'Read output' });
+      if ((await readOutput.getAttribute('aria-expanded')) === 'false') await readOutput.click();
+      const outTab = p.getByRole('tab', { name: /Generated Story/i });
       if (await outTab.isVisible()) await outTab.click();
       await p.waitForTimeout(150);
       const bodyText = await p.locator('body').textContent();
@@ -300,11 +315,13 @@ async (page) => {
   // SC-09: Image gallery + fullscreen preview
   await snap('SC-09', 'FX-OUT', { width: 1440, height: 900 },
     'Image mode gallery with 4 placeholder outputs and fullscreen lightbox preview open',
-    ['seed FX-OUT', 'switch mode to Image', 'click Preview generated image 1'],
+    ['seed FX-OUT', 'click Read output', 'switch mode to Image', 'click Generated Images', 'click Preview generated image 1'],
     async (p) => {
+      const readOutput = p.getByRole('button', { name: 'Read output' });
+      if ((await readOutput.getAttribute('aria-expanded')) === 'false') await readOutput.click();
       await p.getByRole('group', { name: 'Generation mode' }).getByRole('button', { name: 'Image', exact: true }).click();
       await p.waitForTimeout(200);
-      const imgTab = p.getByRole('tab', { name: /Image Gallery/i });
+      const imgTab = p.getByRole('tab', { name: /Generated Images/i });
       if (await imgTab.isVisible()) await imgTab.click();
       await p.waitForTimeout(150);
       const previewBtn = p.getByRole('button', { name: 'Preview generated image 1' });
@@ -401,7 +418,7 @@ async (page) => {
 }
 EOF
 
-BASE_URL_ENV="$BASE_URL" node -e '
+BASE_URL_ENV="$BASE_URL" ASSETS_DIR_ENV="$ASSETS_DIR" node -e '
   const fs = require("node:fs");
   const all = JSON.parse(fs.readFileSync(".playwright-cli/stage0-fixtures.json", "utf8"));
   const compact = {
@@ -414,16 +431,20 @@ BASE_URL_ENV="$BASE_URL" node -e '
     },
   };
   let code = fs.readFileSync(".playwright-cli/phase1-captures.js", "utf8");
-  code = code.replace("__BASE_URL__", process.env.BASE_URL_ENV).replace("__FIXTURES_JSON__", JSON.stringify(compact));
+  code = code
+    .replace("__BASE_URL__", process.env.BASE_URL_ENV)
+    .replace("__FIXTURES_JSON__", JSON.stringify(compact))
+    .replaceAll("__ASSETS_DIR__", process.env.ASSETS_DIR_ENV);
   fs.writeFileSync(".playwright-cli/phase1-captures.resolved.js", code);
 '
 
-run_pw_phase "CAPTURES" ".playwright-cli/phase1-captures.resolved.js" "docs/ux-baseline/assets/manifest.json"
+run_pw_phase "CAPTURES" ".playwright-cli/phase1-captures.resolved.js" "${ASSETS_DIR}/manifest.json"
 
 # Verify every PNG exists, is non-empty, and record exact pixel dimensions from PNG IHDR
-node -e '
+ASSETS_DIR_ENV="$ASSETS_DIR" node -e '
   const fs = require("node:fs");
-  const manifest = JSON.parse(fs.readFileSync("docs/ux-baseline/assets/manifest.json", "utf8"));
+  const manifestPath = `${process.env.ASSETS_DIR_ENV}/manifest.json`;
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   for (const item of manifest.captures) {
     const buf = fs.readFileSync(item.path);
     if (buf.length < 2000 || buf.toString("ascii", 1, 4) !== "PNG") {
@@ -435,7 +456,7 @@ node -e '
     item.imageResolution = `${width}x${height}`;
     item.sanityCheck = width > 0 && height > 0 && item.unmockedApiHits === 0 ? "PASS" : "FAIL";
   }
-  fs.writeFileSync("docs/ux-baseline/assets/manifest.json", JSON.stringify(manifest, null, 2));
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   console.log("PNG_SANITY_OK:", manifest.captures.length, "images verified.");
 '
 

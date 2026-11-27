@@ -205,7 +205,13 @@ export async function runBudgetedJsonOperation<T>(params: {
       throw new AppApiError('INVALID_RESPONSE', `Model returned malformed JSON for ${params.operation}.`, 502, false);
     }
 
-    const validated = params.parse(parsedJson);
+    let validated: T;
+    try {
+      validated = params.parse(parsedJson);
+    } catch (parseErr) {
+      if (parseErr instanceof AppApiError) throw parseErr;
+      throw new AppApiError('INVALID_RESPONSE', `Model returned an unexpected ${params.operation} response format.`, 502, false);
+    }
     const usage: AiUsageReport = {
       inputChars,
       estimatedInputTokens,

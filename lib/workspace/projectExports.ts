@@ -5,14 +5,7 @@
 
 import { manuscriptSections } from '../narrative/manuscriptModel';
 import { safeFilename } from '../narrative/recovery';
-import {
-  projectContentExport,
-  type ContentExportSelection,
-} from '../narrative/recovery/contentExport';
-import {
-  buildDeterministicExportFilename,
-  buildManuscriptDocxBytes,
-} from '../narrative/recovery/docxExport';
+import type { ContentExportSelection } from '../narrative/recovery/contentExport';
 import {
   exportProjectToJson,
   exportStoryBibleMarkdown,
@@ -118,17 +111,20 @@ export function buildContentExportEntries(project: CreativeProject): ContentExpo
   ];
 }
 
-export function triggerManuscriptMarkdownDownload(project: CreativeProject): void {
+export async function triggerManuscriptMarkdownDownload(project: CreativeProject): Promise<void> {
+  const { projectContentExport } = await import('../narrative/recovery/contentExport');
   const file = projectContentExport(project, { kind: 'manuscript', format: 'md' });
   downloadTextFile(file.name, file.text, file.mediaType);
 }
 
-export function triggerManuscriptTextDownload(project: CreativeProject): void {
+export async function triggerManuscriptTextDownload(project: CreativeProject): Promise<void> {
+  const { projectContentExport } = await import('../narrative/recovery/contentExport');
   const file = projectContentExport(project, { kind: 'manuscript', format: 'txt' });
   downloadTextFile(file.name, file.text, file.mediaType);
 }
 
-export function triggerManuscriptDocxDownload(project: CreativeProject): void {
+export async function triggerManuscriptDocxDownload(project: CreativeProject): Promise<void> {
+  const { buildDeterministicExportFilename, buildManuscriptDocxBytes } = await import('../narrative/recovery/docxExport');
   const sections = manuscriptSections(project);
   const bytes = buildManuscriptDocxBytes(project.name, sections);
   const filename = buildDeterministicExportFilename({
