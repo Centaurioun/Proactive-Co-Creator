@@ -127,6 +127,7 @@ try {
   // Cancel a valid, staged source before analysis or explicit commit.
   tree = snapshot();
   click(tree, 'button "Import"');
+  waitPage("document.querySelector('#import-pasted-text') !== null", 'import workflow to load');
   tree = snapshot();
   fill(tree, 'textbox "Or paste narrative text"', runResult.fixture.stagedSource);
   click(snapshot(), 'button "Inspect source"');
@@ -148,6 +149,7 @@ try {
   // then resolve it late to exercise the existing signal and cancellation guards.
   tree = snapshot();
   click(tree, 'button "Import"');
+  waitPage("document.querySelector('#import-pasted-text') !== null", 'import workflow to load');
   tree = snapshot();
   fill(tree, 'textbox "Or paste narrative text"', runResult.fixture.inFlightSource);
   click(snapshot(), 'button "Inspect source"');

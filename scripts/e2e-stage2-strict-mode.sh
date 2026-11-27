@@ -77,9 +77,9 @@ async (bootstrap) => {
   const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error.message));
-  const openImport = async () => {
+  const openImport = async (sourceText = quote) => {
     await page.getByRole('banner').getByRole('button', { name: 'Import', exact: true }).click();
-    await page.getByRole('textbox', { name: 'Or paste narrative text' }).fill(quote);
+    await page.getByRole('textbox', { name: 'Or paste narrative text' }).fill(sourceText);
     await page.getByRole('button', { name: 'Inspect source', exact: true }).click();
     await page.getByRole('radio', { name: /Faithful import with optional enhancements/ }).check();
     await page.getByRole('button', { name: 'Analyze source' }).click();
@@ -105,7 +105,7 @@ async (bootstrap) => {
     await page.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan' }).click();
     await page.getByRole('button', { name: 'Exit import', exact: true }).waitFor({ state: 'hidden' });
     releaseLate();
-    await openImport();
+    await openImport('Ada mapped the coast.');
     if (await page.getByRole('checkbox', { name: /Late enhancement/ }).count()) {
       throw new Error('An enhancement from the unmounted workflow reached the replacement workflow.');
     }
