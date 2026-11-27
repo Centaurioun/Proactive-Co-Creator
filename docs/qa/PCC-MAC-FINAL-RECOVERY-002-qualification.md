@@ -1,54 +1,76 @@
 # PCC-MAC-FINAL-RECOVERY-002 — Qualification report
 
-**Status: source and synthetic qualification passed; packaged GUI qualification remains partial.** This report records the isolated recovery branch only. It does not certify the installed owner app, upstream provider execution, billing, or release readiness.
+**Disposition: partially qualified; not release-ready.** Source regression checks and the scoped Story eligibility fix pass. Several packaged GUI and persistence scenarios remain unverified. This report covers the isolated recovery worktree only and does not certify the installed owner app, provider receipt, billing, or release readiness.
 
 ## Executive summary
 
-The original macOS screenshots were inspected by ChatGPT. They support D01, D03 and D05 as screenshot observations; they do not establish that an inference reached a provider or incurred billing. The screenshots also show an inconsistent Plan Story state: the top and bottom **Generate Story** controls appear enabled while **Generate Story from Confirmed Plan** appears disabled for the same ChatGPT model/reasoning selection.
+The original eight audit screenshots, reviewed by ChatGPT, support D01, D03 and D05 as visible UI observations. They do not establish upstream inference receipt or billing. The additional Plan screenshot shows the top and bottom **Generate Story** controls enabled while **Generate Story from Confirmed Plan** is disabled for the same ChatGPT model/reasoning selection.
 
-F4 now derives Story eligibility once per operation and supplies the same result and explanation to all three controls. This fixes the conditional UI discrepancy in the implementation. A synthetic ChatGPT Luna/Medium fixture verifies that all three controls are disabled consistently; the client transport is intercepted, and a server-route test independently rejects Medium without adding provider transport. Server admission remains the authority. The permitted ChatGPT scope remains local trusted GPT-6 Luna / Default Story only. No provider authorization or live inference was added.
+The UI mismatch was reproduced against the packaged macOS application with a synthetic project. Before the fix, the top Story CTA ignored the operation block reason; the Confirmed Plan CTA already consumed it, and the workspace footer CTA also lacked the Story block gate. The top CTA now uses the same Story eligibility and explanation as the other two. The focused UI test failed before the fix and passes after it. A rebuilt packaged app was then opened with an isolated profile; a fresh accessibility-tree observation showed all three Story entry points disabled with the same GPT-6 Luna / Default reasoning explanation. No Story action was submitted and no live provider request was made.
 
-The isolated packaged app launched on macOS 27.0.1 arm64 from the recovery worktree and an isolated profile at `/tmp/pcc-recovery-profile-20261127`, using port 4324 and with provider API environment variables removed. A clean Write workspace was observed and captured. The app was not installed over or substituted for `/Applications/Proactive Co-Creator.app`. Direct packaged GUI traversal of the Plan and Review workflows, D04 and NAV01 is incomplete; this report therefore does not claim those checks passed.
+The screenshot attached in this Codex conversation (`Proactive Co-Creator Appshot 2026-11-27T09-34-28.571Z.png`) is the before-fix evidence: it shows the three control states described above. It is not available as a local file in this worktree, so it is referenced as user-provided evidence rather than copied into the PR. The two earlier locally named screenshots were mistakenly captured from Brave and have been removed; neither is used as evidence.
 
 ## Findings and disposition
 
-| Finding | Evidence and disposition |
-|---|---|
-| D01 | Supported by the eight original screenshots, as reviewed by ChatGPT. No claim about hidden transport or provider receipt. |
-| D03 | Supported by the screenshots as an observed spinner/TLS-related symptom. The screenshots do not prove upstream inference receipt or billing. Root cause attribution remains limited to observed evidence. |
-| D05 | Supported by the screenshots. This report does not infer unobserved behavior beyond the screenshots. |
-| Plan Story entry-point inconsistency | Reproduced in the original screenshots. Root cause: only the Confirmed Plan output control consumed `chatGptStoryBlocked`; top and bottom controls used loading state alone. Fixed by sharing operation-specific Story eligibility and block reason across all three controls. |
-| D04 / NAV01 | Not qualified in the packaged GUI during this pass. No cause or pass is asserted. Existing source and browser smoke evidence is not equivalent to a packaged macOS interaction. |
+| Check | Result | Evidence and limits |
+|---|---|---|
+| D01 | Screenshot-supported | Original eight screenshots reviewed by ChatGPT. No inference about hidden transport. |
+| D02 | Partial | Settings and provider UI were observed in isolated app sessions. Reopen retained the selected ChatGPT Luna / Medium preference in the first session. Restarted candidate profile reported ChatGPT connected but its catalog was stale/unavailable; exact preference/session restoration across restart is not established. |
+| D03 | Screenshot-supported | Screenshots show the observed spinner/TLS-related symptom. They do not prove provider receipt or billing. No live inference was requested in this qualification. |
+| D04 | Partial | Long synthetic seed scrolling was exercised, but the seed exceeded the app's 8,000-character compiled prompt limit. Full in-limit editing, resize and wheel behavior are not qualified. |
+| D05 | Screenshot-supported / partial GUI | Original screenshots support the visible finding. Review/local checks were visited; unsupported AI diagnostics and sync were visibly gated. Full Review workspace traversal is incomplete. |
+| NAV01 | Partial | Plan, Story Bible, checks/history, target panel and Review shortcut were observed. Timeline, mind map, Ideas, Opportunities and all navigation branches were not exhaustively qualified. |
+| Plan Story entry points | Fixed and packaged UI verified | Before-fix screenshot shows enabled top/footer and blocked Confirmed Plan actions. Current packaged UI AX state shows all three disabled with identical reason. No button was activated. |
+| Project persistence | Partial pass | Synthetic project creation/edit/save, internal backup preview and restore-as-copy preserved the tested manuscript content and revision. Import/export download, undo/redo and broad entity editing remain unqualified. |
+| SafeStorage | Synthetic pass | Electron safeStorage round-trip used only a generated marker credential; encrypted bytes omitted the plaintext marker and had mode 0600. No real owner token was read. This does not prove restoration of the owner's actual ChatGPT credentials. |
+| Provider workflows | Mock/local only | Source tests use synthetic fixtures/intercepted transport. No new live provider requests were made. Per-operation override, credential-change and asynchronous refresh-order matrices were not fully exercised in the GUI. A possible async refresh race was not reproduced and was not changed. |
 
-## F4 implementation and qualification
+## F4 scope and request admission
 
-The shared resolver uses Provider Hub status, field-wise preference resolution, connection state, selected model, reasoning capability and operation capability. It resolves Plan analysis/clarification, Story, prompt refinement, Writing Assistant, Review diagnostics, manuscript/model sync, narrative import/enhancement, opportunities and optional semantic auto-analysis independently. Block messages reflect the operation’s state. The auto-analysis opt-in remains preserved while unavailable. Provider Hub UI state is advisory only; route admission remains independent.
+The operation-level resolver considers Provider Hub status, field-wise preference resolution, connection state, selected model, reasoning capability and operation capability. It returns operation-specific availability and explanation to the UI; route admission independently enforces the supported operation before any provider transport. This work did not expand provider authorization. The qualified live scope remains ChatGPT Story on GPT-6 Luna with Default reasoning only; this qualification issued no live provider request and made no claim about upstream inference or billing.
 
-For the additional Plan finding, the top action, workspace bottom action and Confirmed Plan action consume the same Story eligibility and explanation. Synthetic Medium reasoning is blocked at each. The UI test was observed failing before wiring and passing after the change. An intercepted client transport test verifies the blocked action does not send a request. A separate injected route test confirms server-side rejection before provider transport. No live provider request was made.
+For the additional Plan discrepancy, the top action, workspace footer action and Confirmed Plan action now consume the same Story eligibility result and block message. The regression test specifically locates each action and checks its own disabled state. A mocked client-transport test ensures a blocked operation does not issue transport; a separate injected route test verifies server-side rejection. These are synthetic test results, not evidence of hosted or provider-side behavior.
 
-## Verification evidence
+## Additional qualification evidence
 
-- `npm ci` — passed (Node v26.12.1, npm 11.20.0); npm reported six moderate dependency advisories, not changed in this scoped repair.
 - `npm run typecheck` — passed.
 - `npm run lint` — passed.
 - `npm test` — 579/579 passed.
-- `npm run build` — passed; Vite reported existing large-chunk warnings.
-- `E2E_BASE_URL=http://127.0.0.1:4323 bash scripts/e2e-browser-smoke.sh` against a key-free production server — E2E-A through E2E-I passed, no page/console errors and no provider requests. The test harness permits only local capabilities and read-only Provider Hub status; other API calls remain intercepted.
-- Focused baseline RED on isolated test-first commit `af039ea3bcae6ef338b0dbccb45a3d31c22e835b`: stale broad ChatGPT operation metadata allowed the analyze handler to reach mocked Gemini and return 500 rather than being rejected; current guard rejects it. A test-only missing export failure also occurred and is not counted as behavioral RED evidence.
-- `trail check` and `git diff --check` passed before the implementation commit. A final `trail check` is required after the report/evidence changes and before PR update.
-- Isolated packaged app launched successfully without a separate Node runtime or dev server. Candidate Write workspace screenshot: [01-isolated-packaged-write.png](evidence/pcc-mac-final-recovery-002/01-isolated-packaged-write.png), SHA-256 `690a6657dd99fdcef33e20b1440e4190ae0977fdbc08c9525da3b725642dd164`.
+- Focused `npm exec tsx -- --test tests/planStoryEligibility.test.ts` — 2/2 passed after the fix. The pre-fix focused UI test failed on the top action as expected.
+- `npm run desktop:build` — passed after the source fix. Existing Vite large-chunk, duplicate dependency, missing package metadata/default icon, and skipped ad-hoc code-signing notices remain.
+- Earlier key-free production-server browser smoke at `http://127.0.0.1:4323` passed E2E-A through E2E-I with no provider request. This predates the final UI-only fix.
+- SafeStorage synthetic harness with Electron 45.5.0 — available; encrypted round-trip passed, plaintext marker absent, file mode 0600. Electron reports that synchronous safeStorage methods are deprecated.
+- The app candidate was launched from the isolated recovery worktree at `release/mac-arm64/Proactive Co-Creator.app`; isolated runtime profiles were used. The owner installation was not replaced. Screenshots from the app window were observed through CUA; because macOS screen capture repeatedly foregrounded Brave rather than the app, no unambiguous local after-fix PNG is included here. The current AX-tree evidence is recorded above.
 
-## Package identity and limits
+### Six-cycle final review
 
-The candidate package built from source commit `3bcb477794520289a33c0e94e91c86e1578a2085` is located at:
+1. Rechecked request scope and exact base commit; preserved Story-only ChatGPT authorization and the GPT-6 Luna / Default limit.
+2. Reproduced the entry-point mismatch against the isolated packaged UI.
+3. Confirmed the focused UI test failed on the top control before the fix.
+4. Applied the smallest UI gate change and strengthened the per-control assertion.
+5. Rebuilt and checked the packaged app; all three Story controls reported disabled with one explanation.
+6. Re-ran focused and full test/type/lint checks. Remaining persistence, navigation and override scenarios are marked partial rather than inferred as passed.
 
-- `release/mac-arm64/Proactive Co-Creator.app`
-- `release/Proactive Co-Creator.dmg`
+## npm advisory classification
 
-Rebuilt after report and evidence were prepared: `app.asar` SHA-256 `c01d8599fd4a1ac103fcc708ef8325b3bf758042e52c5064234164b7649a14dd`; DMG SHA-256 `910cf2c94f3acb058cc698b22da5f41026331e771ca1c0fe51e43bada71cb24b`. The source tree content represented by this build is the content to be committed with this report. The bundle is ad hoc signed, with no signing identity or TeamIdentifier; normal Gatekeeper approval/notarization was not established. `spctl` only accepted with security disabled override.
+The six moderate `npm audit` rows refer to the same minimatch advisory (GHSA-g3hv-75wg-m249 / CVE-2026-118764), not six independent vulnerabilities. The affected transitive ranges reported are `minimatch@9.0.9` through `@electron/universal@2.0.3`, and `minimatch@10.2.6` through `app-builder-lib@26.18.0` (also reached via dmg-builder/electron-builder/electron-builder-squirrel-windows 26.18.0). These are development/build-time packaging dependencies; no direct runtime import or user-controlled minimatch pattern was identified in the audited application source. The described risk is denial of service from crafted glob patterns if an affected function processes attacker-controlled patterns. No such runtime input path was found in this review. The suggested automatic fix would change/downgrade the builder dependency graph; no broad upgrade or `npm audit fix` was performed. The advisory remains for normal dependency maintenance.
 
-The bundle reports code-sign identifier `Electron`, ad hoc signature, and no TeamIdentifier. The real owner installation, credentials, Keychain, and manuscripts were not used or modified. The isolated GUI screenshot is limited to the visible Write workspace. Original eight audit screenshots are referenced as user-provided evidence and are not duplicated here.
+## Gatekeeper, signing and installation
 
-## Scope and next qualification boundary
+Read-only `spctl --status` reported assessment disabled; `csrutil status` reported System Integrity Protection disabled. Neither setting was changed in this task. The candidate bundle has identifier `Electron`, an ad-hoc signature and no Developer ID TeamIdentifier; notarization and normal Gatekeeper acceptance were not established. Therefore this artifact is qualified only for the isolated local test setup used here. A supported end-user installation procedure is not established until a Developer ID signed and notarized artifact and its install/first-launch path are separately qualified. No security protection should be disabled to install it.
 
-No architectural expansion, provider authorization changes, live inference, automatic fallback, deployment, installation replacement, or merge was performed. Before release or merge, complete and document isolated packaged GUI traversal of Plan and Review, D04 and NAV01 with synthetic data, and rebuild the bundle from the report-inclusive final commit. Treat the current branch and PR as a review candidate, not release sign-off.
+## CI and package provenance
+
+PR #23 targets `feat/macos-desktop-app`; `.github/workflows/ci.yml` currently runs automatically for pull requests targeting `main`. No hosted CI qualification is therefore available for this PR. CI configuration was not modified and the PR was not retargeted or merged to obtain a green check.
+
+The isolated package was built after the UI source fix from recovery branch source based on `e4cb8d86b07fe56289d0039a7930e54ff9c86850`. The prior source commit `3bcb477794520289a33c0e94e91c86e1578a2085` differs by documentation/evidence; no rebuild was performed for this report-only update.
+
+- App: `release/mac-arm64/Proactive Co-Creator.app`
+- DMG: `release/Proactive Co-Creator.dmg`
+- `app.asar` SHA-256: `6203006c110f2d33ddbc44ef6c2e74bd348ae5c7ff3b452fb181b73c312253f5`
+- DMG SHA-256: `133a116d30eedcf72fd75f80bc5ce2436ec60970653c057808205a4d0dae91e1`
+- Existing isolated Write screenshot: [01-isolated-packaged-write.png](evidence/pcc-mac-final-recovery-002/01-isolated-packaged-write.png), SHA-256 `690a6657dd99fdcef33e20b1440e4190ae0977fdbc08c9525da3b725642dd164`.
+
+## Release boundary
+
+The evidence is not sufficient for release sign-off. Remaining practical work includes complete D04/NAV01 and Review traversal; clean isolated restart verification of saved model preferences; import/export and broader synthetic edit/undo/redo workflows; and a controlled UI matrix for operation overrides, stale status, credential changes and async refresh ordering. A supported signed/notarized installer and hosted CI result are also absent. No merge, deployment, installation replacement, provider authorization expansion or live inference was performed.

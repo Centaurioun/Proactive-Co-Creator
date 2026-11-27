@@ -54,9 +54,14 @@ test('all Plan Story entry points use the same operation block and explain why',
     storyProviderUsage: null, onGenerate: () => {}, onSelectImage: () => {},
   }));
 
-  for (const [label, html] of [['top', top], ['bottom', bottom], ['confirmed plan', confirmedPlan]] as const) {
-    const button = html.match(/<button[^>]*>(?:[^<]*<[^>]*>)*[^<]*Generate Story[^<]*<\/button>/)?.[0] ?? html;
-    assert.match(button, /disabled/, `${label} Story button is disabled for the same rejected selection`);
+  for (const [label, html, buttonPattern] of [
+    ['top', top, /<button([^>]*)>\s*Generate Story\s*<\/button>/],
+    ['bottom', bottom, /<button([^>]*)>\s*Generate Story\s*<\/button>/],
+    ['confirmed plan', confirmedPlan, /<button([^>]*)>\s*Generate Story from Confirmed Plan\s*<\/button>/],
+  ] as const) {
+    const button = html.match(buttonPattern);
+    assert.ok(button, `${label} Story action is present`);
+    assert.match(button[1], /\bdisabled(?:=|\s|$)/, `${label} Story button is disabled for the same rejected selection`);
     assert.ok(html.includes(blockedReason), `${label} Story entry point explains the rejection`);
   }
 });

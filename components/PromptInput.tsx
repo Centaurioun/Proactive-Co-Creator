@@ -131,7 +131,8 @@ const PromptInput: React.FC<PromptInputProps> = ({
           <button
             type="button"
             onClick={handleSubmitClick}
-            disabled={isLoading || !hasPromptText}
+            disabled={isLoading || !hasPromptText || (mode === 'story' && Boolean(storyBlockReason))}
+            title={mode === 'story' ? (storyBlockReason ?? undefined) : undefined}
             className="px-2.5 py-1 text-xs font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap disabled:opacity-50"
           >
             {isGenerating
