@@ -46,7 +46,10 @@ async (bootstrap) => {
             contextLimit: { state: 'supported', value: 8000, evidence: [] },
             outputLimit: { state: 'supported', value: 4096, evidence: [] },
             reasoning: { state: 'supported', value: ['default'], evidence: [] },
-            operationCapabilities: { 'narrative-import': { state: 'supported', value: true, evidence: [] } },
+            operationCapabilities: {
+              'narrative-import': { state: 'supported', value: true, evidence: [] },
+              'import-enhance': { state: 'supported', value: true, evidence: [] },
+            },
             capabilityPolicyVersion: 'cap-v1',
           }],
         }],
@@ -75,8 +78,12 @@ async (bootstrap) => {
     throw new Error('Unexpected API request: ' + path);
   });
   const page = await context.newPage();
-  const pageErrors = [];
-  page.on('pageerror', error => pageErrors.push(error.message));
+  const browserEvidence = { pageErrors: [], consoleErrors: [], failedRequests: [], apiRequests: [], apiResponses: [] };
+  page.on('pageerror', error => browserEvidence.pageErrors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') browserEvidence.consoleErrors.push(message.text()); });
+  page.on('requestfailed', request => browserEvidence.failedRequests.push({ url: request.url(), error: request.failure()?.errorText }));
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) browserEvidence.apiRequests.push({ method: request.method(), path: new URL(request.url()).pathname }); });
+  page.on('response', response => { if (new URL(response.url()).pathname.startsWith('/api/')) browserEvidence.apiResponses.push({ status: response.status(), path: new URL(response.url()).pathname }); });
   const openImport = async (sourceText = quote) => {
     await page.getByRole('banner').getByRole('button', { name: 'Import', exact: true }).click();
     await page.getByRole('textbox', { name: 'Or paste narrative text' }).fill(sourceText);
@@ -92,6 +99,9 @@ async (bootstrap) => {
       throw new Error('Run against the development server to exercise StrictMode effect replay.');
     }
     await openImport();
+    if (!await generate().isEnabled()) {
+      throw new Error('Generate Enhancement Proposals is disabled despite the fixture declaring import-enhance support; rendered=' + await page.locator('body').innerText());
+    }
     const firstRequest = page.waitForRequest('**/api/narrative/import/enhance', { timeout: 3000 });
     await generate().click();
     await firstRequest;
@@ -109,8 +119,15 @@ async (bootstrap) => {
     if (await page.getByRole('checkbox', { name: /Late enhancement/ }).count()) {
       throw new Error('An enhancement from the unmounted workflow reached the replacement workflow.');
     }
-    if (enhancementCalls !== 2 || pageErrors.length) throw new Error(JSON.stringify({ enhancementCalls, pageErrors }));
-    return 'STAGE2_STRICT_MODE_PASS';
+    if (enhancementCalls !== 2 || browserEvidence.pageErrors.length) throw new Error(JSON.stringify({ enhancementCalls, browserEvidence }));
+    return JSON.stringify({ status: 'STAGE2_STRICT_MODE_PASS', enhancementCalls, browserEvidence });
+  } catch (error) {
+    throw new Error(error.message + '\n' + JSON.stringify({
+      url: page.url(), title: await page.title().catch(() => 'unavailable'),
+      pageText: await page.locator('body').innerText().catch(() => 'unavailable'),
+      rootState: await page.locator('#root').evaluate(root => ({ childCount: root.childElementCount, htmlLength: root.innerHTML.length, text: root.textContent?.slice(0, 1200) })).catch(() => 'unavailable'),
+      fixtureOperationCapabilities: ['narrative-import', 'import-enhance'], enhancementCalls, browserEvidence,
+    }, null, 2));
   } finally {
     releaseLate();
     await context.close();
