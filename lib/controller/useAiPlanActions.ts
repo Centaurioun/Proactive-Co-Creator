@@ -61,6 +61,33 @@ export function getReadableErrorMessage(error: unknown, fallback: string): strin
   return fallback;
 }
 
+export interface ProviderHubStatusRefreshCoordinator {
+  invalidate(): void;
+  refresh(
+    load: () => Promise<ProviderHubStatus>,
+    publish: (status: ProviderHubStatus) => void,
+    failClosed: () => void
+  ): Promise<void>;
+}
+
+export function createProviderHubStatusRefreshCoordinator(): ProviderHubStatusRefreshCoordinator {
+  let generation = 0;
+  return {
+    invalidate() {
+      generation += 1;
+    },
+    async refresh(load, publish, failClosed) {
+      const requestGeneration = ++generation;
+      try {
+        const status = await load();
+        if (requestGeneration === generation) publish(status);
+      } catch {
+        if (requestGeneration === generation) failClosed();
+      }
+    },
+  };
+}
+
 export interface UseAiPlanActionsDeps {
   activeProject: CreativeProject;
   activeProjectRef: React.MutableRefObject<CreativeProject>;
@@ -98,6 +125,10 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
   } = deps;
 
   const [providerHubStatus, setProviderHubStatus] = useState<ProviderHubStatus | null>(null);
+  const providerHubStatusRefreshRef = useRef<ProviderHubStatusRefreshCoordinator | null>(null);
+  if (providerHubStatusRefreshRef.current == null) {
+    providerHubStatusRefreshRef.current = createProviderHubStatusRefreshCoordinator();
+  }
   const [chatGptStoryLocalActivation, setChatGptStoryLocalActivation] = useState(false);
   const [storyProviderSelection, setStoryProviderSelection] = useState<AiProviderSelection>(
     readSafeStoryProviderSelection
@@ -110,13 +141,11 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
   const appliedBatchProposalIdsRef = useRef<Set<string>>(new Set());
 
   const refreshProviderHubStatus = useCallback(async () => {
-    try {
+    await providerHubStatusRefreshRef.current!.refresh(async () => {
       const response = await fetch('/api/ai/provider-hub/status');
       if (!response.ok) throw new Error('Provider status unavailable');
-      setProviderHubStatus(await response.json() as ProviderHubStatus);
-    } catch {
-      setProviderHubStatus(null);
-    }
+      return await response.json() as ProviderHubStatus;
+    }, setProviderHubStatus, () => setProviderHubStatus(null));
   }, []);
 
   const operationAvailability = useMemo(() => {
@@ -149,10 +178,15 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
   }, []);
 
   useEffect(() => {
-    void Promise.resolve().then(refreshProviderHubStatus);
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) void refreshProviderHubStatus();
+    });
     window.addEventListener('pcc:provider-hub-status-changed', refreshProviderHubStatus);
     window.addEventListener('pcc:ai-preferences-changed', refreshProviderHubStatus);
     return () => {
+      cancelled = true;
+      providerHubStatusRefreshRef.current!.invalidate();
       window.removeEventListener('pcc:provider-hub-status-changed', refreshProviderHubStatus);
       window.removeEventListener('pcc:ai-preferences-changed', refreshProviderHubStatus);
     };
