@@ -168,7 +168,12 @@ export async function runBudgetedJsonOperation<T>(params: {
       throw new AppApiError('VALIDATION_ERROR', budget.reason ?? 'Request exceeds configured AI budget.', 400, false);
     }
 
-    const maxAttempts = maxAttemptsWithinOperationBudget(policy, providerInputTokens ?? estimatedInputTokens);
+    const preferredAttempts = params.operation === 'writing' ? 1 : 2;
+    const maxAttempts = maxAttemptsWithinOperationBudget(
+      policy,
+      providerInputTokens ?? estimatedInputTokens,
+      preferredAttempts,
+    );
     if (maxAttempts < 1) {
       throw new AppApiError(
         'VALIDATION_ERROR',

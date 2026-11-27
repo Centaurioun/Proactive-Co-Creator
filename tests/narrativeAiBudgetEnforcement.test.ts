@@ -72,6 +72,24 @@ describe('narrative AI budget enforcement', () => {
     assert.equal(generateConfig?.maxOutputTokens, AI_OPERATION_POLICIES.writing.maxOutputTokens);
   });
 
+  it('makes only one provider generation attempt for a writing request after a retryable failure', async () => {
+    let generateCalls = 0;
+    const client: NarrativeAiClientLike = {
+      models: {
+        countTokens: async () => ({ totalTokens: 48, source: 'provider-count' }),
+        generateContent: async () => {
+          generateCalls += 1;
+          throw new AppApiError('UPSTREAM_ERROR', 'Synthetic upstream failure', 502, true);
+        },
+      },
+    };
+
+    await assert.rejects(() => runWithAiProviderContext({
+      selection: { connectionId: 'openai-api', modelId: 'gpt-6.2-sol' }, operation: 'writing',
+    }, () => runWritingAssistant(request, undefined, client)));
+    assert.equal(generateCalls, 1);
+  });
+
   it('does not start generation when provider counting times out', async () => {
     let generated = false;
     const client: NarrativeAiClientLike = {
