@@ -1,0 +1,32 @@
+{
+  "database": {
+    "name": "proactive_co_creator_db_v2",
+    "version": 2
+  },
+  "projectCount": 2,
+  "projects": [
+    {
+      "id": "proj_default_cat_party",
+      "name": "Cat’s Woodland Dinner Party",
+      "schemaVersion": 3,
+      "revision": 1,
+      "persistedRevision": 1,
+      "entityCount": 6,
+      "genre": "Cozy Anthropomorphic Fable",
+      "revisionRecordCount": 1
+    },
+    {
+      "id": "proj_mwz5eph8_4",
+      "name": "PCC-MAC Confirm Alpha",
+      "schemaVersion": 3,
+      "revision": 1,
+      "persistedRevision": 1,
+      "entityCount": 0,
+      "genre": "",
+      "revisionRecordCount": 1
+    }
+  ],
+  "deletedTombstones": [
+    "proj_mwz5ey59_6"
+  ]
+}

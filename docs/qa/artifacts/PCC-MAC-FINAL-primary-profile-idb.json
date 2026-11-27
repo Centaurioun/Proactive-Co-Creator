@@ -1,0 +1,84 @@
+{
+  "database": {
+    "name": "proactive_co_creator_db_v2",
+    "version": 2
+  },
+  "projectCount": 3,
+  "projects": [
+    {
+      "id": "proj_default_cat_party",
+      "name": "Cat’s Woodland Dinner Party",
+      "schemaVersion": 3,
+      "revision": 1,
+      "persistedRevision": 1,
+      "entities": [
+        "The Story",
+        "Cat",
+        "Rabbit",
+        "Fox",
+        "Banquet Table",
+        "Conservatory Dining Room"
+      ],
+      "genre": "Cozy Anthropomorphic Fable",
+      "narrativeKeys": [],
+      "narrativeSectionVersionCount": 0,
+      "revisionRecordCount": 1,
+      "undoHistoryCount": 0
+    },
+    {
+      "id": "proj_mwz4z81f_4",
+      "name": "PCC-MAC Synthetic Alpha",
+      "schemaVersion": 4,
+      "revision": 7,
+      "persistedRevision": 7,
+      "entities": [
+        "Mira"
+      ],
+      "genre": "Synthetic orbital mystery",
+      "narrativeKeys": [
+        "versions",
+        "sectionVersions",
+        "sources",
+        "claims",
+        "issues",
+        "audit"
+      ],
+      "narrativeSectionVersionCount": 2,
+      "matchingManuscriptText": [
+        "Alpha opening: the observatory doors sealed at midnight.\nThe brass key remained with Mira.",
+        "Unsaved Alpha guard draft should remain recoverable."
+      ],
+      "revisionRecordCount": 7,
+      "undoHistoryCount": 0
+    },
+    {
+      "id": "d988938c-acb2-4c6b-9528-990a4ba0ecf5",
+      "name": "PCC-MAC Synthetic Alpha (restored copy)",
+      "schemaVersion": 4,
+      "revision": 7,
+      "persistedRevision": 7,
+      "entities": [
+        "Mira"
+      ],
+      "genre": "Synthetic orbital mystery",
+      "narrativeKeys": [
+        "versions",
+        "sectionVersions",
+        "sources",
+        "claims",
+        "issues",
+        "audit"
+      ],
+      "narrativeSectionVersionCount": 2,
+      "matchingManuscriptText": [
+        "Alpha opening: the observatory doors sealed at midnight.\nThe brass key remained with Mira.",
+        "Unsaved Alpha guard draft should remain recoverable."
+      ],
+      "revisionRecordCount": 7,
+      "undoHistoryCount": 0
+    }
+  ],
+  "deletedTombstones": [
+    "proj_mwz50efd_a"
+  ]
+}

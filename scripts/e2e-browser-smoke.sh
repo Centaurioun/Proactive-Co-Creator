@@ -513,7 +513,13 @@ async (page) => {
 
       await p.getByRole('navigation', { name: 'Narrative workspace' }).getByRole('button', { name: 'Plan', exact: true }).click();
       await p.getByRole('tab', { name: 'History' }).click();
+      let deletionConfirmation = '';
+      p.once('dialog', async (dialog) => {
+        deletionConfirmation = dialog.message();
+        await dialog.accept();
+      });
       await p.getByRole('button', { name: 'Delete project Doomed Project' }).click();
+      assert(deletionConfirmation.includes('Doomed Project'), 'E2E-G project deletion did not request confirmation');
       await p.getByText(/Incomplete deletion warning/).first().waitFor({ state: 'visible' });
 
       const postState = await p.evaluate(() => ({

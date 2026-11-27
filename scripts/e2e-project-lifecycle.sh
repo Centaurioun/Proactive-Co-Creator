@@ -132,7 +132,13 @@ async (bootstrap) => {
             return deleteOriginal.apply(this, args);
           };
         });
+        let deletionConfirmation = '';
+        page.once('dialog', async (dialog) => {
+          deletionConfirmation = dialog.message();
+          await dialog.accept();
+        });
         await page.getByRole('button', { name: 'Delete project Doomed project' }).click();
+        if (!deletionConfirmation.includes('Doomed project')) throw new Error('Project deletion did not request confirmation.');
         await page.waitForFunction(() => Boolean(window.releaseDeletion));
         await create('Created during deletion');
         await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('proactive_co_creator_projects_v2') || '{}'))
