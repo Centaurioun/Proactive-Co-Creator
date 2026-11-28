@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { WritingAssistProposalSchema, WritingAssistRequestSchema } from './narrativeAiSchemas.ts';
 import { creativeLockSchema, unifiedProposalSchema } from './unifiedProposalTypes.ts';
+import {
+  creativeIdeaCardSchema,
+  creativeSessionSchema,
+  readingMarginNoteSchema,
+} from './creativeSessionTypes.ts';
 
 const id = z.string().min(1);
 const offset = z.number().int().nonnegative();
@@ -217,4 +222,7 @@ export const narrativeSchema = z.strictObject({
   })),
   creativeLocks: z.array(creativeLockSchema).optional(),
   unifiedProposals: z.array(unifiedProposalSchema).optional(),
+  creativeSessions: z.array(creativeSessionSchema).optional(),
+  creativeIdeas: z.array(creativeIdeaCardSchema).optional(),
+  readingMarginNotes: z.array(readingMarginNoteSchema).optional(),
 });

@@ -21,6 +21,7 @@ export const creativeLockSchema = z.strictObject({
   id: z.string().min(1).max(160),
   projectId: z.string().min(1).max(160),
   scope: z.enum(CREATIVE_LOCK_SCOPES).default('project'),
+  sessionId: z.string().min(1).max(160).optional(),
   hardness: z.enum(CREATIVE_LOCK_HARDNESS),
   targetKind: z.enum(CREATIVE_LOCK_TARGET_KINDS),
   targetId: z.string().min(1).max(160).optional(),
@@ -41,6 +42,8 @@ export type CreativeLock = z.infer<typeof creativeLockSchema>;
 
 export const UNIFIED_PROPOSAL_ORIGINS = [
   'writing-assist',
+  'creative-session',
+  'story-development',
   'batch-edit',
   'diagnostics-fix',
   'narrative-sync',
@@ -93,6 +96,24 @@ export const unifiedModelOperationSchema = z.strictObject({
 
 export type UnifiedModelOperation = z.infer<typeof unifiedModelOperationSchema>;
 
+export const proposalProvenanceSchema = z.strictObject({
+  sessionId: z.string().min(1).max(160).optional(),
+  branchId: z.string().min(1).max(160).optional(),
+  ideaId: z.string().min(1).max(160).optional(),
+  ideaVersionId: z.string().min(1).max(160).optional(),
+  sourceAnchorIds: z.array(z.string().min(1).max(160)).default([]),
+});
+export type ProposalProvenance = z.infer<typeof proposalProvenanceSchema>;
+
+export const proposalSpeculativeImpactSchema = z.strictObject({
+  id: z.string().min(1).max(160),
+  targetLabel: z.string().min(1).max(240),
+  targetKind: z.enum(['section', 'entity', 'relationship', 'theme', 'continuity']).default('continuity'),
+  summary: z.string().min(1).max(1000),
+  epistemicKind: z.enum(['deterministic-v7', 'speculative-ripple']).default('speculative-ripple'),
+});
+export type ProposalSpeculativeImpact = z.infer<typeof proposalSpeculativeImpactSchema>;
+
 export const unifiedProposalSchema = z.strictObject({
   schemaVersion: z.number().int().min(1).default(1),
   id: z.string().min(1).max(160),
@@ -115,6 +136,8 @@ export const unifiedProposalSchema = z.strictObject({
   updatedAt: z.number(),
   appliedAtRevision: z.number().int().min(1).optional(),
   appliedAt: z.number().optional(),
+  provenance: proposalProvenanceSchema.optional(),
+  speculativeImpacts: z.array(proposalSpeculativeImpactSchema).default([]),
 });
 
 export type UnifiedProposal = z.infer<typeof unifiedProposalSchema>;

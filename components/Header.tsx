@@ -7,6 +7,7 @@ import React from 'react';
 import type { CreativeProject } from '../shared/types';
 import type { SavePresentation } from '../lib/workspace/savePresentation';
 import type { ProviderStatusPillSummary } from '../lib/controller/useProviderHubStatus';
+import type { WorkspaceDisclosureMode, WorkspaceResumeBreadcrumb } from '../lib/workspacePreference';
 
 export type WorkspaceSection = 'workspace' | 'story-bible' | 'output' | 'history';
 
@@ -25,6 +26,11 @@ interface HeaderProps {
   savePresentation?: SavePresentation;
   providerStatusPill?: ProviderStatusPillSummary;
   onOpenAiSettings?: () => void;
+  onOpenCommandPalette?: () => void;
+  disclosureMode?: WorkspaceDisclosureMode;
+  onToggleDisclosureMode?: () => void;
+  resumeBreadcrumb?: WorkspaceResumeBreadcrumb | null;
+  onResumeWork?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -38,10 +44,15 @@ const Header: React.FC<HeaderProps> = ({
   onNewProject,
   onOpenImport,
   importDisabled = false,
-  onOpenProjects,
+  onOpenProjects: _onOpenProjects,
   savePresentation = 'saved',
   providerStatusPill,
   onOpenAiSettings,
+  onOpenCommandPalette,
+  disclosureMode = 'calm',
+  onToggleDisclosureMode,
+  resumeBreadcrumb,
+  onResumeWork,
 }) => {
   const projectOptions = projects.some((item) => item.id === project?.id)
     ? projects
@@ -117,9 +128,50 @@ const Header: React.FC<HeaderProps> = ({
             </span>
           </button>
         )}
+        {resumeBreadcrumb && onResumeWork && (
+          <button
+            type="button"
+            data-testid="resume-work-btn"
+            onClick={onResumeWork}
+            title={`Resume last position: ${resumeBreadcrumb.label}`}
+            className="hidden min-h-11 max-w-[14rem] items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-50 px-2.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus xl:inline-flex dark:border-emerald-500/40 dark:bg-emerald-950/50 dark:text-emerald-200 dark:hover:bg-emerald-900/50"
+          >
+            <span className="truncate">Resume: {resumeBreadcrumb.label}</span>
+          </button>
+        )}
+        {onOpenCommandPalette && (
+          <button
+            type="button"
+            data-testid="open-command-palette-btn"
+            onClick={onOpenCommandPalette}
+            aria-haspopup="dialog"
+            title="Open Command Palette (Ctrl/Cmd + K)"
+            className="inline-flex min-h-11 items-center gap-1 rounded-md border border-pcc-line bg-pcc-canvas px-2.5 text-xs font-medium text-pcc-ink hover:bg-pcc-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-ink dark:hover:bg-pcc-dark-surface"
+          >
+            <span>Command</span>
+            <kbd className="rounded border border-pcc-line px-1 text-[10px] text-pcc-muted dark:border-pcc-dark-line dark:text-pcc-dark-muted">
+              ⌘K
+            </kbd>
+          </button>
+        )}
+        {onToggleDisclosureMode && (
+          <button
+            type="button"
+            data-testid="toggle-disclosure-mode-btn"
+            onClick={onToggleDisclosureMode}
+            aria-pressed={disclosureMode === 'deep'}
+            title="Switch between Calm Studio and Deep Exploration presentation"
+            className={`inline-flex min-h-11 items-center rounded-md border px-2.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus ${
+              disclosureMode === 'deep'
+                ? 'border-indigo-500/50 bg-indigo-50 text-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-200'
+                : 'border-pcc-line bg-pcc-canvas text-pcc-muted hover:text-pcc-ink dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-muted'
+            }`}
+          >
+            {disclosureMode === 'deep' ? 'Deep Mode' : 'Calm Mode'}
+          </button>
+        )}
         {onNewProject && <button type="button" onClick={onNewProject} className="hidden min-h-11 items-center rounded-md bg-pcc-action px-3 text-xs font-semibold text-white hover:bg-pcc-action-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex">+ New</button>}
         {onOpenImport && <button type="button" disabled={importDisabled} onClick={onOpenImport} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45 sm:inline-flex dark:hover:bg-pcc-dark-canvas">Import</button>}
-        {onOpenProjects && <button type="button" onClick={onOpenProjects} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">Projects</button>}
         <button type="button" onClick={onShowInfo} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">About</button>
         {onLoadSampleProject && (
           <details className="relative">

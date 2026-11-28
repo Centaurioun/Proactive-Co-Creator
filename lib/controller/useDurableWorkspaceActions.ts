@@ -12,6 +12,7 @@ import type {
   ProjectSnapshot,
   StoryBibleFields,
 } from '../../shared/types';
+import type { WorkspaceMode } from '../workspacePreference';
 import { createEmptyStoryBible, createSampleProject, makeStableId } from '../canonicalModel';
 import { computeSnapshotDigest, createUndoRedoState, type UndoRedoState } from '../historyEngine';
 import {
@@ -216,7 +217,7 @@ export interface UseDurableWorkspaceActionsDeps {
   setStorageAlert: (alert: StorageConflictAlert | null) => void;
   storageAlert: StorageConflictAlert | null;
   setStatusNotification: (msg: string | null) => void;
-  setWorkspaceMode: (mode: 'write' | 'plan' | 'review' | 'projects' | 'import') => void;
+  setWorkspaceMode: (mode: WorkspaceMode) => void;
   allowNavigation: () => boolean;
   getHydrationGate: () => HydrationWriteGate;
   acceptReadStatus: (status: IndexedDbLoadStatus) => void;

@@ -28,6 +28,7 @@ interface UnifiedProposalReviewModalProps {
   proposal: UnifiedProposal | null;
   lastUndoProposal?: UnifiedProposal | null;
   onApplyProposal: (proposal: UnifiedProposal) => Promise<{ ok: boolean; message?: string }>;
+  onSaveProposalDraft?: (proposal: UnifiedProposal) => void;
   onSaveLocks?: (locks: CreativeLock[]) => void;
   initialTab?: 'diff' | 'changemap' | 'locks';
 }
@@ -72,6 +73,7 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
   proposal,
   lastUndoProposal,
   onApplyProposal,
+  onSaveProposalDraft,
   onSaveLocks,
   initialTab = 'diff',
 }) => {
@@ -93,9 +95,17 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
   const [newLockRuleText, setNewLockRuleText] = useState('');
 
   if (proposal !== prevProposal) {
+    const transitionedToApplied = Boolean(
+      proposal &&
+        prevProposal &&
+        proposal.id === prevProposal.id &&
+        proposal.status === 'applied'
+    );
     setPrevProposal(proposal);
     setWorkingProposal(proposal);
-    setFeedback(null);
+    if (!transitionedToApplied) {
+      setFeedback(null);
+    }
     setEditingHunkId(null);
     setEditingModelOpId(null);
   }
@@ -132,11 +142,11 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
     } else {
       nextSelected.add(itemId);
     }
-    setWorkingProposal(
-      updateUnifiedProposalSelectionOrEdits(workingProposal, {
-        selectedIds: Array.from(nextSelected),
-      })
-    );
+    const updated = updateUnifiedProposalSelectionOrEdits(workingProposal, {
+      selectedIds: Array.from(nextSelected),
+    });
+    setWorkingProposal(updated);
+    onSaveProposalDraft?.(updated);
   };
 
   const handleInlineEditHunkReplacement = (hunkId: string, newReplacementText: string) => {
@@ -144,11 +154,11 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
     const nextHunks = workingProposal.manuscriptHunks.map((h) =>
       h.id === hunkId ? { ...h, replacementText: newReplacementText } : h
     );
-    setWorkingProposal(
-      updateUnifiedProposalSelectionOrEdits(workingProposal, {
-        manuscriptHunks: nextHunks,
-      })
-    );
+    const updated = updateUnifiedProposalSelectionOrEdits(workingProposal, {
+      manuscriptHunks: nextHunks,
+    });
+    setWorkingProposal(updated);
+    onSaveProposalDraft?.(updated);
   };
 
   const handleInlineEditModelOpValue = (opId: string, newAfterValue: string) => {
@@ -156,11 +166,11 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
     const nextOps = workingProposal.modelOperations.map((op) =>
       op.id === opId ? { ...op, afterValue: newAfterValue } : op
     );
-    setWorkingProposal(
-      updateUnifiedProposalSelectionOrEdits(workingProposal, {
-        modelOperations: nextOps,
-      })
-    );
+    const updated = updateUnifiedProposalSelectionOrEdits(workingProposal, {
+      modelOperations: nextOps,
+    });
+    setWorkingProposal(updated);
+    onSaveProposalDraft?.(updated);
   };
 
   const handleAddCreativeLock = () => {
@@ -250,6 +260,14 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
                   Base r{workingProposal.baseRevision} · Patch {compiledPreview?.patchDigest.slice(0, 8)}
                 </span>
               )}
+              {workingProposal?.provenance?.sessionId && (
+                <span
+                  data-testid="e3-provenance-badge"
+                  className="rounded border border-emerald-500/40 bg-emerald-950/70 px-2 py-0.5 font-mono text-[11px] text-emerald-300"
+                >
+                  Origin: {workingProposal.originOperation} · Session {workingProposal.provenance.sessionId.slice(0, 12)}
+                </span>
+              )}
             </div>
             <p className="mt-0.5 text-xs text-slate-400">
               {workingProposal
@@ -310,6 +328,7 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
                   modelOperations: modelOps,
                 });
                 setWorkingProposal(sample);
+                onSaveProposalDraft?.(sample);
                 setActiveTab('diff');
                 setFeedback(null);
               }}
@@ -385,24 +404,35 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
             </button>
           </div>
 
-          {compiledPreview && (
+          {workingProposal?.status === 'applied' ? (
             <div className="flex items-center gap-2">
-              {compiledPreview.hardBlockCount > 0 ? (
-                <span
-                  data-testid="e3-hard-block-badge"
-                  className="rounded border border-rose-500/40 bg-rose-950/70 px-2.5 py-1 font-semibold text-rose-200"
-                >
-                  {compiledPreview.hardBlockCount} Hard Block(s) — Apply Disabled
-                </span>
-              ) : (
-                <span
-                  data-testid="e3-ready-badge"
-                  className="rounded border border-emerald-500/40 bg-emerald-950/70 px-2.5 py-1 font-semibold text-emerald-200"
-                >
-                  Validated &amp; Ready to Apply
-                </span>
-              )}
+              <span
+                data-testid="e3-applied-badge"
+                className="rounded border border-emerald-500/40 bg-emerald-950/70 px-2.5 py-1 font-semibold text-emerald-200"
+              >
+                Applied Atomically
+              </span>
             </div>
+          ) : (
+            compiledPreview && (
+              <div className="flex items-center gap-2">
+                {compiledPreview.hardBlockCount > 0 ? (
+                  <span
+                    data-testid="e3-hard-block-badge"
+                    className="rounded border border-rose-500/40 bg-rose-950/70 px-2.5 py-1 font-semibold text-rose-200"
+                  >
+                    {compiledPreview.hardBlockCount} Hard Block(s) — Apply Disabled
+                  </span>
+                ) : (
+                  <span
+                    data-testid="e3-ready-badge"
+                    className="rounded border border-emerald-500/40 bg-emerald-950/70 px-2.5 py-1 font-semibold text-emerald-200"
+                  >
+                    Validated &amp; Ready to Apply
+                  </span>
+                )}
+              </div>
+            )
           )}
         </div>
 
@@ -420,7 +450,9 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
           </div>
         )}
 
-        {compiledPreview && compiledPreview.diagnostics.length > 0 && (
+        {compiledPreview &&
+          compiledPreview.diagnostics.length > 0 &&
+          workingProposal?.status !== 'applied' && (
           <div
             data-testid="e3-diagnostics-list"
             className="mx-6 mt-3 space-y-1.5 rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs"
@@ -611,6 +643,29 @@ export const UnifiedProposalReviewModal: React.FC<UnifiedProposalReviewModalProp
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {/* Speculative Creative Consequences (explicitly separate from deterministic diff/model ops) */}
+              {workingProposal.speculativeImpacts && workingProposal.speculativeImpacts.length > 0 && (
+                <div
+                  data-testid="e3-speculative-impacts-panel"
+                  className="rounded-xl border border-amber-500/35 bg-amber-950/20 p-4 space-y-2 text-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold uppercase tracking-wider text-amber-200">
+                      Speculative Creative Consequences (Non-Binding · Author Review)
+                    </span>
+                    <span className="rounded bg-amber-900/50 px-2 py-0.5 text-[10px] text-amber-200">
+                      Does not mutate canon directly
+                    </span>
+                  </div>
+                  <ul className="space-y-1 text-amber-100/90 list-disc pl-5">
+                    {workingProposal.speculativeImpacts.map((impact) => (
+                      <li key={impact.id}>
+                        <strong>{impact.targetLabel}</strong> ({impact.targetKind}): {impact.summary}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
             </div>

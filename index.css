@@ -143,3 +143,34 @@
     animation-iteration-count: 1 !important;
   }
 }
+
+/* M6 Semantic Epistemic Surface Tokens (UID2-01) */
+.pcc-canon-surface {
+  background-color: var(--color-pcc-surface);
+  border-color: var(--color-pcc-line);
+}
+.dark .pcc-canon-surface {
+  background-color: var(--color-pcc-dark-surface);
+  border-color: var(--color-pcc-dark-line);
+}
+
+.pcc-reference-surface {
+  background-color: var(--color-pcc-canvas);
+  border-color: var(--color-pcc-line);
+  border-left: 3px solid var(--color-pcc-evidence-ink);
+}
+.dark .pcc-reference-surface {
+  background-color: var(--color-pcc-dark-canvas);
+  border-color: var(--color-pcc-dark-line);
+  border-left: 3px solid #34d399;
+}
+
+.pcc-draft-surface {
+  background-color: #fbf7ee;
+  border: 1.5px dashed #c79a4b;
+}
+.dark .pcc-draft-surface {
+  background-color: #292219;
+  border: 1.5px dashed #b4853b;
+}
+

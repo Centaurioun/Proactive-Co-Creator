@@ -74,6 +74,8 @@ export function createUnifiedProposalEnvelope(params: {
   manuscriptHunks?: UnifiedManuscriptHunk[];
   modelOperations?: UnifiedModelOperation[];
   selectedIds?: string[];
+  provenance?: UnifiedProposal['provenance'];
+  speculativeImpacts?: UnifiedProposal['speculativeImpacts'];
 }): UnifiedProposal {
   const now = Date.now();
   const id = params.id || `uprop_${now}_${Math.random().toString(36).slice(2, 8)}`;
@@ -110,6 +112,8 @@ export function createUnifiedProposalEnvelope(params: {
     status: 'ready',
     createdAt: now,
     updatedAt: now,
+    ...(params.provenance ? { provenance: params.provenance } : {}),
+    speculativeImpacts: params.speculativeImpacts ?? [],
   };
 }
 
@@ -226,9 +230,17 @@ export function compileUnifiedProposalPreview(
     }
   }
 
-  // 3. Evaluate Creative Locks (`CE-06.5/06.6`, `S-01`)
+  // 3. Evaluate Creative Locks (`CE-06.5/06.6`, `S-01`) — both project locks and active session locks
+  const projectLocks = project.narrative?.creativeLocks ?? [];
+  const sessionLocks = (project.narrative?.creativeSessions ?? [])
+    .filter(
+      (s) =>
+        s.status === 'active' &&
+        (!proposal.provenance?.sessionId || s.id === proposal.provenance.sessionId)
+    )
+    .flatMap((s) => s.sessionLocks ?? []);
   const lockDiagnostics = evaluateLocksAgainstProposalOperations({
-    locks: project.narrative?.creativeLocks ?? [],
+    locks: [...projectLocks, ...sessionLocks],
     selectedHunks,
     selectedModelOps,
   });

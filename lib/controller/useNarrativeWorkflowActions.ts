@@ -25,6 +25,7 @@ import type {
   OpportunityProposal,
 } from '../../shared/narrativeTypes';
 import type { CreativeProject } from '../../shared/types';
+import type { WorkspaceMode } from '../workspacePreference';
 import { buildClientBudgetDisclosure } from '../narrative/aiBudgetClient';
 import {
   applyDiagnosticFixAlternative,
@@ -171,7 +172,7 @@ export interface UseNarrativeWorkflowActionsDeps {
   setStatusNotification: (msg: string | null) => void;
   setStorageAlert: (alert: StorageConflictAlert | null) => void;
   storageAlert: StorageConflictAlert | null;
-  setWorkspaceMode: (mode: 'write' | 'plan' | 'review' | 'projects' | 'import') => void;
+  setWorkspaceMode: (mode: WorkspaceMode) => void;
   setIsReviewModalOpen: (open: boolean) => void;
   setAutoAnalysisCallsUsed: (count: number) => void;
   autoBackupEnabled: boolean;

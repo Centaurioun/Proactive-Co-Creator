@@ -25,11 +25,24 @@ import WorkspaceBottomBar from './components/WorkspaceBottomBar';
 import { NarrativeSearchModal } from './components/workspace/NarrativeSearchModal';
 import { ContextInspectorModal } from './components/workspace/ContextInspectorModal';
 import { UnifiedProposalReviewModal } from './components/workspace/UnifiedProposalReviewModal';
+import { CreativeStudioWorkspace } from './components/workspace/CreativeStudioWorkspace';
+import { StoryDevelopmentWorkspace } from './components/workspace/StoryDevelopmentWorkspace';
+import { StoryQaPanel } from './components/workspace/StoryQaPanel';
+import { CommandPaletteModal } from './components/workspace/CommandPaletteModal';
 import type { CreativeLock, UnifiedProposal } from './shared/unifiedProposalTypes';
+import type {
+  CreativeIdeaCard,
+  CreativeSession,
+  ReadingMarginNote,
+} from './shared/creativeSessionTypes';
 import {
   buildUnifiedProposalFromBatchEdit,
   prepareUnifiedProposalAtomicCommit,
 } from './lib/narrative/proposals/unifiedProposalEngine';
+import {
+  applyCreativeWorkspaceMetadataToProject,
+  createCreativeSession,
+} from './lib/narrative/sessions/creativeSessionEngine';
 import { manuscriptSections, manuscriptText } from './lib/narrative/manuscriptModel';
 import { parseProjectBackup, registryReport, safeFilename } from './lib/narrative/recovery';
 import {
@@ -44,7 +57,21 @@ import {
   triggerStoryBibleMarkdownDownload,
 } from './lib/workspace/projectExports';
 import { getSavePresentation } from './lib/workspace/savePresentation';
-import { readBrowserWorkspacePreference, writeBrowserWorkspacePreference } from './lib/workspacePreference';
+import {
+  readBrowserCompanionState,
+  readBrowserDisclosurePreference,
+  readBrowserResumeBreadcrumb,
+  readBrowserWorkspacePreference,
+  writeBrowserCompanionState,
+  writeBrowserDisclosurePreference,
+  writeBrowserResumeBreadcrumb,
+  writeBrowserWorkspacePreference,
+  type CompanionPaneKind,
+  type CompanionPaneState,
+  type WorkspaceDisclosureMode,
+  type WorkspaceMode,
+  type WorkspaceResumeBreadcrumb,
+} from './lib/workspacePreference';
 import { useProjectPersistence } from './lib/controller/useProjectPersistence';
 import { useDurableWorkspaceActions } from './lib/controller/useDurableWorkspaceActions';
 import { useCanonicalPlanHandlers, useGlobalWorkspaceShortcuts } from './lib/controller/useCanonicalPlanHandlers';
@@ -151,12 +178,20 @@ function App() {
   const [focusedSectionId, setFocusedSectionId] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<{ id: string; sequence: number } | null>(null);
   const [resumedProposalReview, setResumedProposalReview] = useState<PendingProposalReview>();
-  const [workspaceMode, setWorkspaceMode] = useState<
-    'write' | 'plan' | 'review' | 'projects' | 'import'
-  >(readBrowserWorkspacePreference);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(readBrowserWorkspacePreference);
   const lastStableWorkspaceModeRef = useRef<'write' | 'plan'>(
     workspaceMode === 'write' || workspaceMode === 'plan' ? workspaceMode : 'write'
   );
+  const [disclosureMode, setDisclosureMode] = useState<WorkspaceDisclosureMode>(
+    readBrowserDisclosurePreference
+  );
+  const [companionState, setCompanionState] = useState<CompanionPaneState>(
+    readBrowserCompanionState
+  );
+  const [showCommandPalette, setShowCommandPalette] = useState<boolean>(false);
+  const [activeStudioSessionId, setActiveStudioSessionId] = useState<string | null>(null);
+  const [qaInitialQuestion, setQaInitialQuestion] = useState<string>('');
+  const [resumeBannerDismissed, setResumeBannerDismissed] = useState<boolean>(false);
   const [autoAnalysisCallsUsed, setAutoAnalysisCallsUsed] = useState<number>(0);
   const [autoBackupEnabled, setAutoBackupEnabled] = useState<boolean>(readInitialAutoBackupPref);
 
@@ -180,7 +215,12 @@ function App() {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState<boolean>(false);
   const [showSearchModal, setShowSearchModal] = useState<boolean>(false);
   const [showContextInspector, setShowContextInspector] = useState<boolean>(false);
-  const [activeUnifiedProposal, setActiveUnifiedProposal] = useState<UnifiedProposal | null>(null);
+  const [activeUnifiedProposal, setActiveUnifiedProposal] = useState<UnifiedProposal | null>(
+    () =>
+      initialProject.narrative?.unifiedProposals?.find(
+        (p) => p.status === 'draft' || p.status === 'ready'
+      ) ?? null
+  );
   const [showUnifiedProposalModal, setShowUnifiedProposalModal] = useState<boolean>(false);
   const [unifiedProposalInitialTab, setUnifiedProposalInitialTab] = useState<'diff' | 'changemap' | 'locks'>('diff');
   const [lastUndoProposal, setLastUndoProposal] = useState<UnifiedProposal | null>(null);
@@ -194,6 +234,25 @@ function App() {
     }
     writeBrowserWorkspacePreference(workspaceMode);
   }, [workspaceMode]);
+
+  useEffect(() => {
+    writeBrowserDisclosurePreference(disclosureMode);
+  }, [disclosureMode]);
+
+  useEffect(() => {
+    writeBrowserCompanionState(companionState);
+  }, [companionState]);
+
+  useEffect(() => {
+    const onGlobalKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setShowCommandPalette((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onGlobalKeyDown);
+    return () => window.removeEventListener('keydown', onGlobalKeyDown);
+  }, []);
 
   const allowNavigation = useCallback((): boolean => {
     if (!draftDirtyRef.current && !restorePendingRef.current && !compositionPendingRef.current) {
@@ -808,6 +867,68 @@ function App() {
         : null,
   });
 
+  const handleSaveCreativeData = useCallback(
+    (updates: {
+      creativeSessions?: CreativeSession[];
+      creativeIdeas?: CreativeIdeaCard[];
+      readingMarginNotes?: ReadingMarginNote[];
+    }) => {
+      const current = activeProjectRef.current;
+      const updatedProject = applyCreativeWorkspaceMetadataToProject(current, updates);
+      hasLocalEditsSinceMountRef.current = true;
+      publishCurrentProject(updatedProject, undoStateRef.current);
+      const nextSaved = savedProjectsRef.current.map((p) =>
+        p.id === updatedProject.id ? updatedProject : p
+      );
+      savedProjectsRef.current = nextSaved;
+      setSavedProjects(nextSaved);
+      if (canWriteWorkspace()) {
+        void flushProjectDurably(updatedProject, {
+          expectedPersistedRevision: current.persistedRevision,
+        });
+      }
+    },
+    [canWriteWorkspace, flushProjectDurably, publishCurrentProject]
+  );
+
+  const handleSaveProposalDraft = useCallback(
+    (draftProposal: UnifiedProposal) => {
+      const current = activeProjectRef.current;
+      const existingList = current.narrative?.unifiedProposals ?? [];
+      const filtered = existingList.filter((item) => item.id !== draftProposal.id);
+      const nextList = [draftProposal, ...filtered].slice(0, 20);
+      const updatedProject: CreativeProject = {
+        ...current,
+        updatedAt: Date.now(),
+        narrative: {
+          ...(current.narrative ?? {
+            versions: [],
+            sectionVersions: [],
+            sources: [],
+            claims: [],
+            issues: [],
+            audit: [],
+          }),
+          unifiedProposals: nextList,
+        },
+      };
+      setActiveUnifiedProposal(draftProposal);
+      hasLocalEditsSinceMountRef.current = true;
+      publishCurrentProject(updatedProject, undoStateRef.current);
+      const nextSaved = savedProjectsRef.current.map((p) =>
+        p.id === updatedProject.id ? updatedProject : p
+      );
+      savedProjectsRef.current = nextSaved;
+      setSavedProjects(nextSaved);
+      if (canWriteWorkspace()) {
+        void flushProjectDurably(updatedProject, {
+          expectedPersistedRevision: current.persistedRevision,
+        });
+      }
+    },
+    [canWriteWorkspace, flushProjectDurably, publishCurrentProject]
+  );
+
   const handleOpenUnifiedProposalReview = useCallback(
     (proposal: UnifiedProposal, initialTab: 'diff' | 'changemap' | 'locks' = 'diff') => {
       if (
@@ -818,41 +939,56 @@ function App() {
       ) {
         return;
       }
-      setActiveUnifiedProposal(proposal);
+      handleSaveProposalDraft(proposal);
       setUnifiedProposalInitialTab(initialTab);
       setShowUnifiedProposalModal(true);
     },
-    []
+    [handleSaveProposalDraft]
   );
 
   const handleApplyUnifiedProposal = useCallback(
     async (proposal: UnifiedProposal): Promise<{ ok: boolean; message?: string }> => {
       const current = activeProjectRef.current;
+      if (!canWriteWorkspace()) {
+        const msg =
+          'Workspace storage is not ready or is blocked. Wait or export a backup before applying proposals.';
+        setStatusNotification(msg);
+        return { ok: false, message: msg };
+      }
       const prepared = prepareUnifiedProposalAtomicCommit(current, undoStateRef.current, proposal);
       if (!prepared.ok) {
         return { ok: false, message: prepared.message };
       }
+      const saveResult = await flushProjectDurably(prepared.project, {
+        expectedPersistedRevision: current.persistedRevision,
+        intentId: prepared.intentId,
+      });
+      if (!saveResult.saved) {
+        const msg =
+          saveResult.error ??
+          'Durable save failed or detected a storage conflict; canonical state was not modified.';
+        setStatusNotification(msg);
+        return { ok: false, message: msg };
+      }
+      const committedProject = saveResult.storedProject ?? {
+        ...prepared.project,
+        persistedRevision: saveResult.persistedRevision ?? prepared.project.revision,
+      };
       hasLocalEditsSinceMountRef.current = true;
-      publishCurrentProject(prepared.project, prepared.undoHistory);
+      publishCurrentProject(committedProject, prepared.undoHistory);
       const nextSaved = savedProjectsRef.current.map((p) =>
-        p.id === prepared.project.id ? prepared.project : p
+        p.id === committedProject.id ? committedProject : p
       );
       savedProjectsRef.current = nextSaved;
       setSavedProjects(nextSaved);
       setActiveUnifiedProposal(prepared.appliedProposal);
       setLastUndoProposal(prepared.inverseProposal);
-      if (canWriteWorkspace()) {
-        await flushProjectDurably(prepared.project, {
-          expectedPersistedRevision: current.persistedRevision,
-          intentId: prepared.intentId,
-        });
-      }
       setStatusNotification(
-        `Applied proposal "${proposal.title}" atomically (Revision #${prepared.project.revision}).`
+        `Applied proposal "${proposal.title}" atomically and saved durably (Revision #${committedProject.revision}).`
       );
       return {
         ok: true,
-        message: `Applied "${proposal.title}" at Revision #${prepared.project.revision}. Undo is ready if needed.`,
+        message: `Applied "${proposal.title}" at Revision #${committedProject.revision}. Undo is ready if needed.`,
       };
     },
     [canWriteWorkspace, flushProjectDurably, publishCurrentProject]
@@ -893,8 +1029,111 @@ function App() {
     [canWriteWorkspace, flushProjectDurably, publishCurrentProject]
   );
 
+  const handleExplorePassageInStudio = useCallback(
+    (payload: {
+      sectionId: string;
+      sectionTitle: string;
+      startOffset: number;
+      endOffset: number;
+      selectedText: string;
+      initialGoal?: string;
+    }) => {
+      const current = activeProjectRef.current;
+      const newSession = createCreativeSession(current, {
+        title: `Scene Explore: ${payload.sectionTitle}`,
+        mode: 'discover',
+        scope: {
+          kind: 'section',
+          sectionIds: [payload.sectionId],
+          entityIds: [],
+        },
+        goal:
+          payload.initialGoal ||
+          `Brainstorm directions for "${payload.sectionTitle}"`,
+        compassSummary: payload.selectedText
+          ? `Excerpt anchor: "${payload.selectedText.slice(0, 140)}"`
+          : undefined,
+      });
+      const existing = current.narrative?.creativeSessions ?? [];
+      handleSaveCreativeData({
+        creativeSessions: [newSession, ...existing],
+      });
+      setActiveStudioSessionId(newSession.id);
+      navigateWithFlush(() => setWorkspaceMode('studio'));
+    },
+    [handleSaveCreativeData, navigateWithFlush]
+  );
+
+  const handleTurnQaInsightIntoStudio = useCallback(
+    (payload: {
+      question: string;
+      answer: string;
+      suggestedDirection: string;
+      citedSourceIds: string[];
+    }) => {
+      const current = activeProjectRef.current;
+      const newSession = createCreativeSession(current, {
+        title: `Q&A Seed: ${payload.question.slice(0, 42)}`,
+        mode: 'discover',
+        goal: payload.suggestedDirection,
+        compassSummary: `Grounded in Q&A (${payload.citedSourceIds.length} citations): ${payload.answer.slice(0, 160)}`,
+      });
+      const existing = current.narrative?.creativeSessions ?? [];
+      handleSaveCreativeData({
+        creativeSessions: [newSession, ...existing],
+      });
+      setActiveStudioSessionId(newSession.id);
+      navigateWithFlush(() => setWorkspaceMode('studio'));
+    },
+    [handleSaveCreativeData, navigateWithFlush]
+  );
+
+  const resumeBreadcrumb = useMemo<WorkspaceResumeBreadcrumb | null>(
+    () => readBrowserResumeBreadcrumb(activeProject.id),
+    [activeProject.id]
+  );
+
+  useEffect(() => {
+    if (workspaceMode === 'projects' || workspaceMode === 'import') return;
+    const secTitle = manuscriptSections(activeProject).find(
+      (s) => s.id === focusedSectionId
+    )?.title;
+    const labelMap: Record<WorkspaceMode, string> = {
+      write: secTitle ? `Write · ${secTitle}` : 'Write Studio',
+      world: 'World & Canon',
+      plan: 'World & Canon',
+      studio: 'Creative Studio',
+      develop: 'Story Development',
+      review: 'Review & Sync',
+      projects: 'Projects',
+      import: 'Import',
+    };
+    writeBrowserResumeBreadcrumb({
+      projectId: activeProject.id,
+      mode: workspaceMode,
+      label: labelMap[workspaceMode],
+      sectionId: focusedSectionId,
+      entityId: selectedEntityId ?? undefined,
+      sessionId: activeStudioSessionId ?? undefined,
+      timestamp: Date.now(),
+    });
+  }, [
+    activeProject,
+    activeStudioSessionId,
+    focusedSectionId,
+    selectedEntityId,
+    workspaceMode,
+  ]);
+
+  const isWorldWorkspace = workspaceMode === 'world' || workspaceMode === 'plan';
+  const showCompanionPane =
+    companionState.kind !== 'none' &&
+    workspaceMode !== 'projects' &&
+    workspaceMode !== 'import';
+
   return (
     <div
+      data-disclosure-mode={disclosureMode}
       className={`${
         isDarkMode ? 'dark' : ''
       } pcc-shell font-sans h-screen flex flex-col text-gray-900 dark:text-gray-100 transition-colors duration-150 overflow-hidden`}
@@ -914,7 +1153,59 @@ function App() {
         onOpenImport={() => navigateWithFlush(() => setWorkspaceMode('import'))}
         importDisabled={!hydrationSettled}
         onOpenProjects={() => navigateWithFlush(() => setWorkspaceMode('projects'))}
+        onOpenCommandPalette={() => setShowCommandPalette(true)}
+        disclosureMode={disclosureMode}
+        onToggleDisclosureMode={() =>
+          setDisclosureMode((prev) => (prev === 'calm' ? 'deep' : 'calm'))
+        }
+        resumeBreadcrumb={resumeBreadcrumb}
+        onResumeWork={() => {
+          if (!resumeBreadcrumb) return;
+          navigateWithFlush(() => {
+            if (resumeBreadcrumb.sectionId) setFocusedSectionId(resumeBreadcrumb.sectionId);
+            if (resumeBreadcrumb.entityId) setSelectedEntityId(resumeBreadcrumb.entityId);
+            if (resumeBreadcrumb.sessionId) setActiveStudioSessionId(resumeBreadcrumb.sessionId);
+            setWorkspaceMode(resumeBreadcrumb.mode);
+          });
+        }}
       />
+
+      {!resumeBannerDismissed &&
+        resumeBreadcrumb &&
+        resumeBreadcrumb.mode !== workspaceMode && (
+          <div
+            data-testid="resume-work-banner"
+            className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-500/30 bg-emerald-50/80 px-4 py-1.5 text-xs text-emerald-950 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200"
+          >
+            <span>
+              Continue where you left off: <strong>{resumeBreadcrumb.label}</strong>
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  navigateWithFlush(() => {
+                    if (resumeBreadcrumb.sectionId) setFocusedSectionId(resumeBreadcrumb.sectionId);
+                    if (resumeBreadcrumb.entityId) setSelectedEntityId(resumeBreadcrumb.entityId);
+                    if (resumeBreadcrumb.sessionId) setActiveStudioSessionId(resumeBreadcrumb.sessionId);
+                    setWorkspaceMode(resumeBreadcrumb.mode);
+                    setResumeBannerDismissed(true);
+                  });
+                }}
+                className="rounded bg-emerald-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-600"
+              >
+                Resume Position
+              </button>
+              <button
+                type="button"
+                onClick={() => setResumeBannerDismissed(true)}
+                className="rounded border border-emerald-500/40 px-2 py-1 text-[11px] hover:bg-emerald-100 dark:hover:bg-emerald-900/50"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
 
       <CreateProjectDialog
         open={createProjectOpen}
@@ -945,109 +1236,168 @@ function App() {
         onCancelOperation={handleCancelActiveOperation}
       />
 
+      {/* M6 Workspace Navigation: Projects Anchor Left + 5 Intent Workspaces + Utility & Companion Triggers */}
       <nav
         aria-label="Narrative workspace"
-        className="flex flex-wrap items-center gap-1 border-b border-pcc-line bg-pcc-surface px-3 py-2 dark:border-pcc-dark-line dark:bg-pcc-dark-surface sm:px-5"
+        className="flex flex-wrap items-center gap-1.5 border-b border-pcc-line bg-pcc-surface px-3 py-2 dark:border-pcc-dark-line dark:bg-pcc-dark-surface sm:px-5"
       >
+        <button
+          type="button"
+          data-testid="nav-projects-anchor-btn"
+          aria-current={workspaceMode === 'projects' ? 'page' : undefined}
+          className="min-h-10 rounded-md border border-pcc-line bg-pcc-canvas px-3 text-sm font-medium text-pcc-ink transition-colors hover:bg-pcc-surface aria-[current=page]:border-pcc-action aria-[current=page]:text-pcc-action focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-ink"
+          onClick={() => navigateWithFlush(() => setWorkspaceMode('projects'))}
+        >
+          Projects
+        </button>
+
         <div
-          className="inline-flex rounded-lg border border-pcc-line bg-pcc-canvas p-0.5 dark:border-pcc-dark-line dark:bg-pcc-dark-canvas"
+          className="inline-flex flex-wrap rounded-lg border border-pcc-line bg-pcc-canvas p-0.5 dark:border-pcc-dark-line dark:bg-pcc-dark-canvas"
           role="group"
           aria-label="Workspace mode"
         >
           {([
             ['write', 'Write'],
-            ['plan', 'Plan'],
+            ['world', 'World'],
+            ['studio', 'Creative Studio'],
+            ['develop', 'Story Development'],
             ['review', 'Review'],
-          ] as const).map(([modeKey, label]) => (
-            <button
-              type="button"
-              key={modeKey}
-              aria-current={workspaceMode === modeKey ? 'page' : undefined}
-              className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted transition-colors hover:text-pcc-ink aria-[current=page]:bg-pcc-surface aria-[current=page]:text-pcc-action aria-[current=page]:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:text-pcc-dark-ink dark:aria-[current=page]:bg-pcc-dark-surface dark:aria-[current=page]:text-pcc-dark-ink"
-              onClick={() => {
-                if (workspaceMode === modeKey) return;
-                navigateWithFlush(() => {
-                  setAdoptArtifactId(undefined);
-                  setWorkspaceMode(modeKey);
-                });
-              }}
-            >
-              {label}
-            </button>
-          ))}
+          ] as const).map(([modeKey, label]) => {
+            const isCurrent =
+              modeKey === 'world' ? isWorldWorkspace : workspaceMode === modeKey;
+            return (
+              <button
+                type="button"
+                key={modeKey}
+                data-testid={`nav-workspace-${modeKey}`}
+                aria-current={isCurrent ? 'page' : undefined}
+                className="min-h-10 rounded-md px-3 text-sm font-medium text-pcc-muted transition-colors hover:text-pcc-ink aria-[current=page]:bg-pcc-surface aria-[current=page]:text-pcc-action aria-[current=page]:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:text-pcc-dark-ink dark:aria-[current=page]:bg-pcc-dark-surface dark:aria-[current=page]:text-pcc-dark-ink"
+                onClick={() => {
+                  if (isCurrent) return;
+                  navigateWithFlush(() => {
+                    setAdoptArtifactId(undefined);
+                    setWorkspaceMode(modeKey);
+                  });
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
-        <button
-          type="button"
-          className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
-          onClick={openAiSettingsModal}
-          aria-haspopup="dialog"
-        >
-          AI settings
-        </button>
-        <button
-          type="button"
-          data-testid="open-narrative-search-btn"
-          className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
-          onClick={() => {
-            if (
-              shouldAllowNonDestructiveOverlay({
-                isCompositionPending: () => compositionPendingRef.current,
-                notify: setStatusNotification,
-              })
-            ) {
-              setShowSearchModal(true);
-            }
-          }}
-          aria-haspopup="dialog"
-        >
-          Search &amp; Memory
-        </button>
-        <button
-          type="button"
-          data-testid="open-context-inspector-btn"
-          className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
-          onClick={() => {
-            if (
-              shouldAllowNonDestructiveOverlay({
-                isCompositionPending: () => compositionPendingRef.current,
-                notify: setStatusNotification,
-              })
-            ) {
-              setShowContextInspector(true);
-            }
-          }}
-          aria-haspopup="dialog"
-        >
-          Context Inspector
-        </button>
-        <button
-          type="button"
-          data-testid="open-unified-proposal-engine-btn"
-          className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
-          onClick={() => {
-            if (
-              !shouldAllowNonDestructiveOverlay({
-                isCompositionPending: () => compositionPendingRef.current,
-                notify: setStatusNotification,
-              })
-            ) {
-              return;
-            }
-            if (!activeUnifiedProposal && stagedBatchPreview) {
-              const converted = buildUnifiedProposalFromBatchEdit(activeProject, stagedBatchPreview);
-              setActiveUnifiedProposal(converted);
-              setUnifiedProposalInitialTab('diff');
-            }
-            setShowUnifiedProposalModal(true);
-          }}
-          aria-haspopup="dialog"
-        >
-          Proposals &amp; Locks (E3)
-        </button>
-        <div className="ml-auto flex flex-wrap justify-end gap-1 sm:hidden">
+
+        <div className="ml-auto flex flex-wrap items-center gap-1">
           <button
             type="button"
-            className="min-h-11 rounded-md bg-pcc-action px-2.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus"
+            data-testid="toggle-qa-companion-btn"
+            aria-pressed={companionState.kind === 'qa'}
+            className={`min-h-10 rounded-md border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus ${
+              companionState.kind === 'qa'
+                ? 'border-emerald-500/50 bg-emerald-50 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-200'
+                : 'border-pcc-line bg-pcc-canvas text-pcc-muted hover:text-pcc-ink dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-muted'
+            }`}
+            onClick={() =>
+              setCompanionState((prev) => ({
+                ...prev,
+                kind: prev.kind === 'qa' ? 'none' : 'qa',
+              }))
+            }
+          >
+            Story Q&amp;A
+          </button>
+          <button
+            type="button"
+            data-testid="toggle-dual-pane-companion-btn"
+            aria-pressed={companionState.kind !== 'none'}
+            className={`min-h-10 rounded-md border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus ${
+              companionState.kind !== 'none'
+                ? 'border-indigo-500/50 bg-indigo-50 text-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-200'
+                : 'border-pcc-line bg-pcc-canvas text-pcc-muted hover:text-pcc-ink dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-muted'
+            }`}
+            onClick={() =>
+              setCompanionState((prev) => ({
+                ...prev,
+                kind: prev.kind === 'none' ? 'entity' : 'none',
+              }))
+            }
+          >
+            Companion
+          </button>
+          <button
+            type="button"
+            data-testid="open-narrative-search-btn"
+            className="min-h-10 rounded-md px-2.5 text-xs font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
+            onClick={() => {
+              if (
+                shouldAllowNonDestructiveOverlay({
+                  isCompositionPending: () => compositionPendingRef.current,
+                  notify: setStatusNotification,
+                })
+              ) {
+                setShowSearchModal(true);
+              }
+            }}
+            aria-haspopup="dialog"
+          >
+            Search
+          </button>
+          <button
+            type="button"
+            data-testid="open-context-inspector-btn"
+            className="min-h-10 rounded-md px-2.5 text-xs font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
+            onClick={() => {
+              if (
+                shouldAllowNonDestructiveOverlay({
+                  isCompositionPending: () => compositionPendingRef.current,
+                  notify: setStatusNotification,
+                })
+              ) {
+                setShowContextInspector(true);
+              }
+            }}
+            aria-haspopup="dialog"
+          >
+            Context Inspector
+          </button>
+          <button
+            type="button"
+            data-testid="open-unified-proposal-engine-btn"
+            className="min-h-10 rounded-md px-2.5 text-xs font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
+            onClick={() => {
+              if (
+                !shouldAllowNonDestructiveOverlay({
+                  isCompositionPending: () => compositionPendingRef.current,
+                  notify: setStatusNotification,
+                })
+              ) {
+                return;
+              }
+              if (!activeUnifiedProposal && stagedBatchPreview) {
+                const converted = buildUnifiedProposalFromBatchEdit(activeProject, stagedBatchPreview);
+                handleSaveProposalDraft(converted);
+                setUnifiedProposalInitialTab('diff');
+              }
+              setShowUnifiedProposalModal(true);
+            }}
+            aria-haspopup="dialog"
+          >
+            Proposals &amp; Locks (E3)
+          </button>
+          {disclosureMode === 'deep' && (
+            <button
+              type="button"
+              className="min-h-10 rounded-md px-2.5 text-xs font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
+              onClick={openAiSettingsModal}
+              aria-haspopup="dialog"
+            >
+              AI settings
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap justify-end gap-1 sm:hidden">
+          <button
+            type="button"
+            className="min-h-10 rounded-md bg-pcc-action px-2.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus"
             onClick={() => navigateWithFlush(() => setCreateProjectOpen(true))}
           >
             New
@@ -1055,21 +1405,17 @@ function App() {
           <button
             type="button"
             disabled={!hydrationSettled}
-            className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45"
+            className="min-h-10 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45"
             onClick={() => navigateWithFlush(() => setWorkspaceMode('import'))}
           >
             Import
           </button>
-          <button
-            type="button"
-            className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus"
-            onClick={() => navigateWithFlush(() => setWorkspaceMode('projects'))}
-          >
-            Projects
-          </button>
         </div>
       </nav>
 
+      {/* Main Split Workspace + Optional Dual-Pane Companion */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <div
         hidden={workspaceMode !== 'write'}
         className={workspaceMode === 'write' ? 'flex min-h-0 flex-1 flex-col' : undefined}
@@ -1110,8 +1456,75 @@ function App() {
             setShowContextInspector(true);
           }}
           onReviewUnifiedProposal={(proposal) => handleOpenUnifiedProposalReview(proposal, 'diff')}
+          readingMarginNotes={activeProject.narrative?.readingMarginNotes ?? []}
+          onSaveMarginNotes={(notes) => handleSaveCreativeData({ readingMarginNotes: notes })}
+          onExplorePassageInStudio={handleExplorePassageInStudio}
+          onOpenStoryDevelopment={(secId) => {
+            if (secId) setFocusedSectionId(secId);
+            navigateWithFlush(() => setWorkspaceMode('develop'));
+          }}
+          onAskQaAboutPassage={(query) => {
+            setQaInitialQuestion(query);
+            setCompanionState((prev) => ({
+              ...prev,
+              kind: 'qa',
+            }));
+          }}
         />
       </div>
+
+      {workspaceMode === 'studio' && (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <CreativeStudioWorkspace
+            key={activeProject.id}
+            project={activeProject}
+            aiConfigured={aiPlanActions.aiConfigured}
+            disclosureMode={disclosureMode}
+            activeSessionId={activeStudioSessionId}
+            onSelectSessionId={setActiveStudioSessionId}
+            onSaveCreativeData={handleSaveCreativeData}
+            onReviewUnifiedProposal={(proposal) => handleOpenUnifiedProposalReview(proposal, 'diff')}
+            onOpenContextInspector={() => setShowContextInspector(true)}
+            onNavigateToWorldOutput={() => navigateWithFlush(() => setWorkspaceMode('world'))}
+            onJumpToSection={(sectionId) => {
+              navigateWithFlush(() => {
+                setFocusedSectionId(sectionId);
+                setWorkspaceMode('write');
+              });
+            }}
+          />
+        </div>
+      )}
+
+      {workspaceMode === 'develop' && (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <StoryDevelopmentWorkspace
+            key={activeProject.id}
+            project={activeProject}
+            aiConfigured={aiPlanActions.aiConfigured}
+            disclosureMode={disclosureMode}
+            onReviewUnifiedProposal={(proposal) => handleOpenUnifiedProposalReview(proposal, 'diff')}
+            onOpenCreativeLocks={() => {
+              setUnifiedProposalInitialTab('locks');
+              setShowUnifiedProposalModal(true);
+            }}
+            onJumpToSection={(sectionId) => {
+              navigateWithFlush(() => {
+                setFocusedSectionId(sectionId);
+                setWorkspaceMode('write');
+              });
+            }}
+            onOpenInCreativeStudio={(session) => {
+              const existing = activeProjectRef.current.narrative?.creativeSessions ?? [];
+              handleSaveCreativeData({
+                creativeSessions: [session, ...existing],
+              });
+              setActiveStudioSessionId(session.id);
+              navigateWithFlush(() => setWorkspaceMode('studio'));
+            }}
+          />
+        </div>
+      )}
 
       {workspaceMode === 'review' && (
         <ChunkErrorBoundary
@@ -1282,7 +1695,7 @@ function App() {
         </ChunkErrorBoundary>
       )}
 
-      <div className={workspaceMode === 'plan' ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'hidden'}>
+      <div className={isWorldWorkspace ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'hidden'}>
         <AdaptivePlanWorkspace
           projectName={activeProject.name}
           pendingDecisionCount={pendingDecisionCount}
@@ -1528,8 +1941,211 @@ function App() {
           onToggleOutputDrawer={() => setShowOutputDrawer((value) => !value)}
           revisionCount={activeProject.revision}
           isOutdated={isCurrentOutputOutdated}
-          compactOnMobile={workspaceMode === 'plan'}
+          compactOnMobile={isWorldWorkspace}
         />
+      </div>
+      </div>
+
+      {/* Optional Resizable Dual-Pane Companion */}
+      {showCompanionPane && (
+        <aside
+          data-testid="dual-pane-companion"
+          aria-label="Dual-pane companion workspace"
+          style={{ width: `${companionState.widthPercent}%` }}
+          className="hidden min-w-[280px] max-w-[60vw] shrink-0 flex-col border-l border-pcc-line bg-pcc-surface lg:flex dark:border-pcc-dark-line dark:bg-pcc-dark-surface"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-pcc-line bg-pcc-canvas px-3 py-2 text-xs dark:border-pcc-dark-line dark:bg-pcc-dark-canvas">
+            <select
+              aria-label="Companion pane view"
+              data-testid="companion-kind-select"
+              value={companionState.kind}
+              onChange={(e) =>
+                setCompanionState((prev) => ({
+                  ...prev,
+                  kind: e.target.value as CompanionPaneKind,
+                }))
+              }
+              className="rounded border border-pcc-line bg-pcc-surface px-2 py-1 text-xs font-semibold text-pcc-ink dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink"
+            >
+              <option value="qa">Story Q&amp;A</option>
+              <option value="entity">Canon Entity Inspector</option>
+              <option value="story-bible">Story Bible Quick View</option>
+              <option value="story-map">Scene Map &amp; Index</option>
+              <option value="studio">Creative Studio Companion</option>
+            </select>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1 text-[10px] text-pcc-muted dark:text-pcc-dark-muted">
+                <span>Width</span>
+                <input
+                  type="range"
+                  min={28}
+                  max={55}
+                  value={companionState.widthPercent}
+                  onChange={(e) =>
+                    setCompanionState((prev) => ({
+                      ...prev,
+                      widthPercent: Number(e.target.value),
+                    }))
+                  }
+                  className="w-16"
+                />
+              </label>
+              <button
+                type="button"
+                data-testid="companion-expand-btn"
+                onClick={() => {
+                  const target =
+                    companionState.kind === 'studio'
+                      ? 'studio'
+                      : companionState.kind === 'entity' || companionState.kind === 'story-bible'
+                        ? 'world'
+                        : 'write';
+                  navigateWithFlush(() => setWorkspaceMode(target));
+                }}
+                className="rounded border border-pcc-line px-2 py-0.5 text-[11px] hover:bg-pcc-surface dark:border-pcc-dark-line"
+              >
+                Expand
+              </button>
+              <button
+                type="button"
+                data-testid="companion-close-btn"
+                onClick={() => setCompanionState((prev) => ({ ...prev, kind: 'none' }))}
+                className="rounded border border-pcc-line px-2 py-0.5 text-[11px] hover:bg-pcc-surface dark:border-pcc-dark-line"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-3 text-xs">
+            {companionState.kind === 'qa' && (
+              <StoryQaPanel
+                project={activeProject}
+                aiConfigured={aiPlanActions.aiConfigured}
+                initialQuestion={qaInitialQuestion}
+                onJumpToSection={(sectionId) => {
+                  navigateWithFlush(() => {
+                    setFocusedSectionId(sectionId);
+                    setWorkspaceMode('write');
+                  });
+                }}
+                onTurnInsightIntoStudioDraft={handleTurnQaInsightIntoStudio}
+                onClose={() => setCompanionState((prev) => ({ ...prev, kind: 'none' }))}
+              />
+            )}
+
+            {companionState.kind === 'entity' && (
+              <div className="space-y-3">
+                <div className="font-semibold text-pcc-ink dark:text-pcc-dark-ink">
+                  Canonical Entities ({snapshot.entities.length})
+                </div>
+                <div className="space-y-2">
+                  {snapshot.entities.slice(0, 25).map((entity) => (
+                    <div
+                      key={entity.id ?? entity.name}
+                      className="pcc-canon-surface rounded-lg border p-2.5 space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-pcc-ink dark:text-pcc-dark-ink">
+                          {entity.name}
+                        </span>
+                        <span className="text-[10px] uppercase text-pcc-muted dark:text-pcc-dark-muted">
+                          {entity.category}
+                        </span>
+                      </div>
+                      {entity.description && (
+                        <p className="text-[11px] text-pcc-muted dark:text-pcc-dark-muted">
+                          {entity.description}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {snapshot.entities.length === 0 && (
+                    <p className="text-pcc-muted dark:text-pcc-dark-muted">
+                      No canonical entities yet. Add or analyze in World.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {companionState.kind === 'story-bible' && (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-pcc-ink dark:text-pcc-dark-ink">
+                    Story Bible Overview
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => openPlan('story-bible')}
+                    className="rounded border border-pcc-line px-2 py-0.5 text-[11px] hover:bg-pcc-canvas dark:border-pcc-dark-line"
+                  >
+                    Edit in World
+                  </button>
+                </div>
+                {Object.entries(snapshot.storyBible).map(([fieldKey, entry]) => {
+                  const fieldObj = entry as { value?: string };
+                  return (
+                    <div key={fieldKey} className="pcc-canon-surface rounded-lg border p-2.5">
+                      <div className="text-[10px] font-semibold uppercase text-pcc-muted dark:text-pcc-dark-muted">
+                        {fieldKey}
+                      </div>
+                      <div className="mt-0.5 text-pcc-ink dark:text-pcc-dark-ink">
+                        {fieldObj?.value || '(Unset)'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {(companionState.kind === 'story-map' || companionState.kind === 'source') && (
+              <div className="space-y-2">
+                <div className="font-semibold text-pcc-ink dark:text-pcc-dark-ink">
+                  Manuscript Scene Index ({manuscriptSections(activeProject).length})
+                </div>
+                {manuscriptSections(activeProject).map((sec) => (
+                  <button
+                    key={sec.id}
+                    type="button"
+                    onClick={() => {
+                      navigateWithFlush(() => {
+                        setFocusedSectionId(sec.id);
+                        setWorkspaceMode('write');
+                      });
+                    }}
+                    className="w-full rounded-lg border border-pcc-line bg-pcc-canvas p-2 text-left hover:border-pcc-action dark:border-pcc-dark-line dark:bg-pcc-dark-canvas"
+                  >
+                    <div className="font-semibold text-pcc-ink dark:text-pcc-dark-ink">
+                      {sec.title || 'Untitled Section'}
+                    </div>
+                    <div className="mt-0.5 line-clamp-2 text-[11px] text-pcc-muted dark:text-pcc-dark-muted">
+                      {sec.text.slice(0, 120) || '(Empty)'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {companionState.kind === 'studio' && (
+              <CreativeStudioWorkspace
+                key={`companion-studio:${activeProject.id}`}
+                project={activeProject}
+                aiConfigured={aiPlanActions.aiConfigured}
+                disclosureMode="calm"
+                activeSessionId={activeStudioSessionId}
+                onSelectSessionId={setActiveStudioSessionId}
+                onSaveCreativeData={handleSaveCreativeData}
+                onReviewUnifiedProposal={(proposal) =>
+                  handleOpenUnifiedProposalReview(proposal, 'diff')
+                }
+                onOpenContextInspector={() => setShowContextInspector(true)}
+                onNavigateToWorldOutput={() => navigateWithFlush(() => setWorkspaceMode('world'))}
+              />
+            )}
+          </div>
+        </aside>
+      )}
       </div>
 
       <ReviewDiffModal
@@ -1598,8 +2214,47 @@ function App() {
         proposal={activeUnifiedProposal}
         lastUndoProposal={lastUndoProposal}
         onApplyProposal={handleApplyUnifiedProposal}
+        onSaveProposalDraft={handleSaveProposalDraft}
         onSaveLocks={handleSaveCreativeLocks}
         initialTab={unifiedProposalInitialTab}
+      />
+
+      <CommandPaletteModal
+        isOpen={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        project={activeProject}
+        onNavigateWorkspace={(modeKey) => {
+          navigateWithFlush(() => setWorkspaceMode(modeKey));
+        }}
+        onJumpToSection={(sectionId) => {
+          navigateWithFlush(() => {
+            setFocusedSectionId(sectionId);
+            setWorkspaceMode('write');
+          });
+        }}
+        onInspectEntity={(entityId) => {
+          navigateWithFlush(() => {
+            setSelectedEntityId(entityId);
+            setRightPanelTab('inspector');
+            setWorkspaceMode('world');
+          });
+        }}
+        onOpenCreativeSession={(sessionId) => {
+          setActiveStudioSessionId(sessionId);
+          navigateWithFlush(() => setWorkspaceMode('studio'));
+        }}
+        onOpenCompanion={(kind) => {
+          setCompanionState((prev) => ({
+            ...prev,
+            kind,
+          }));
+        }}
+        onOpenSearch={() => setShowSearchModal(true)}
+        onOpenContextInspector={() => setShowContextInspector(true)}
+        onOpenProposalsLocks={() => {
+          setUnifiedProposalInitialTab('diff');
+          setShowUnifiedProposalModal(true);
+        }}
       />
     </div>
   );

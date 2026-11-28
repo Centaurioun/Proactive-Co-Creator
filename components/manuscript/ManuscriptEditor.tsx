@@ -20,10 +20,12 @@ import {
   shouldBlockActionDuringComposition,
   shouldOpenAdoptionOnPropChange,
 } from './manuscriptEditorHelpers';
+import type { ReadingMarginNote } from '../../shared/creativeSessionTypes';
 import type { WritingAssistAction } from '../../shared/narrativeAiSchemas';
 import type { UnifiedProposal } from '../../shared/unifiedProposalTypes';
 import type { DraftFlushResult } from '../../lib/controller/navigationFlush';
 import type { HydrationWriteGate } from '../../lib/controller/projectListSync';
+import { LocalWritingInsightsBar } from './LocalWritingInsightsBar';
 
 export {
   computeEditorDirtyAfterDraftDiscard,
@@ -78,6 +80,18 @@ interface Props {
   hydrationGate?: HydrationWriteGate;
   onOpenContextInspector?: (sectionId?: string) => void;
   onReviewUnifiedProposal?: (proposal: UnifiedProposal) => void;
+  readingMarginNotes?: ReadingMarginNote[];
+  onSaveMarginNotes?: (notes: ReadingMarginNote[]) => void;
+  onExplorePassageInStudio?: (payload: {
+    sectionId: string;
+    sectionTitle: string;
+    startOffset: number;
+    endOffset: number;
+    selectedText: string;
+    initialGoal?: string;
+  }) => void;
+  onOpenStoryDevelopment?: (sectionId?: string) => void;
+  onAskQaAboutPassage?: (query: string) => void;
 }
 
 function deriveManuscriptMetadata(
@@ -122,6 +136,11 @@ export default function ManuscriptEditor({
   hydrationGate,
   onOpenContextInspector,
   onReviewUnifiedProposal,
+  readingMarginNotes,
+  onSaveMarginNotes,
+  onExplorePassageInStudio,
+  onOpenStoryDevelopment,
+  onAskQaAboutPassage,
 }: Props) {
   const [selectedId, setSelectedId] = useState(focusedSectionId ?? '');
   const [prevFocusedSectionId, setPrevFocusedSectionId] = useState(focusedSectionId);
@@ -142,6 +161,7 @@ export default function ManuscriptEditor({
   const [adopting, setAdopting] = useState(Boolean(initialArtifactId));
   const [confirming, setConfirming] = useState<'delete' | 'merge' | null>(null);
   const composingRef = useRef(false);
+  const writingAssistPanelRef = useRef<HTMLDivElement | null>(null);
 
   if (previousStyleVersionKey !== styleVersionKey) {
     setPreviousStyleVersionKey(styleVersionKey);
@@ -366,7 +386,88 @@ export default function ManuscriptEditor({
                 <input className={field} value={selected.title} readOnly={saving} onChange={event => update({ title: event.target.value })} />
               </label>
             ) : null}
+            {selected && !focus && (
+              <div
+                data-testid="manuscript-contextual-assist-bar"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-pcc-line bg-pcc-canvas/70 px-3 py-2 text-xs dark:border-pcc-dark-line dark:bg-pcc-dark-canvas/70"
+              >
+                <div className="flex flex-wrap items-center gap-2 text-pcc-muted dark:text-pcc-dark-muted">
+                  <span className="font-semibold text-pcc-ink dark:text-pcc-dark-ink">
+                    {selectionRange.end > selectionRange.start
+                      ? `Selected passage (${selectionRange.end - selectionRange.start} chars)`
+                      : 'Scene assist'}
+                  </span>
+                  <span className="text-[11px]">No automatic AI calls on selection</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="manuscript-ai-assist-trigger"
+                    onClick={() => {
+                      if (focus) setFocusToolsOpen(true);
+                      writingAssistPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }}
+                    className="rounded-md border border-indigo-500/40 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-800 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-200 dark:hover:bg-indigo-900/60"
+                  >
+                    AI Assist
+                  </button>
+                  {onExplorePassageInStudio && (
+                    <button
+                      type="button"
+                      data-testid="manuscript-explore-studio-btn"
+                      onClick={() => {
+                        const rawText = selected.text;
+                        const hasSelection = selectionRange.end > selectionRange.start;
+                        const snippet = hasSelection
+                          ? rawText.slice(selectionRange.start, selectionRange.end)
+                          : rawText.slice(0, 260);
+                        onExplorePassageInStudio({
+                          sectionId: selected.id,
+                          sectionTitle: selected.title || 'Untitled Scene',
+                          startOffset: hasSelection ? selectionRange.start : 0,
+                          endOffset: hasSelection ? selectionRange.end : snippet.length,
+                          selectedText: snippet,
+                          initialGoal: hasSelection
+                            ? `Explore alternative directions or subtext for this passage in "${selected.title || 'Scene'}".`
+                            : `Brainstorm creative directions continuing "${selected.title || 'Scene'}".`,
+                        });
+                      }}
+                      className="rounded-md border border-emerald-500/40 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-200 dark:hover:bg-emerald-900/60"
+                    >
+                      Explore in Studio
+                    </button>
+                  )}
+                  {onOpenStoryDevelopment && (
+                    <button
+                      type="button"
+                      data-testid="manuscript-open-story-dev-btn"
+                      onClick={() => onOpenStoryDevelopment(selected.id)}
+                      className="rounded-md border border-pcc-line bg-pcc-surface px-2.5 py-1 text-xs font-medium text-pcc-ink hover:bg-pcc-canvas dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink"
+                    >
+                      Story Development
+                    </button>
+                  )}
+                  {onAskQaAboutPassage && (
+                    <button
+                      type="button"
+                      data-testid="manuscript-ask-qa-btn"
+                      onClick={() => {
+                        const snippet =
+                          selectionRange.end > selectionRange.start
+                            ? selected.text.slice(selectionRange.start, selectionRange.end).slice(0, 140)
+                            : selected.title || 'current scene';
+                        onAskQaAboutPassage(`What established canon relates to: ${snippet}?`);
+                      }}
+                      className="rounded-md border border-pcc-line bg-pcc-surface px-2.5 py-1 text-xs font-medium text-pcc-ink hover:bg-pcc-canvas dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink"
+                    >
+                      Ask Q&amp;A
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             <ManuscriptTextPane
+              project={project}
               textarea={textarea}
               selected={selected}
               focus={focus}
@@ -375,6 +476,10 @@ export default function ManuscriptEditor({
               isComposing={isComposing}
               buttonClassName={workspaceButton}
               fieldClassName={field}
+              marginNotes={readingMarginNotes ?? project.narrative?.readingMarginNotes ?? []}
+              onSaveMarginNotes={onSaveMarginNotes}
+              onExplorePassageInStudio={onExplorePassageInStudio}
+              onAskQaAboutPassage={onAskQaAboutPassage}
               onTogglePreview={() => {
                 if (shouldBlockActionDuringComposition(composingRef.current || isComposing)) return;
                 scheduleRestore(previewSection);
@@ -428,7 +533,10 @@ export default function ManuscriptEditor({
               />
             )}
           </fieldset>
-          <div className="mt-5">
+          <div className="mt-4">
+            <LocalWritingInsightsBar projectId={project.id} section={selected} />
+          </div>
+          <div className="mt-5" ref={writingAssistPanelRef}>
             {focus && (
               <button type="button" className={workspaceButton} aria-expanded={focusToolsOpen}
                 onClick={() => setFocusToolsOpen(value => !value)}>

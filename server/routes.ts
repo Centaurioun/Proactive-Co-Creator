@@ -24,12 +24,15 @@ import type {
   ImageGenerationResult,
 } from '../shared/types.ts';
 import {
+  CreativeStudioActionRequestSchema,
   DiagnosticsAnalyzeRequestSchema,
   DiagnosticsSuggestFixesRequestSchema,
   ImportEnhanceRequestSchema,
   OpportunitiesExploreRequestSchema,
   SyncAnalyzeRequestSchema,
   WritingAssistRequestSchema,
+  type CreativeStudioActionRequest,
+  type CreativeStudioActionResponse,
   type DiagnosticsAnalyzeRequest,
   type DiagnosticsAnalyzeResponse,
   type DiagnosticsSuggestFixesRequest,
@@ -74,6 +77,7 @@ import { extractNarrativeChunk } from './narrative/extractionService.ts';
 import {
   analyzeNarrativeSync,
   analyzeSemanticDiagnostics,
+  executeCreativeStudioAction,
   exploreCreativeOpportunities,
   proposeImportEnhancements,
   runWritingAssistant,
@@ -123,6 +127,7 @@ export interface AiServiceHandlers {
   analyzeNarrativeSync?: (request: SyncAnalyzeRequest, signal?: AbortSignal) => Promise<SyncAnalyzeResponse>;
   runWritingAssistant?: (request: WritingAssistRequest, signal?: AbortSignal) => Promise<WritingAssistResponse>;
   exploreCreativeOpportunities?: (request: OpportunitiesExploreRequest, signal?: AbortSignal) => Promise<OpportunitiesExploreResponse>;
+  executeCreativeStudioAction?: (request: CreativeStudioActionRequest, signal?: AbortSignal) => Promise<CreativeStudioActionResponse>;
   proposeImportEnhancements?: (request: ImportEnhanceRequest, signal?: AbortSignal) => Promise<ImportEnhanceResponse>;
 }
 
@@ -140,6 +145,7 @@ const defaultHandlers: AiServiceHandlers = {
   analyzeNarrativeSync,
   runWritingAssistant,
   exploreCreativeOpportunities,
+  executeCreativeStudioAction,
   proposeImportEnhancements,
 };
 
@@ -464,6 +470,9 @@ export function createApiRouter(
   );
   registerJsonPostRoute(router, '/narrative/opportunities/explore', OpportunitiesExploreRequestSchema, 'Invalid opportunity exploration request.', (data, signal) =>
     (handlers.exploreCreativeOpportunities ?? exploreCreativeOpportunities)(data, signal),
+  );
+  registerJsonPostRoute(router, '/narrative/opportunities/creative-action', CreativeStudioActionRequestSchema, 'Invalid creative studio action request.', (data, signal) =>
+    (handlers.executeCreativeStudioAction ?? executeCreativeStudioAction)(data, signal),
   );
   registerJsonPostRoute(router, '/narrative/import/enhance', ImportEnhanceRequestSchema, 'Invalid import enhancement request.', (data, signal) =>
     (handlers.proposeImportEnhancements ?? proposeImportEnhancements)(data, signal),

@@ -355,3 +355,145 @@ export type ImportEnhanceRequest = z.infer<typeof ImportEnhanceRequestSchema>;
 export type ImportEnhanceResponse = z.infer<typeof ImportEnhanceResponseSchema>;
 export type ImportEnhancementProposal = z.infer<typeof ImportEnhancementProposalSchema>;
 export type AiUsageReport = z.infer<typeof AiUsageReportSchema>;
+
+// 7. Creative Studio, Guided Exploration (Grill Me), Focused Development & Story Q&A Action Contract (WP03)
+export const CREATIVE_AI_ACTION_KINDS = [
+  'discover',
+  'regenerate-card',
+  'develop-further',
+  'suggest-directions',
+  'generate-idea',
+  'combine-ideas',
+  'explain-differently',
+  'challenge-idea',
+  'ask-questions',
+  'preview-concept',
+  'prepare-patch',
+  'story-qa',
+] as const;
+
+export const CreativeAiActionKindSchema = z.enum(CREATIVE_AI_ACTION_KINDS);
+export type CreativeAiActionKind = z.infer<typeof CreativeAiActionKindSchema>;
+
+export const CreativeStudioActionRequestSchema = z.object({
+  action: CreativeAiActionKindSchema,
+  projectId: z.string().min(1).max(160).optional(),
+  projectTitle: z.string().min(1).max(240),
+  studioMode: z.enum(['discover', 'guided', 'focused', 'story-lab']).default('discover'),
+  interviewMode: z.enum(['inspire', 'explore', 'grill', 'challenge']).default('explore'),
+  intensity: z.enum(['subtle', 'balanced', 'bold', 'radical']).default('balanced'),
+  compassSummary: z.string().max(1_000).default(''),
+  scopeSummary: z.string().max(1_000).default(''),
+  seedPrompt: z.string().max(4_000).default(''),
+  customInput: z.string().max(4_000).default(''),
+  selectedDirections: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(160),
+        label: z.string().min(1).max(300),
+        description: z.string().max(1_000).default(''),
+        category: z.string().max(120).default(''),
+      })
+    )
+    .max(20)
+    .default([]),
+  existingDirections: z.array(z.string().max(300)).max(40).default([]),
+  targetCards: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(160),
+        title: z.string().min(1).max(300),
+        summary: z.string().min(1).max(4_000),
+        rationale: z.string().max(2_000).default(''),
+      })
+    )
+    .max(10)
+    .default([]),
+  knownCanonFacts: z.array(z.string().max(500)).max(30).default([]),
+  answeredQuestions: z
+    .array(
+      z.object({
+        question: z.string().min(1).max(600),
+        answer: z.string().min(1).max(1_000),
+      })
+    )
+    .max(25)
+    .default([]),
+  contextBlocks: z
+    .array(
+      z.object({
+        sourceId: z.string().min(1).max(160),
+        label: z.string().min(1).max(240),
+        category: z.string().max(120).default('canon'),
+        excerpt: z.string().max(3_000),
+      })
+    )
+    .max(20)
+    .default([]),
+  language: z.enum(['en', 'tr']).default('en'),
+});
+
+export const CreativeAiSuggestedDirectionSchema = z.object({
+  label: z.string().min(1).max(300),
+  description: z.string().max(1_000).default(''),
+  category: z.string().max(120).default('Creative Direction'),
+});
+
+export const CreativeAiGeneratedIdeaSchema = z.object({
+  title: z.string().min(1).max(300),
+  summary: z.string().min(1).max(4_000),
+  rationale: z.string().max(2_000).default(''),
+  epistemicStatus: z
+    .enum(['inspiration', 'hypothesis', 'confirmed-fact', 'concrete-patch'])
+    .default('hypothesis'),
+  assumptions: z.array(z.string().max(400)).max(8).default([]),
+  possibleConsequences: z.array(z.string().max(400)).max(8).default([]),
+  craftNote: z.string().max(1_000).optional(),
+  proposedProse: z.string().max(8_000).optional(),
+});
+
+export const CreativeAiQuestionSchema = z.object({
+  question: z.string().min(1).max(600),
+  rationale: z.string().max(1_000).default(''),
+  recommendedAnswer: z.string().max(600).default(''),
+  recommendedWhy: z.string().max(1_000).default(''),
+  options: z.array(z.string().max(400)).max(6).default([]),
+});
+
+export const CreativeAiConceptPreviewSchema = z.object({
+  title: z.string().min(1).max(300),
+  summary: z.string().min(1).max(4_000),
+  possibleConnections: z.array(z.string().max(400)).max(10).default([]),
+  unresolvedQuestions: z.array(z.string().max(400)).max(10).default([]),
+  craftNote: z.string().max(1_000).optional(),
+});
+
+export const CreativeAiStoryQaAnswerSchema = z.object({
+  answer: z.string().min(1).max(4_000),
+  citedSourceIds: z.array(z.string().max(160)).max(12).default([]),
+  openGaps: z.array(z.string().max(500)).max(8).default([]),
+  suggestedStudioDirection: z.string().max(600).default(''),
+});
+
+export const CreativeStudioActionResponseSchema = z.object({
+  action: CreativeAiActionKindSchema,
+  engineSummary: z.string().min(1).max(1_000),
+  directions: z.array(CreativeAiSuggestedDirectionSchema).max(8).default([]),
+  ideas: z.array(CreativeAiGeneratedIdeaSchema).max(6).default([]),
+  questions: z.array(CreativeAiQuestionSchema).max(4).default([]),
+  conceptPreview: CreativeAiConceptPreviewSchema.optional(),
+  alternativeExplanation: z.string().max(3_000).optional(),
+  challengeCritique: z.string().max(3_000).optional(),
+  craftNote: z.string().max(1_000).optional(),
+  proposedProse: z.string().max(8_000).optional(),
+  qaResult: CreativeAiStoryQaAnswerSchema.optional(),
+  usage: AiUsageReportSchema.optional(),
+});
+
+export type CreativeStudioActionRequest = z.infer<
+  typeof CreativeStudioActionRequestSchema
+>;
+export type CreativeStudioActionResponse = z.infer<
+  typeof CreativeStudioActionResponseSchema
+>;
+

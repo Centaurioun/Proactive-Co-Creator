@@ -32,12 +32,15 @@ import {
   RefineRequestSchema,
 } from '../shared/schemas';
 import {
+  CreativeStudioActionRequestSchema,
   DiagnosticsAnalyzeRequestSchema,
   DiagnosticsSuggestFixesRequestSchema,
   ImportEnhanceRequestSchema,
   OpportunitiesExploreRequestSchema,
   SyncAnalyzeRequestSchema,
   WritingAssistRequestSchema,
+  type CreativeStudioActionRequest,
+  type CreativeStudioActionResponse,
   type DiagnosticsAnalyzeRequest,
   type DiagnosticsAnalyzeResponse,
   type DiagnosticsSuggestFixesRequest,
@@ -519,6 +522,16 @@ export async function requestCreativeOpportunities(
   const validated = enforceOperationRequestBounds((v) => OpportunitiesExploreRequestSchema.safeParse(v), payload);
   return postJson<OpportunitiesExploreResponse>('/api/narrative/opportunities/explore', validated, { operation: 'opportunities', signal });
 }
+
+export async function requestCreativeStudioAction(
+  payload: CreativeStudioActionRequest,
+  signal?: AbortSignal
+): Promise<CreativeStudioActionResponse> {
+  const validated = enforceOperationRequestBounds((v) => CreativeStudioActionRequestSchema.safeParse(v), payload);
+  return postJson<CreativeStudioActionResponse>('/api/narrative/opportunities/creative-action', validated, { operation: 'opportunities', signal });
+}
+
+export const runCreativeStudioAction = requestCreativeStudioAction;
 
 export async function requestImportEnhancements(
   payload: ImportEnhanceRequest,

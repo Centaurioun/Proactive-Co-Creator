@@ -108,18 +108,20 @@ const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
 
   return (
     <section
-      aria-label="Narrative plan workspace"
+      aria-label="Story World and Canon Map workspace"
       className="flex h-full min-h-0 flex-col gap-2.5 overflow-hidden bg-pcc-canvas p-2.5 text-pcc-ink dark:bg-pcc-dark-canvas dark:text-pcc-dark-ink sm:gap-3 sm:p-3"
     >
       <header className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-pcc-line bg-pcc-surface px-3 py-2.5 shadow-sm dark:border-pcc-dark-line dark:bg-pcc-dark-surface sm:px-4">
         <div className="min-w-[150px]">
-          <h1 className="font-display text-base font-bold tracking-tight sm:text-lg">Plan</h1>
+          <h1 className="font-display text-base font-bold tracking-tight sm:text-lg">
+            World <span className="text-xs font-normal text-pcc-muted dark:text-pcc-dark-muted">· Story Bible, Canon Graph &amp; Relationships</span>
+          </h1>
           <p className="max-w-[60ch] truncate text-xs text-pcc-muted dark:text-pcc-dark-muted" title={projectName}>
-            {projectName} <span aria-hidden="true">/</span> narrative map
+            {projectName} <span aria-hidden="true">/</span> narrative map &amp; entity canon
           </p>
         </div>
 
-        <nav aria-label="Plan context tools" className="flex flex-wrap items-center gap-1.5">
+        <nav aria-label="World context tools" className="flex flex-wrap items-center gap-1.5">
           <button type="button" className={tabButtonClass} aria-expanded={showInbox} onClick={() => setShowInbox((value) => !value)}>
             Inbox <span className="ml-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-900 dark:bg-amber-950 dark:text-amber-200">{pendingDecisionCount}</span>
           </button>
@@ -134,9 +136,19 @@ const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
           <button type="button" className={`${tabButtonClass} hidden sm:inline-flex`} onClick={() => openInspector('opportunities')}>Opportunities</button>
           <details className="relative hidden sm:block">
             <summary className={`${tabButtonClass} flex cursor-pointer list-none items-center`}>More views</summary>
-            <div className="absolute right-0 z-20 mt-1 grid min-w-40 gap-1 rounded-lg border border-pcc-line bg-pcc-surface p-1.5 shadow-lg dark:border-pcc-dark-line dark:bg-pcc-dark-surface">
-              <button type="button" className={`${tabButtonClass} text-left`} onClick={() => openInspector('timeline')}>Timeline</button>
-              <button type="button" className={`${tabButtonClass} text-left`} onClick={() => openInspector('mind-map')}>Mind map</button>
+            <div className="absolute right-0 z-20 mt-1 grid min-w-56 gap-1 rounded-lg border border-pcc-line bg-pcc-surface p-1.5 shadow-lg dark:border-pcc-dark-line dark:bg-pcc-dark-surface">
+              <button type="button" className={`${tabButtonClass} justify-between text-left`} onClick={() => openInspector('timeline')}>
+                <span>Timeline</span>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                  Preview · Expands WP04
+                </span>
+              </button>
+              <button type="button" className={`${tabButtonClass} justify-between text-left`} onClick={() => openInspector('mind-map')}>
+                <span>Mind map</span>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                  Preview · Expands WP04
+                </span>
+              </button>
             </div>
           </details>
         </nav>
