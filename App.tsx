@@ -12,6 +12,7 @@ import HistoryPanel from './components/inspector/HistoryPanel';
 import AiSettingsModal from './components/workspace/AiSettingsModal';
 import CreateProjectDialog from './components/projects/CreateProjectDialog';
 import StorageAlertBanner, { type StorageConflictAlert } from './components/workspace/StorageAlertBanner';
+import OperationActivityStrip from './components/workspace/OperationActivityStrip';
 import ReviewDiffModal from './components/workspace/ReviewDiffModal';
 import BeliefGraph from './components/BeliefGraph';
 import ContextualInspector, { type RightPanelTab } from './components/ContextualInspector';
@@ -44,6 +45,13 @@ import {
   useNarrativeWorkflowActions,
 } from './lib/controller/useNarrativeWorkflowActions';
 import { getReadableErrorMessage, useAiPlanActions } from './lib/controller/useAiPlanActions';
+import {
+  executeNavigationWithFlush,
+  shouldAllowNonDestructiveOverlay,
+  type DraftFlushResult,
+} from './lib/controller/navigationFlush';
+import { useProviderHubStatus } from './lib/controller/useProviderHubStatus';
+import { deriveTicketOperationActivities } from './lib/controller/useOperationActivity';
 import { createSampleProject } from './lib/canonicalModel';
 import { evaluateProjectConsistency } from './lib/consistencyChecker';
 import {
@@ -147,6 +155,7 @@ function App() {
   const draftDirtyRef = useRef(false);
   const compositionPendingRef = useRef(false);
   const restorePendingRef = useRef(false);
+  const flushDraftRef = useRef<(() => Promise<DraftFlushResult>) | null>(null);
 
   const [mobileTab, setMobileTab] = useState<MobileTab>('graph');
   const [showOutputDrawer, setShowOutputDrawer] = useState<boolean>(false);
@@ -184,6 +193,32 @@ function App() {
     return false;
   }, []);
 
+  const navigateWithFlush = useCallback((action: () => void | Promise<void>) => {
+    void executeNavigationWithFlush(
+      {
+        isDraftDirty: () => draftDirtyRef.current,
+        isRestorePending: () => restorePendingRef.current,
+        isCompositionPending: () => compositionPendingRef.current,
+        flushDraft: flushDraftRef.current,
+        notify: setStatusNotification,
+      },
+      action
+    );
+  }, []);
+
+  const providerHub = useProviderHubStatus();
+
+  const openAiSettingsModal = useCallback(() => {
+    if (
+      shouldAllowNonDestructiveOverlay({
+        isCompositionPending: () => compositionPendingRef.current,
+        notify: setStatusNotification,
+      })
+    ) {
+      setShowAiSettings(true);
+    }
+  }, []);
+
   const [stagedBatchPreview, setStagedBatchPreview] = useState<BatchEditProposalResult | null>(null);
   const [stagedDecisionDrafts, setStagedDecisionDrafts] = useState<Record<string, string>>({});
   const [storyBibleErrors, setStoryBibleErrors] = useState<
@@ -195,9 +230,24 @@ function App() {
   } | null>(null);
 
   const [inFlightTickets, setInFlightTickets] = useState<InFlightTicketsMap>({});
+  const [cancelRequestedTicketKeys, setCancelRequestedTicketKeys] = useState<Set<string>>(
+    () => new Set()
+  );
   const [aiTicketAuthority] = useState<AiTicketAuthority>(() =>
     createAiTicketAuthority((nextTickets) => {
       setInFlightTickets(nextTickets);
+      setCancelRequestedTicketKeys((prev) => {
+        if (prev.size === 0) return prev;
+        let changed = false;
+        const next = new Set(prev);
+        for (const key of prev) {
+          if (!(key in nextTickets)) {
+            next.delete(key);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
     })
   );
   const aiTicketAuthorityRef = useRef<AiTicketAuthority>(aiTicketAuthority);
@@ -519,46 +569,48 @@ function App() {
 
   // Kept in App.tsx for releaseQualification contract check.
   const handleSwitchProject = (projectId: string) => {
-    if (!allowNavigation()) return;
-    const current = activeProjectRef.current;
-    if (projectId === current.id) return;
+    navigateWithFlush(() => {
+      const current = activeProjectRef.current;
+      if (projectId === current.id) return;
 
-    const switchRes = prepareProjectSwitch({
-      currentProject: current,
-      savedProjects: savedProjectsRef.current,
-      targetProjectId: projectId,
-    });
-    if (!switchRes.targetProject) return;
-
-    cancelAutosave();
-    const nextTarget = switchRes.targetProject;
-    const nextUndo = createUndoRedoState(
-      nextTarget.snapshot,
-      nextTarget.revisions,
-      nextTarget.undoHistory
-    );
-    savedProjectsRef.current = switchRes.savedProjects;
-    setSavedProjects(switchRes.savedProjects);
-    selectProject(nextTarget, nextUndo);
-    if (getHydrationGate() !== 'blocked-read-error') {
-      setStorageAlert(null);
-    }
-
-    if (switchRes.projectToFlush && canWriteWorkspace()) {
-      void flushProjectDurably(switchRes.projectToFlush, {
-        expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
+      const switchRes = prepareProjectSwitch({
+        currentProject: current,
+        savedProjects: savedProjectsRef.current,
+        targetProjectId: projectId,
       });
-    }
+      if (!switchRes.targetProject) return;
+
+      cancelAutosave();
+      const nextTarget = switchRes.targetProject;
+      const nextUndo = createUndoRedoState(
+        nextTarget.snapshot,
+        nextTarget.revisions,
+        nextTarget.undoHistory
+      );
+      savedProjectsRef.current = switchRes.savedProjects;
+      setSavedProjects(switchRes.savedProjects);
+      selectProject(nextTarget, nextUndo);
+      if (getHydrationGate() !== 'blocked-read-error') {
+        setStorageAlert(null);
+      }
+
+      if (switchRes.projectToFlush && canWriteWorkspace()) {
+        void flushProjectDurably(switchRes.projectToFlush, {
+          expectedPersistedRevision: switchRes.projectToFlush.persistedRevision,
+        });
+      }
+    });
   };
 
   // Kept in App.tsx for storageLifecycle contract check.
   const handleDeleteProject = (projectId: string) => {
-    if (!allowNavigation()) return;
-    if (activeProjectRef.current.id === projectId) cancelAutosave();
-    resetProjectSaveState(projectId);
-    aiTicketAuthorityRef.current?.invalidateProject(projectId);
-    void deleteProjectCompletely(projectId).then((delRes) => {
-      applyPostDeleteState(projectId, delRes);
+    navigateWithFlush(() => {
+      if (activeProjectRef.current.id === projectId) cancelAutosave();
+      resetProjectSaveState(projectId);
+      aiTicketAuthorityRef.current?.invalidateProject(projectId);
+      void deleteProjectCompletely(projectId).then((delRes) => {
+        applyPostDeleteState(projectId, delRes);
+      });
     });
   };
 
@@ -597,6 +649,28 @@ function App() {
   const isBatchLoading = isProjectActionLoading(inFlightTickets, activeProject.id, 'batch');
   const isGenerating = isProjectActionLoading(inFlightTickets, activeProject.id, 'generate');
   const isPolishingPrompt = isProjectActionLoading(inFlightTickets, activeProject.id, 'polish');
+
+  const activeOperations = useMemo(
+    () =>
+      deriveTicketOperationActivities(
+        inFlightTickets,
+        activeProject.id,
+        activeProject.revision,
+        new Map(),
+        cancelRequestedTicketKeys,
+        0
+      ),
+    [inFlightTickets, activeProject.id, activeProject.revision, cancelRequestedTicketKeys]
+  );
+
+  const handleCancelActiveOperation = useCallback(
+    (operationId: string) => {
+      setCancelRequestedTicketKeys((prev) => new Set(prev).add(operationId));
+      aiTicketAuthorityRef.current?.invalidateProject(activeProjectRef.current.id);
+      setStatusNotification('Cancel requested for active AI operation.');
+    },
+    []
+  );
 
   const analysisError = analysisErrors[activeProject.id] ?? null;
   const clarificationError = clarificationErrors[activeProject.id] ?? null;
@@ -655,28 +729,32 @@ function App() {
     panel: RightPanelTab,
     target?: 'revision-history' | 'project-management' | 'export-content'
   ) => {
-    if (!allowNavigation()) return;
-    setRightPanelTab(panel);
-    setMobileTab('inspector');
-    if (target) setHistoryTarget((previous) => ({ id: target, sequence: (previous?.sequence ?? 0) + 1 }));
-    setWorkspaceMode('plan');
+    navigateWithFlush(() => {
+      setRightPanelTab(panel);
+      setMobileTab('inspector');
+      if (target) setHistoryTarget((previous) => ({ id: target, sequence: (previous?.sequence ?? 0) + 1 }));
+      setWorkspaceMode('plan');
+    });
   };
 
   const handleSelectHeaderSection = (section: WorkspaceSection) => {
-    if (!allowNavigation()) return;
-    setWorkspaceMode('plan');
-    if (section === 'story-bible') {
-      setRightPanelTab('story-bible');
-      setMobileTab('inspector');
-    } else if (section === 'history') {
-      openPlan('history', 'revision-history');
-    } else if (section === 'output') {
-      setShowOutputDrawer(true);
-      setMobileTab('output');
-    } else {
-      setRightPanelTab('inspector');
-      setMobileTab('graph');
-    }
+    navigateWithFlush(() => {
+      setWorkspaceMode('plan');
+      if (section === 'story-bible') {
+        setRightPanelTab('story-bible');
+        setMobileTab('inspector');
+      } else if (section === 'history') {
+        setRightPanelTab('history');
+        setMobileTab('inspector');
+        setHistoryTarget((previous) => ({ id: 'revision-history', sequence: (previous?.sequence ?? 0) + 1 }));
+      } else if (section === 'output') {
+        setShowOutputDrawer(true);
+        setMobileTab('output');
+      } else {
+        setRightPanelTab('inspector');
+        setMobileTab('graph');
+      }
+    });
   };
 
   const pendingDecisions = useMemo(
@@ -726,21 +804,17 @@ function App() {
         isDarkMode={isDarkMode}
         toggleDarkMode={() => setIsDarkMode((prev) => !prev)}
         onShowInfo={() => setShowInfoModal(true)}
-        onLoadSampleProject={handleResetSampleProject}
+        onLoadSampleProject={() => navigateWithFlush(handleResetSampleProject)}
         savePresentation={savePresentation}
+        providerStatusPill={providerHub.pillSummary}
+        onOpenAiSettings={openAiSettingsModal}
         project={activeProject}
         projects={savedProjects}
         onSwitchProject={handleSwitchProject}
-        onNewProject={() => {
-          if (allowNavigation()) setCreateProjectOpen(true);
-        }}
-        onOpenImport={() => {
-          if (allowNavigation()) setWorkspaceMode('import');
-        }}
+        onNewProject={() => navigateWithFlush(() => setCreateProjectOpen(true))}
+        onOpenImport={() => navigateWithFlush(() => setWorkspaceMode('import'))}
         importDisabled={!hydrationSettled}
-        onOpenProjects={() => {
-          if (allowNavigation()) setWorkspaceMode('projects');
-        }}
+        onOpenProjects={() => navigateWithFlush(() => setWorkspaceMode('projects'))}
       />
 
       <CreateProjectDialog
@@ -761,6 +835,15 @@ function App() {
         }
         onDismissStorageAlert={() => setStorageAlert(null)}
         onDismissStatusNotification={() => setStatusNotification(null)}
+        canUndo={undoState.past.length > 0 && !manuscriptDraftDirty && !restorePending}
+        undoLabel={undoState.past[undoState.past.length - 1]?.label}
+        onUndo={planHandlers.handleUndo}
+      />
+
+      <OperationActivityStrip
+        operations={activeOperations}
+        activeRevision={activeProject.revision}
+        onCancelOperation={handleCancelActiveOperation}
       />
 
       <nav
@@ -783,10 +866,11 @@ function App() {
               aria-current={workspaceMode === modeKey ? 'page' : undefined}
               className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted transition-colors hover:text-pcc-ink aria-[current=page]:bg-pcc-surface aria-[current=page]:text-pcc-action aria-[current=page]:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:text-pcc-dark-ink dark:aria-[current=page]:bg-pcc-dark-surface dark:aria-[current=page]:text-pcc-dark-ink"
               onClick={() => {
-                if (allowNavigation()) {
+                if (workspaceMode === modeKey) return;
+                navigateWithFlush(() => {
                   setAdoptArtifactId(undefined);
                   setWorkspaceMode(modeKey);
-                }
+                });
               }}
             >
               {label}
@@ -796,9 +880,7 @@ function App() {
         <button
           type="button"
           className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
-          onClick={() => {
-            if (allowNavigation()) setShowAiSettings(true);
-          }}
+          onClick={openAiSettingsModal}
           aria-haspopup="dialog"
         >
           AI settings
@@ -807,9 +889,7 @@ function App() {
           <button
             type="button"
             className="min-h-11 rounded-md bg-pcc-action px-2.5 text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus"
-            onClick={() => {
-              if (allowNavigation()) setCreateProjectOpen(true);
-            }}
+            onClick={() => navigateWithFlush(() => setCreateProjectOpen(true))}
           >
             New
           </button>
@@ -817,18 +897,14 @@ function App() {
             type="button"
             disabled={!hydrationSettled}
             className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45"
-            onClick={() => {
-              if (allowNavigation()) setWorkspaceMode('import');
-            }}
+            onClick={() => navigateWithFlush(() => setWorkspaceMode('import'))}
           >
             Import
           </button>
           <button
             type="button"
             className="min-h-11 rounded-md px-2.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus"
-            onClick={() => {
-              if (allowNavigation()) setWorkspaceMode('projects');
-            }}
+            onClick={() => navigateWithFlush(() => setWorkspaceMode('projects'))}
           >
             Projects
           </button>
@@ -844,6 +920,8 @@ function App() {
           project={activeProject}
           isActive={workspaceMode === 'write'}
           onSave={narrativeActions.saveManuscript}
+          flushDraftRef={flushDraftRef}
+          hydrationGate={hydrationGate}
           initialArtifactId={adoptArtifactId}
           onDismissAdoption={() => setAdoptArtifactId(undefined)}
           focusedSectionId={focusedSectionId}
@@ -957,15 +1035,22 @@ function App() {
               key={activeProject.id}
               project={activeProject}
               savedProjects={savedProjects}
-              onResumeWorkspace={() => {
-                if (allowNavigation()) setWorkspaceMode(lastStableWorkspaceModeRef.current);
-              }}
+              onResumeWorkspace={() =>
+                navigateWithFlush(() => setWorkspaceMode(lastStableWorkspaceModeRef.current))
+              }
               onOpenProject={(projectId) => {
-                if (!allowNavigation()) return;
-                handleSwitchProject(projectId);
-                setWorkspaceMode('write');
+                navigateWithFlush(() => {
+                  handleSwitchProject(projectId);
+                  setWorkspaceMode('write');
+                });
               }}
               onCreateNewProject={handleCreateNewProject}
+              hydrationGate={hydrationGate}
+              hasStorageAlert={Boolean(storageAlert && storageAlert.projectId === activeProject.id)}
+              onExportJsonBackup={() =>
+                triggerProjectBackupDownload(activeProject, `r${activeProject.revision}-backup`)
+              }
+              onOpenReviewSync={() => navigateWithFlush(() => setWorkspaceMode('review'))}
               historyContent={
                 <HistoryPanel
                   project={activeProject}
@@ -996,9 +1081,7 @@ function App() {
               }
               openProjects={() => openPlan('history', 'project-management')}
               openExport={() => openPlan('history', 'export-content')}
-              openImport={() => {
-                if (allowNavigation()) setWorkspaceMode('import');
-              }}
+              openImport={() => navigateWithFlush(() => setWorkspaceMode('import'))}
               restore={handleImportProjectJson}
               restoreArchiveProjects={handleRestoreArchiveProjects}
               downloadBackup={(backup) =>
@@ -1210,13 +1293,12 @@ function App() {
               onExportManuscriptText={
                 manuscriptSections(activeProject).length > 0 ? exportManuscriptText : undefined
               }
-              onOpenReviewDiagnostics={() => {
-                if (allowNavigation()) setWorkspaceMode('review');
-              }}
+              onOpenReviewDiagnostics={() => navigateWithFlush(() => setWorkspaceMode('review'))}
               onJumpToSection={(sectionId) => {
-                if (!allowNavigation()) return;
-                setFocusedSectionId(sectionId);
-                setWorkspaceMode('write');
+                navigateWithFlush(() => {
+                  setFocusedSectionId(sectionId);
+                  setWorkspaceMode('write');
+                });
               }}
               aiConfigured={aiPlanActions.aiConfigured}
               onSendOpportunityToReview={narrativeActions.handleSendOpportunityToReview}

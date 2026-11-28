@@ -400,8 +400,7 @@ describe('T2: Actionable Consistency Issue Target Navigation & Safety (IS-01 thr
     ) => { ok: boolean; kind?: string; entity?: { id?: string }; storyField?: string };
 
     let snap = createSampleProject().snapshot;
-    snap = updateStoryBibleField(snap, 'setting', 'Subterranean Ice Cavern');
-    // Confirm ent_conservatory and add a second confirmed location
+    snap = updateStoryBibleField(snap, 'setting', '19th-century coastal town');
     snap = {
       ...snap,
       entities: [
@@ -422,27 +421,31 @@ describe('T2: Actionable Consistency Issue Target Navigation & Safety (IS-01 thr
       ],
     };
 
+    // Broad descriptive setting + specific location nodes must NOT emit brittle substring false positives
+    const cleanIssues = evaluateProjectConsistency(snap);
+    assert.equal(
+      cleanIssues.some((i) => i.id === 'issue_setting_mismatch'),
+      false,
+      'Specific confirmed locations inside a broader descriptive setting must not trigger a false-positive mismatch'
+    );
+
+    // Multi-target issue resolution (entity + story_bible) on genuine violated exclusion, with fail-closed when deleted
+    snap = updateStoryBibleField(snap, 'explicitExclusions', 'Brass Lighthouse');
     const issues = evaluateProjectConsistency(snap);
-    const mismatch = issues.find((i) => i.id === 'issue_setting_mismatch');
-    assert.ok(mismatch, 'Expected issue_setting_mismatch');
-    assert.ok(Array.isArray(mismatch.targets));
+    const exclIssue = issues.find((i) => i.id === 'issue_excl_ent_lighthouse');
+    assert.ok(exclIssue && Array.isArray(exclIssue.targets), 'Expected violated exclusion issue with explicit targets');
+    assert.ok(exclIssue.targets.some((t) => t.kind === 'story_bible' && t.storyField === 'explicitExclusions'));
+    assert.ok(exclIssue.targets.some((t) => t.kind === 'entity' && t.entityId === 'ent_lighthouse'));
 
-    const bibleTarget = mismatch.targets.find((t) => t.kind === 'story_bible' && t.storyField === 'setting');
-    const locTargets = mismatch.targets.filter((t) => t.kind === 'entity').map((t) => t.entityId);
-    assert.ok(bibleTarget, 'Setting mismatch must target Story Bible setting');
-    assert.equal(locTargets.includes('ent_conservatory'), true);
-    assert.equal(locTargets.includes('ent_lighthouse'), true, 'Must expose every conflicting location rather than guessing [0]');
-
-    for (const t of mismatch.targets) {
+    for (const t of exclIssue.targets) {
       assert.equal(resolveTarget(snap, t).ok, true);
     }
 
-    // Stale/deleted second location fails closed
     const withoutLighthouse = {
       ...snap,
       entities: snap.entities.filter((e) => e.id !== 'ent_lighthouse'),
     };
-    const staleTarget = mismatch.targets.find((t) => t.entityId === 'ent_lighthouse')!;
+    const staleTarget = exclIssue.targets.find((t) => t.entityId === 'ent_lighthouse')!;
     assert.equal(resolveTarget(withoutLighthouse, staleTarget).ok, false);
   });
 

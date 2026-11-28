@@ -35,6 +35,7 @@ import {
 } from '../narrative/diagnostics/engine';
 import { transitionIssue } from '../narrative/issueRegistry';
 import { manuscriptSections, prepareManuscriptChange, type NarrativeBase } from '../narrative/manuscriptModel';
+import { buildScopedDiagnosticPlan } from '../narrative/review/scopedContextBuilder';
 import {
   createOpportunityProposal,
   transitionOpportunityProposal,
@@ -137,52 +138,14 @@ export function createOpportunityBatchInProject(
 }
 
 function buildAutoAnalysisPayload(current: CreativeProject, scope: AutomationPrefs['scope']): DiagnosticsAnalyzeRequest {
-  const sections = manuscriptSections(current)
-    .slice(0, 4)
-    .map((s) => ({
-      id: s.id,
-      title: s.title || s.kind,
-      kind: s.kind,
-      text: s.text.slice(0, 3_000),
-    }));
-  const entities = current.snapshot.entities
-    .filter((e) => e.category !== 'scene' && e.epistemicKind !== 'belief' && e.epistemicKind !== 'reported')
-    .slice(0, 30)
-    .map((e) => ({
-      id: e.id ?? e.name,
-      name: e.name,
-      category: e.category,
-      excluded: e.excluded,
-      status: e.status,
-      attributes: e.attributes.slice(0, 10).map((a) => ({
-        id: a.id,
-        name: a.name,
-        value: a.confirmedValue ?? a.value[0]?.name ?? '',
-        status: a.status,
-      })),
-    }));
-  const relationships = current.snapshot.relationships.slice(0, 40).map((r) => ({
-    id: r.id,
-    sourceId: r.sourceId,
-    targetId: r.targetId,
-    source: r.source,
-    target: r.target,
-    label: r.label,
-    status: r.status,
-  }));
-  const storyBible: Record<string, string> = {};
-  for (const [k, f] of Object.entries(current.snapshot.storyBible)) {
-    if (f.value.trim()) storyBible[k] = f.value.trim().slice(0, 400);
-  }
-  return {
-    projectId: current.id,
-    baseRevision: current.revision,
+  const plan = buildScopedDiagnosticPlan({
+    project: current,
+    sections: manuscriptSections(current),
     scope,
-    entities,
-    relationships,
-    storyBible,
-    sections,
-  };
+    maxSegmentChars: 12_000,
+    maxSectionSliceChars: 4_000,
+  });
+  return plan.segments[0].payload;
 }
 
 function areAutomationPrefsEqual(current: AutomationPrefs | undefined, next: AutomationPrefs): boolean {
@@ -321,7 +284,14 @@ export function useNarrativeWorkflowActions(deps: UseNarrativeWorkflowActionsDep
       try {
         const response = await requestSemanticDiagnostics(payload, signal);
         if (!authority.isCurrent(ticket) || !matchesInput()) return null;
-        const mapped = convertSemanticFindingsToDiagnosticFindings(response.findings);
+        const currentSections = manuscriptSections(activeProjectRef.current);
+        const mapped = convertSemanticFindingsToDiagnosticFindings(
+          response.findings,
+          activeProjectRef.current.id,
+          `semantic:${payload.scope}`,
+          currentSections,
+          activeProjectRef.current.snapshot.manuscriptVersionId ?? 'working-manuscript'
+        );
         const next = syncDiagnosticFindingsIntoProject(activeProjectRef.current, mapped, {
           source: 'semantic-ai',
           scopeLabel: context.scopeLabel,

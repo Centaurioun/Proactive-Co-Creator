@@ -188,7 +188,7 @@ function createChatGptOAuthRouterState(
         registerAdapter();
         inFlightFlow = undefined;
         setChatGptModels([]);
-        res.type('html').send('<!doctype html><html><head><meta charset="utf-8"><title>PCC connected</title></head><body><main><h1>ChatGPT account connected</h1><p>Return to Proactive Co-Creator and refresh connection status. You may close this tab.</p></main></body></html>');
+        res.type('html').send('<!doctype html><html><head><meta charset="utf-8"><title>PCC connected</title></head><body><main><h1>ChatGPT account connected</h1><p>Return to Proactive Co-Creator — your connection and model catalog will update automatically. You may close this tab.</p></main></body></html>');
       } catch {
         if (inFlightFlow === claimed) inFlightFlow = undefined;
         res.status(400).send('ChatGPT authorization could not be verified. Return to PCC and start a new authorization.');

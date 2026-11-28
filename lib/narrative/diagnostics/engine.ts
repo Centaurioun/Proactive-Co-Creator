@@ -9,8 +9,10 @@ import type {
   DiagnosticFixAlternative,
   SemanticDiagnosticFinding,
 } from '../../../shared/narrativeAiSchemas.ts';
-import type { NarrativeIssue, NarrativeRecords } from '../../../shared/narrativeTypes.ts';
+import type { ManuscriptSection, NarrativeIssue, NarrativeRecords } from '../../../shared/narrativeTypes.ts';
 import { manuscriptSections } from '../manuscriptModel.ts';
+import { findExactQuoteMatches } from '../import/proposalValidator.ts';
+import { computeTextDigest } from '../writing/selectionHelpers.ts';
 import {
   diagnosticFingerprint,
   reconcileDiagnosticFindings,
@@ -143,29 +145,109 @@ function mapSemanticCertainty(certainty: SemanticDiagnosticFinding['certainty'])
   return certainty === 'inferred' ? 'likely' : 'possible';
 }
 
+function resolveSemanticEvidenceAnchor(
+  quote: string | undefined,
+  preferredSectionId: string | undefined,
+  sections: readonly ManuscriptSection[] | undefined,
+  manuscriptVersionId: string
+): {
+  anchor?: NarrativeIssue['anchors'][number];
+  matchedSectionId?: string;
+  verificationNote?: string;
+} {
+  const trimmedQuote = quote?.trim();
+  if (!trimmedQuote || !sections || sections.length === 0) return {};
+
+  const orderedSections = preferredSectionId
+    ? [
+        ...sections.filter((s) => s.id === preferredSectionId),
+        ...sections.filter((s) => s.id !== preferredSectionId),
+      ]
+    : [...sections];
+
+  const allMatches: Array<{ section: ManuscriptSection; start: number; end: number }> = [];
+  for (const sec of orderedSections) {
+    const matches = findExactQuoteMatches(sec.text, trimmedQuote);
+    if (matches.length === 1 && sec.id === preferredSectionId) {
+      const m = matches[0];
+      return {
+        matchedSectionId: sec.id,
+        anchor: {
+          sourceId: sec.id,
+          version: manuscriptVersionId,
+          digest: computeTextDigest(sec.text),
+          start: m.start,
+          end: m.end,
+          excerpt: sec.text.slice(m.start, m.end),
+        },
+      };
+    }
+    for (const m of matches) {
+      allMatches.push({ section: sec, start: m.start, end: m.end });
+    }
+  }
+
+  if (allMatches.length === 1) {
+    const match = allMatches[0];
+    return {
+      matchedSectionId: match.section.id,
+      anchor: {
+        sourceId: match.section.id,
+        version: manuscriptVersionId,
+        digest: computeTextDigest(match.section.text),
+        start: match.start,
+        end: match.end,
+        excerpt: match.section.text.slice(match.start, match.end),
+      },
+    };
+  }
+
+  if (allMatches.length > 1) {
+    return {
+      verificationNote: `[Ambiguous evidence quote: matched ${allMatches.length} locations in manuscript; verify span manually]`,
+    };
+  }
+
+  return {
+    verificationNote: `[Unverified evidence quote: "${trimmedQuote.slice(0, 120)}" was not found verbatim in scanned manuscript sections]`,
+  };
+}
+
 export function convertSemanticFindingsToDiagnosticFindings(
   semanticFindings: readonly SemanticDiagnosticFinding[],
   fallbackTargetId = 'project',
-  scopeKey = 'semantic'
+  scopeKey = 'semantic',
+  sections?: readonly ManuscriptSection[],
+  manuscriptVersionId = 'working-manuscript'
 ): DiagnosticFinding[] {
   return semanticFindings.map((f, idx) => {
+    const resolved = resolveSemanticEvidenceAnchor(
+      f.evidenceQuote,
+      f.sectionId?.trim(),
+      sections,
+      manuscriptVersionId
+    );
     const targetIds = [
       ...(f.targetId?.trim() ? [f.targetId.trim()] : []),
       ...(f.storyField ? [`story_bible:${f.storyField}`] : []),
       ...(f.sectionId?.trim() ? [f.sectionId.trim()] : []),
+      ...(resolved.matchedSectionId ? [resolved.matchedSectionId] : []),
     ];
     const deduped = Array.from(new Set(targetIds));
     const slug = f.title.slice(0, 48).toLowerCase().replace(/[^a-z0-9]+/g, '_') || idx;
+    const reason = resolved.verificationNote
+      ? `${f.description} ${resolved.verificationNote}`
+      : f.description;
     return {
       detectorId: 'semantic-ai',
       scopeKey,
       type: `semantic:${f.category}:${slug}`,
       targetIds: deduped.length > 0 ? deduped : [fallbackTargetId],
       title: f.title,
-      reason: f.description,
+      reason,
       severity: f.severity === 'error' ? 'high' : 'medium',
       certainty: mapSemanticCertainty(f.certainty),
-      anchors: [],
+      anchors: resolved.anchor ? [resolved.anchor] : [],
     };
   });
 }
@@ -223,7 +305,8 @@ function isUnchangedExistingIssue(
   if (existing.freshness !== 'current' || existing.scopeLabel !== scopeLabel) return false;
   if (existing.title !== finding.title || existing.reason !== finding.reason) return false;
   if (existing.severity !== finding.severity || existing.certainty !== finding.certainty) return false;
-  return JSON.stringify(existing.affectedTargetIds) === JSON.stringify([...finding.targetIds]);
+  return JSON.stringify(existing.affectedTargetIds) === JSON.stringify([...finding.targetIds])
+    && JSON.stringify(existing.anchors) === JSON.stringify([...finding.anchors]);
 }
 
 function buildUpdatedPartialIssue(
@@ -239,6 +322,7 @@ function buildUpdatedPartialIssue(
     reason: finding.reason,
     severity: finding.severity,
     certainty: finding.certainty,
+    anchors: [...finding.anchors],
     affectedTargetIds: [...finding.targetIds],
     freshness: 'current',
     source: meta.source,

@@ -32,10 +32,12 @@ import {
   type PendingProposalReview,
 } from './review/proposalReviewContext';
 import {
-  buildCompactReviewModelPayload,
+  buildReviewModelPayload,
+  buildScopedDiagnosticPlan,
+  buildScopedSyncPlan,
+} from '../../lib/narrative/review/scopedContextBuilder';
+import {
   buildResumedFixState,
-  buildScopedDiagnosticPayload,
-  buildScopedSyncPayload,
   executeIssueAiFixRequest,
   executeScopedSyncAnalysis,
   executeSemanticDiagnosticsRun,
@@ -149,6 +151,7 @@ export default function NarrativeReview({
   const [dispositionFilter, setDispositionFilter] = useState<'all' | NarrativeIssue['disposition']>('all');
   const [diagScope, setDiagScope] = useState<'full' | 'scene' | 'entity' | 'changed'>('full');
   const [diagTargetId, setDiagTargetId] = useState('');
+  const [diagSegmentIndex, setDiagSegmentIndex] = useState(0);
   const [diagBusy, setDiagBusy] = useState(false);
   const [diagMessage, setDiagMessage] = useState('');
   const [diagError, setDiagError] = useState('');
@@ -163,6 +166,7 @@ export default function NarrativeReview({
   const [fixError, setFixError] = useState('');
 
   const [syncDirection, setSyncDirection] = useState<'manuscript-to-model' | 'model-to-manuscript'>('manuscript-to-model');
+  const [syncSegmentIndex, setSyncSegmentIndex] = useState(0);
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncError, setSyncError] = useState('');
   const [syncMessage, setSyncMessage] = useState('');
@@ -182,41 +186,70 @@ export default function NarrativeReview({
   const autoPrefs = project.narrative?.automationPreferences ?? DEFAULT_AUTO_PREFS;
 
   const compactModelPayload = useMemo(
-    () => buildCompactReviewModelPayload(project.snapshot),
-    [project.snapshot]
+    () => buildReviewModelPayload(project),
+    [project]
   );
 
-  const scopedDiagPayload = useMemo(
+  const diagPlan = useMemo(
     () =>
-      buildScopedDiagnosticPayload({
+      buildScopedDiagnosticPlan({
         project,
         sections,
-        diagScope,
-        diagTargetId,
+        scope: diagScope,
+        scopeTargetId: diagTargetId || undefined,
         compactModel: compactModelPayload,
       }),
     [project, sections, diagScope, diagTargetId, compactModelPayload]
   );
 
+  const safeDiagSegmentIndex = Math.min(diagSegmentIndex, Math.max(0, diagPlan.segments.length - 1));
+  const activeDiagSegment = diagPlan.segments[safeDiagSegmentIndex];
+  const scopedDiagPayload = activeDiagSegment.payload;
+
   const diagBudget = useMemo(
-    () => buildClientBudgetDisclosure('diagnostics', `Semantic Diagnostics (${diagScope})`, scopedDiagPayload),
-    [scopedDiagPayload, diagScope]
+    () =>
+      buildClientBudgetDisclosure(
+        'diagnostics',
+        `Semantic Diagnostics (${diagScope}${diagPlan.segments.length > 1 ? ` · seg ${safeDiagSegmentIndex + 1}/${diagPlan.segments.length}` : ''})`,
+        scopedDiagPayload
+      ),
+    [scopedDiagPayload, diagScope, diagPlan.segments.length, safeDiagSegmentIndex]
   );
 
-  const syncPayload = useMemo(
+  const syncPlan = useMemo(
     () =>
-      buildScopedSyncPayload({
+      buildScopedSyncPlan({
         project,
         sections,
-        syncDirection,
+        direction: syncDirection,
         compactModel: compactModelPayload,
       }),
     [project, sections, syncDirection, compactModelPayload]
   );
 
+  const safeSyncSegmentIndex = Math.min(syncSegmentIndex, Math.max(0, syncPlan.segments.length - 1));
+  const activeSyncSegment = syncPlan.segments[safeSyncSegmentIndex];
+  const syncPayload = useMemo(
+    () =>
+      activeSyncSegment?.payload ?? {
+        direction: syncDirection,
+        projectId: project.id,
+        baseRevision: project.revision,
+        manuscriptVersionId: project.snapshot.manuscriptVersionId,
+        sections: [],
+        ...compactModelPayload,
+      },
+    [activeSyncSegment, syncDirection, project.id, project.revision, project.snapshot.manuscriptVersionId, compactModelPayload]
+  );
+
   const syncBudget = useMemo(
-    () => buildClientBudgetDisclosure('sync', `Sync (${syncDirection})`, syncPayload),
-    [syncPayload, syncDirection]
+    () =>
+      buildClientBudgetDisclosure(
+        'sync',
+        `Sync (${syncDirection}${syncPlan.segments.length > 1 ? ` · seg ${safeSyncSegmentIndex + 1}/${syncPlan.segments.length}` : ''})`,
+        syncPayload
+      ),
+    [syncPayload, syncDirection, syncPlan.segments.length, safeSyncSegmentIndex]
   );
 
   const runSemanticDiagnostics = () => {
@@ -227,6 +260,10 @@ export default function NarrativeReview({
     if (!onRunSemanticDiagnostics) return;
     setDiagError('');
     setDiagMessage('');
+    const segLabel =
+      diagPlan.segments.length > 1
+        ? `AI Semantic (${diagScope} · segment ${safeDiagSegmentIndex + 1}/${diagPlan.segments.length})`
+        : `AI Semantic (${diagScope})`;
     void executeSemanticDiagnosticsRun({
       registerController: () => {
         diagnosticRun.current?.abort();
@@ -245,18 +282,33 @@ export default function NarrativeReview({
           {
             manuscriptVersionId: project.snapshot.manuscriptVersionId,
             snapshotDigest: computeSnapshotDigest(project.snapshot),
-            scopeLabel: `AI Semantic (${diagScope})`,
+            scopeLabel: segLabel,
           },
           signal
         ),
-      onSuccess: setDiagMessage,
+      onSuccess: (msg) => {
+        const suffix =
+          diagPlan.segments.length > 1 && safeDiagSegmentIndex + 1 < diagPlan.segments.length
+            ? ` (Segment ${safeDiagSegmentIndex + 1} of ${diagPlan.segments.length} complete — select the next segment to continue.)`
+            : '';
+        setDiagMessage(`${msg}${suffix}`);
+      },
       onError: setDiagError,
     });
+  };
+
+  const cancelSemanticDiagnostics = () => {
+    if (!diagnosticRun.current) return;
+    diagnosticRun.current.abort();
+    diagnosticRun.current = null;
+    setDiagBusy(false);
+    setDiagMessage('Semantic diagnostics cancelled by user. Previously recorded findings were preserved.');
   };
 
   const resetDiagnosticScope = () => {
     diagnosticRun.current?.abort();
     diagnosticRun.current = null;
+    setDiagSegmentIndex(0);
     setDiagBusy(false);
     setDiagError('');
     setDiagMessage('');
@@ -416,6 +468,11 @@ export default function NarrativeReview({
           setDiagScope={setDiagScope}
           diagTargetId={diagTargetId}
           setDiagTargetId={setDiagTargetId}
+          diagSegmentIndex={safeDiagSegmentIndex}
+          setDiagSegmentIndex={setDiagSegmentIndex}
+          diagSegmentCount={diagPlan.segments.length}
+          diagCoverageSummary={diagPlan.coverage.summary}
+          diagOmittedCount={diagPlan.coverage.omittedSectionIds.length}
           diagBusy={diagBusy}
           diagBudget={diagBudget}
           diagError={diagError}
@@ -424,6 +481,7 @@ export default function NarrativeReview({
           onRunLocalDiagnostics={onRunLocalDiagnostics}
           onResetDiagnosticScope={resetDiagnosticScope}
           onRunSemanticDiagnostics={runSemanticDiagnostics}
+          onCancelSemanticDiagnostics={cancelSemanticDiagnostics}
           dispositionFilter={dispositionFilter}
           setDispositionFilter={setDispositionFilter}
           fixError={fixError}
@@ -456,6 +514,10 @@ export default function NarrativeReview({
           syncFreshness={syncFreshness}
           syncDirection={syncDirection}
           setSyncDirection={setSyncDirection}
+          syncSegmentIndex={safeSyncSegmentIndex}
+          setSyncSegmentIndex={setSyncSegmentIndex}
+          syncSegmentCount={syncPlan.segments.length}
+          syncCoverageSummary={syncPlan.coverage.summary}
           syncBudget={syncBudget}
           syncBusy={syncBusy}
           syncError={syncError}
@@ -464,6 +526,12 @@ export default function NarrativeReview({
           setSyncMessage={setSyncMessage}
           syncResult={syncResult}
           onRunSyncAnalysis={runSyncAnalysis}
+          onCancelSyncAnalysis={() => {
+            syncControllerRef.current?.abort();
+            syncControllerRef.current = null;
+            setSyncBusy(false);
+            setSyncMessage('Sync analysis cancelled by user.');
+          }}
           onApplyModelSyncProposal={onApplyModelSyncProposal}
           onApplyManuscriptSyncPatch={onApplyManuscriptSyncPatch}
         />

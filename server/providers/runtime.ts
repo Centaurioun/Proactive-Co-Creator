@@ -218,7 +218,29 @@ export interface LegacyAiClientLike {
 
 /** Creates the legacy SDK-shaped boundary without changing any public AI route schemas. */
 export function createLegacyAiClient(selection: AiProviderSelection, operation: AiOperation, personalKey: string | undefined, getManagedClient: () => LegacyAiClientLike, adapterFactory?: (id: AiConnectionId) => AiProviderAdapter): LegacyAiClientLike {
-  if (selection.connectionId === 'gemini-managed' && !selection.modelId && !selection.reasoningLevel) return getManagedClient();
+  if (selection.connectionId === 'gemini-managed' && !selection.modelId && !selection.reasoningLevel) {
+    return {
+      models: {
+        countTokens(params) {
+          return getManagedClient().models.countTokens(params);
+        },
+        async generateContent(params) {
+          const result = await getManagedClient().models.generateContent(params);
+          observed.set('gemini-managed', (observed.get('gemini-managed') ?? 0) + 1);
+          return result;
+        },
+        async generateImages(params) {
+          const managed = getManagedClient();
+          if (!managed.models.generateImages) {
+            throw new AppApiError('MODEL_UNSUPPORTED', 'The selected connection cannot generate images.', 422, false);
+          }
+          const result = await managed.models.generateImages(params);
+          observed.set('gemini-managed', (observed.get('gemini-managed') ?? 0) + 1);
+          return result;
+        },
+      },
+    };
+  }
   const credentialGeneration = authorityState(selection.connectionId).generation;
   const chatGptGeneration = selection.connectionId === 'chatgpt-plan' ? chatGptSessionStore.getGeneration() : undefined;
   const adapter: AiProviderAdapter = adapterFactory?.(selection.connectionId) ?? (selection.connectionId.startsWith('gemini-')

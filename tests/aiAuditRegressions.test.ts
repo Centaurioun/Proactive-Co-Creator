@@ -74,6 +74,7 @@ async function startRouteServer(handlers: Partial<AiServiceHandlers> = {}, optio
       images: ['data:image/png;base64,AAA'],
       requestedCount: 4,
       failedCount: 0,
+      warning: null,
     }),
     hasConfiguredGeminiKey: () => true,
     ...handlers,
@@ -177,7 +178,7 @@ describe('AI Audit Regressions — Schemas, Normalizers, SRB, and Security Bound
     assert.deepEqual(parsed.relationships[0].alternatives, [{ name: 'guards' }]);
   });
 
-  it('normalizes clarifications and salvages update_story_bible value from targetEntityName', () => {
+  it('normalizes clarifications and rejects malformed update_story_bible without fabricating nextValue from targetEntityName', () => {
     const clarifications = parseAndValidateClarifications(
       JSON.stringify([
         {
@@ -216,9 +217,12 @@ describe('AI Audit Regressions — Schemas, Normalizers, SRB, and Security Bound
       }),
       'Set tone to taut nocturnal mystery and add Harbor Beacon.',
     );
-    assert.equal(batch.operations[0].nextValue, 'Taut nocturnal mystery');
-    assert.equal(batch.operations[0].targetEntityName, undefined);
-    assert.equal(batch.operations[1].entityCategory, 'location');
+    assert.equal(batch.operations.length, 1);
+    assert.equal(batch.operations[0].type, 'add_entity');
+    assert.equal(batch.operations[0].entityCategory, 'location');
+    assert.equal(batch.coverageComplete, false);
+    assert.ok(batch.warnings.some((w) => /update_story_bible/i.test(w) && /nextValue/i.test(w)));
+    assert.ok((batch.unhandledClauses ?? []).includes('Update tone to taut nocturnal mystery'));
   });
 
   it('normalizes all 6 narrative AI responses (diagnostics, suggest-fixes, sync, writing, opportunities, import-enhance)', async () => {
@@ -329,8 +333,7 @@ describe('AI Audit Regressions — Schemas, Normalizers, SRB, and Security Bound
     assert.equal(syncRes.direction, 'manuscript-to-model');
     assert.equal(syncRes.modelProposals[0].id, 'sync_model_1');
     assert.equal(syncRes.modelProposals[0].entityCategory, 'scene');
-    assert.equal(syncRes.manuscriptPatches[0].id, 'sync_patch_1');
-    assert.equal(syncRes.manuscriptPatches[0].conflictNote, undefined);
+    assert.deepEqual(syncRes.manuscriptPatches, [], 'manuscript-to-model sync must strictly suppress manuscriptPatches');
 
     const writeClient = createNarrativeClient({
       proposals: [
@@ -408,13 +411,11 @@ describe('AI Audit Regressions — Schemas, Normalizers, SRB, and Security Bound
     });
     const enhRes = await proposeImportEnhancements(
       {
-        projectId: 'p1',
-        baseRevision: 2,
-        focus: 'clarity',
-        sections: [{ id: 'sec_1', title: 'Chapter 1', kind: 'chapter', text: 'The tide retreated.' }],
+        filename: 'chapter1.txt',
+        sourceTextExcerpt: 'The tide retreated.',
         entities: [],
-        relationships: [],
-        storyBible: {},
+        sections: [{ title: 'Chapter 1', excerpt: 'The tide retreated.' }],
+        goals: 'clarity',
       },
       undefined,
       enhClient.client,

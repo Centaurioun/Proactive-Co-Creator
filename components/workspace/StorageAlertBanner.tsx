@@ -24,6 +24,9 @@ export interface StorageAlertBannerProps {
   onExportBackupJson: () => void;
   onDismissStorageAlert: () => void;
   onDismissStatusNotification: () => void;
+  canUndo?: boolean;
+  undoLabel?: string;
+  onUndo?: () => void;
 }
 
 const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
@@ -35,6 +38,9 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
   onExportBackupJson,
   onDismissStorageAlert,
   onDismissStatusNotification,
+  canUndo = false,
+  undoLabel,
+  onUndo,
 }) => {
   const dismissStatusRef = React.useRef(onDismissStatusNotification);
 
@@ -48,17 +54,19 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
     return () => window.clearTimeout(timeout);
   }, [statusNotification]);
 
+  const visibleStorageAlert = hydrationGate === 'pending' ? null : storageAlert;
+
   return (
     <>
-      {storageAlert && (
+      {visibleStorageAlert && (
         <div
           role="alert"
           aria-label="Storage conflict or quota alert"
           className="bg-amber-50 dark:bg-amber-950/80 border-b border-amber-300 dark:border-amber-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-950 dark:text-amber-100 flex-shrink-0 z-40"
         >
-          <span className="font-medium">{storageAlert.message}</span>
+          <span className="font-medium">{visibleStorageAlert.message}</span>
           <div className="flex flex-wrap items-center gap-2">
-            {storageAlert.type === 'conflict' && (
+            {visibleStorageAlert.type === 'conflict' && (
               <>
                 <button
                   type="button"
@@ -76,7 +84,7 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
                 </button>
               </>
             )}
-            {storageAlert.type === 'error' && hydrationGate === 'blocked-read-error' && (
+            {visibleStorageAlert.type === 'error' && hydrationGate === 'blocked-read-error' && (
               <button
                 type="button"
                 onClick={() => onReloadFromStorage()}
@@ -92,11 +100,11 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
             >
               Export Backup JSON
             </button>
-            {storageAlert.conflictingProject && (
+            {visibleStorageAlert.conflictingProject && (
               <button
                 type="button"
                 onClick={() => {
-                  const conflictProj = storageAlert.conflictingProject!;
+                  const conflictProj = visibleStorageAlert.conflictingProject!;
                   triggerProjectBackupDownload(
                     conflictProj,
                     `r${conflictProj.revision}-stored-copy`
@@ -126,14 +134,29 @@ const StorageAlertBanner: React.FC<StorageAlertBannerProps> = ({
         >
           <div className="bg-gray-900 dark:bg-gray-800 border border-gray-700 text-white px-4 py-2.5 rounded-lg shadow-lg flex items-center justify-between gap-3 text-xs">
             <span className="font-medium">{statusNotification}</span>
-            <button
-              type="button"
-              onClick={onDismissStatusNotification}
-              className="min-h-11 min-w-11 inline-flex items-center justify-center text-gray-300 hover:text-white rounded"
-              aria-label="Dismiss status notification"
-            >
-              &times;
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              {canUndo && onUndo && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUndo();
+                    onDismissStatusNotification();
+                  }}
+                  title={undoLabel ? `Undo: ${undoLabel}` : 'Undo last change'}
+                  className="min-h-9 rounded border border-gray-500 px-2.5 py-1 text-xs font-semibold text-white hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                >
+                  Undo
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onDismissStatusNotification}
+                className="min-h-11 min-w-11 inline-flex items-center justify-center text-gray-300 hover:text-white rounded"
+                aria-label="Dismiss status notification"
+              >
+                &times;
+              </button>
+            </div>
           </div>
         </div>
       )}

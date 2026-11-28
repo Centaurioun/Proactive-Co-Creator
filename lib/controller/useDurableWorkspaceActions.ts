@@ -33,6 +33,8 @@ import {
 } from '../storageEngine';
 import { sameProjectVersion } from './projectListSync';
 import type { HydrationWriteGate } from './projectListSync';
+import { createStarterManuscriptSections } from './navigationFlush';
+import { narrativeBase, prepareManuscriptChange } from '../narrative/manuscriptModel';
 
 export interface SaveEpochRegistry {
   getEpoch: (projectId: string) => number;
@@ -518,7 +520,11 @@ export function useDurableWorkspaceActions(deps: UseDurableWorkspaceActionsDeps)
     });
   };
 
-  const handleCreateNewProject = async (name: string, initialPrompt: string): Promise<boolean> => {
+  const handleCreateNewProject = async (
+    name: string,
+    initialPrompt: string,
+    options?: { includeStarterExcerpt?: boolean }
+  ): Promise<boolean> => {
     if (!allowNavigation()) return false;
     if (!canWriteWorkspace()) {
       setStatusNotification('Wait for workspace storage to finish loading before creating a project.');
@@ -558,7 +564,7 @@ export function useDurableWorkspaceActions(deps: UseDurableWorkspaceActionsDeps)
         answeredQuestions: [],
         skippedQuestions: [],
       };
-      const newProj: CreativeProject = {
+      let newProj: CreativeProject = {
         schemaVersion: 3,
         revision: 1,
         persistedRevision: undefined,
@@ -580,6 +586,23 @@ export function useDurableWorkspaceActions(deps: UseDurableWorkspaceActionsDeps)
           },
         ],
       };
+
+      if (options?.includeStarterExcerpt) {
+        const starterUndo = createUndoRedoState(newProj.snapshot, newProj.revisions);
+        const prepared = prepareManuscriptChange(
+          newProj,
+          starterUndo,
+          narrativeBase(newProj),
+          createStarterManuscriptSections(name, initialPrompt)
+        );
+        if (prepared) {
+          newProj = {
+            ...prepared.project,
+            persistedRevision: undefined,
+          };
+        }
+      }
+
       const result = await flushProjectDurably(newProj, { expectedBaseProject: null });
       if (!result.saved || result.authoritativeStore !== 'indexeddb') {
         setStatusNotification(

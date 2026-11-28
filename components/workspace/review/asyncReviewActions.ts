@@ -79,41 +79,17 @@ export async function executeScopedSyncAnalysis<TResponse>({
   }
 }
 
-export function buildCompactReviewModelPayload(snapshot: CreativeProject['snapshot']) {
-  const entities = snapshot.entities
-    .filter((e) => e.category !== 'scene' && e.epistemicKind !== 'belief' && e.epistemicKind !== 'reported')
-    .slice(0, 60)
-    .map((e) => ({
-      id: e.id ?? e.name,
-      name: e.name,
-      category: e.category,
-      description: e.description?.slice(0, 400),
-      excluded: e.excluded,
-      status: e.status,
-      attributes: e.attributes
-        .filter((a) => a.epistemicKind !== 'belief' && a.epistemicKind !== 'reported')
-        .slice(0, 20)
-        .map((a) => ({
-          id: a.id,
-          name: a.name,
-          value: a.confirmedValue ?? a.value[0]?.name ?? '',
-          status: a.status,
-        })),
-    }));
-  const relationships = snapshot.relationships.slice(0, 80).map((r) => ({
-    id: r.id,
-    sourceId: r.sourceId,
-    targetId: r.targetId,
-    source: r.source,
-    target: r.target,
-    label: r.label,
-    status: r.status,
-  }));
-  const storyBible: Record<string, string> = {};
-  for (const [k, f] of Object.entries(snapshot.storyBible)) {
-    if (f.value.trim()) storyBible[k] = f.value.trim().slice(0, 600);
+import {
+  buildReviewModelPayload,
+  buildScopedDiagnosticPlan,
+  buildScopedSyncPlan,
+} from '../../../lib/narrative/review/scopedContextBuilder';
+
+export function buildCompactReviewModelPayload(projectOrSnapshot: CreativeProject | CreativeProject['snapshot']) {
+  if ('snapshot' in projectOrSnapshot) {
+    return buildReviewModelPayload(projectOrSnapshot);
   }
-  return { entities, relationships, storyBible };
+  return buildReviewModelPayload({ snapshot: projectOrSnapshot });
 }
 
 export function buildScopedDiagnosticPayload(params: {
@@ -121,46 +97,45 @@ export function buildScopedDiagnosticPayload(params: {
   sections: ManuscriptSection[];
   diagScope: 'full' | 'scene' | 'entity' | 'changed';
   diagTargetId: string;
-  compactModel: ReturnType<typeof buildCompactReviewModelPayload>;
+  compactModel: ReturnType<typeof buildReviewModelPayload>;
+  segmentIndex?: number;
 }) {
-  const { project, sections, diagScope, diagTargetId, compactModel } = params;
-  const scopedSections =
-    diagScope === 'scene' && diagTargetId ? sections.filter((s) => s.id === diagTargetId) : sections.slice(0, 8);
-  return {
-    projectId: project.id,
-    baseRevision: project.revision,
-    scope: diagScope,
-    ...(diagTargetId ? { scopeTargetId: diagTargetId } : {}),
-    ...compactModel,
-    sections: scopedSections.map((s) => ({
-      id: s.id,
-      title: s.title || s.kind,
-      kind: s.kind,
-      text: s.text.slice(0, 5_000),
-    })),
-  };
+  const plan = buildScopedDiagnosticPlan({
+    project: params.project,
+    sections: params.sections,
+    scope: params.diagScope,
+    scopeTargetId: params.diagTargetId || undefined,
+    compactModel: params.compactModel,
+  });
+  const idx = Math.max(0, Math.min(params.segmentIndex ?? 0, plan.segments.length - 1));
+  return plan.segments[idx].payload;
 }
 
 export function buildScopedSyncPayload(params: {
   project: CreativeProject;
   sections: ManuscriptSection[];
   syncDirection: 'manuscript-to-model' | 'model-to-manuscript';
-  compactModel: ReturnType<typeof buildCompactReviewModelPayload>;
+  compactModel: ReturnType<typeof buildReviewModelPayload>;
+  segmentIndex?: number;
 }) {
-  const { project, sections, syncDirection, compactModel } = params;
-  return {
-    direction: syncDirection,
-    projectId: project.id,
-    baseRevision: project.revision,
-    manuscriptVersionId: project.snapshot.manuscriptVersionId,
-    sections: sections.slice(0, 8).map((s) => ({
-      id: s.id,
-      title: s.title || s.kind,
-      kind: s.kind,
-      text: s.text.slice(0, 5_000),
-    })),
-    ...compactModel,
-  };
+  const plan = buildScopedSyncPlan({
+    project: params.project,
+    sections: params.sections,
+    direction: params.syncDirection,
+    compactModel: params.compactModel,
+  });
+  if (plan.segments.length === 0) {
+    return {
+      direction: params.syncDirection,
+      projectId: params.project.id,
+      baseRevision: params.project.revision,
+      manuscriptVersionId: params.project.snapshot.manuscriptVersionId,
+      sections: [],
+      ...params.compactModel,
+    };
+  }
+  const idx = Math.max(0, Math.min(params.segmentIndex ?? 0, plan.segments.length - 1));
+  return plan.segments[idx].payload;
 }
 
 export function resolveIssueNavigationTarget(

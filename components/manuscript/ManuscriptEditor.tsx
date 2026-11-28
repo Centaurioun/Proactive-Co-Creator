@@ -21,6 +21,8 @@ import {
   shouldOpenAdoptionOnPropChange,
 } from './manuscriptEditorHelpers';
 import type { WritingAssistAction } from '../../shared/narrativeAiSchemas';
+import type { DraftFlushResult } from '../../lib/controller/navigationFlush';
+import type { HydrationWriteGate } from '../../lib/controller/projectListSync';
 
 export {
   computeEditorDirtyAfterDraftDiscard,
@@ -71,6 +73,8 @@ interface Props {
     assumptions: string[];
   }) => void;
   onExportDraft: (sections: ManuscriptSection[]) => void;
+  flushDraftRef?: React.MutableRefObject<(() => Promise<DraftFlushResult>) | null>;
+  hydrationGate?: HydrationWriteGate;
 }
 
 function deriveManuscriptMetadata(
@@ -111,6 +115,8 @@ export default function ManuscriptEditor({
   aiConfigured = false,
   onSaveWritingAlternative,
   onExportDraft,
+  flushDraftRef,
+  hydrationGate,
 }: Props) {
   const [selectedId, setSelectedId] = useState(focusedSectionId ?? '');
   const [prevFocusedSectionId, setPrevFocusedSectionId] = useState(focusedSectionId);
@@ -150,7 +156,7 @@ export default function ManuscriptEditor({
   const styleProfileDirty = JSON.stringify(styleProfile) !== JSON.stringify(profileForCurrentVersion);
   const persistedSections = manuscriptSections(project);
 
-  const { draft, saving, error, edit, operate, save, clearDraft } = useManuscriptDraftSave({
+  const { draft, saving, error, edit, operate, save, flushDraft, clearDraft } = useManuscriptDraftSave({
     project,
     sections: persistedSections,
     styleProfile,
@@ -166,6 +172,16 @@ export default function ManuscriptEditor({
       setStyleProfile(savedStyleProfile);
     },
   });
+
+  useEffect(() => {
+    if (!flushDraftRef) return;
+    flushDraftRef.current = flushDraft;
+    return () => {
+      if (flushDraftRef.current === flushDraft) {
+        flushDraftRef.current = null;
+      }
+    };
+  }, [flushDraftRef, flushDraft]);
 
   const sections = draft?.sections ?? persistedSections;
   const styleSources = project.narrative?.sources ?? [];
@@ -292,6 +308,51 @@ export default function ManuscriptEditor({
               }}
               onApply={(next, anchor, base) => void save(base, next, anchor)}
             />
+          )}
+          {hydrationGate === 'pending' && !enabled && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mb-3 rounded-lg border border-pcc-line bg-pcc-canvas px-3 py-2 text-xs text-pcc-muted dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-muted"
+            >
+              Opening your workspace from browser storage…
+            </div>
+          )}
+          {hydrationGate === 'unavailable' && !enabled && (
+            <div
+              role="status"
+              className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-100"
+            >
+              Durable browser storage (IndexedDB) is unavailable in this session. You can browse your projects and export portable JSON backups at any time.
+            </div>
+          )}
+          {enabled && sections.length === 0 && !adopting && (
+            <div
+              aria-label="Empty manuscript guidance"
+              className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-pcc-line bg-pcc-canvas px-3.5 py-2.5 text-sm text-pcc-ink dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-ink"
+            >
+              <span>
+                Ready to write — start typing below to create your opening scene, or add a chapter or scene.
+              </span>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={workspaceButton}
+                  disabled={saving}
+                  onClick={() => add('chapter')}
+                >
+                  Add chapter
+                </button>
+                <button
+                  type="button"
+                  className={workspaceButton}
+                  disabled={saving}
+                  onClick={() => add('scene')}
+                >
+                  Add scene
+                </button>
+              </div>
+            </div>
           )}
           <fieldset className="min-w-0 space-y-3" disabled={!enabled || adopting}>
             {selected && !focus ? (

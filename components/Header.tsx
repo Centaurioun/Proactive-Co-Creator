@@ -6,6 +6,7 @@
 import React from 'react';
 import type { CreativeProject } from '../shared/types';
 import type { SavePresentation } from '../lib/workspace/savePresentation';
+import type { ProviderStatusPillSummary } from '../lib/controller/useProviderHubStatus';
 
 export type WorkspaceSection = 'workspace' | 'story-bible' | 'output' | 'history';
 
@@ -22,6 +23,8 @@ interface HeaderProps {
   importDisabled?: boolean;
   onOpenProjects?: () => void;
   savePresentation?: SavePresentation;
+  providerStatusPill?: ProviderStatusPillSummary;
+  onOpenAiSettings?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -37,6 +40,8 @@ const Header: React.FC<HeaderProps> = ({
   importDisabled = false,
   onOpenProjects,
   savePresentation = 'saved',
+  providerStatusPill,
+  onOpenAiSettings,
 }) => {
   const projectOptions = projects.some((item) => item.id === project?.id)
     ? projects
@@ -82,6 +87,36 @@ const Header: React.FC<HeaderProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+        {providerStatusPill && onOpenAiSettings && (
+          <button
+            type="button"
+            onClick={onOpenAiSettings}
+            aria-haspopup="dialog"
+            title={providerStatusPill.detail}
+            aria-label={`AI provider: ${providerStatusPill.providerLabel}, ${providerStatusPill.modelLabel}. Open AI settings.`}
+            data-provider-status={providerStatusPill.state}
+            className="inline-flex min-h-11 max-w-[14rem] items-center gap-1.5 rounded-md border border-pcc-line bg-pcc-canvas px-2.5 text-xs font-medium text-pcc-ink transition-colors hover:bg-pcc-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line dark:bg-pcc-dark-canvas dark:text-pcc-dark-ink dark:hover:bg-pcc-dark-surface"
+          >
+            <span
+              aria-hidden="true"
+              className={`h-2 w-2 shrink-0 rounded-full ${
+                providerStatusPill.state === 'ready'
+                  ? 'bg-emerald-600 dark:bg-emerald-400'
+                  : providerStatusPill.state === 'needs-attention'
+                    ? 'bg-amber-500 dark:bg-amber-400'
+                    : providerStatusPill.state === 'offline'
+                      ? 'bg-red-500 dark:bg-red-400'
+                      : 'bg-gray-400'
+              }`}
+            />
+            <span className="truncate">
+              {providerStatusPill.providerLabel}
+              <span className="hidden text-pcc-muted dark:text-pcc-dark-muted md:inline">
+                {' '}· {providerStatusPill.modelLabel}
+              </span>
+            </span>
+          </button>
+        )}
         {onNewProject && <button type="button" onClick={onNewProject} className="hidden min-h-11 items-center rounded-md bg-pcc-action px-3 text-xs font-semibold text-white hover:bg-pcc-action-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex">+ New</button>}
         {onOpenImport && <button type="button" disabled={importDisabled} onClick={onOpenImport} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45 sm:inline-flex dark:hover:bg-pcc-dark-canvas">Import</button>}
         {onOpenProjects && <button type="button" onClick={onOpenProjects} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">Projects</button>}

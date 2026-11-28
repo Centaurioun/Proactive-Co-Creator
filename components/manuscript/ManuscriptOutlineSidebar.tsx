@@ -5,6 +5,7 @@
 
 import React from 'react';
 import type { ManuscriptSection } from '../../shared/narrativeTypes';
+import { describeEmptyOutlineState } from '../../lib/controller/navigationFlush';
 
 export interface ManuscriptOutlineSidebarProps {
   outlineOpen: boolean;
@@ -140,7 +141,12 @@ const ManuscriptOutlineSidebar: React.FC<ManuscriptOutlineSidebarProps> = ({
         ))}
       </ol>
       {visibleSections.length === 0 && (
-        <p className="mt-2 text-sm text-gray-600">No sections match these filters.</p>
+        <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+          {describeEmptyOutlineState(
+            sections.length,
+            Boolean(search.trim() || chapterFilter || chronologyFilter)
+          )}
+        </p>
       )}
     </aside>
   );

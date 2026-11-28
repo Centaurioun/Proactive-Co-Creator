@@ -28,6 +28,10 @@ interface SyncReviewSectionProps {
   syncFreshness: { statusLabel: string; coverageNote: string };
   syncDirection: 'manuscript-to-model' | 'model-to-manuscript';
   setSyncDirection: (direction: 'manuscript-to-model' | 'model-to-manuscript') => void;
+  syncSegmentIndex?: number;
+  setSyncSegmentIndex?: (index: number) => void;
+  syncSegmentCount?: number;
+  syncCoverageSummary?: string;
   syncBudget: ClientBudgetDisclosure;
   syncBusy: boolean;
   syncError: string;
@@ -36,6 +40,7 @@ interface SyncReviewSectionProps {
   setSyncMessage: (msg: string) => void;
   syncResult: SyncReviewResultState | null;
   onRunSyncAnalysis: () => void;
+  onCancelSyncAnalysis?: () => void;
   onApplyModelSyncProposal?: (
     proposal: SyncModelProposal,
     expectedBaseRevision: number
@@ -54,6 +59,10 @@ export const SyncReviewSection: React.FC<SyncReviewSectionProps> = ({
   syncFreshness,
   syncDirection,
   setSyncDirection,
+  syncSegmentIndex = 0,
+  setSyncSegmentIndex,
+  syncSegmentCount = 1,
+  syncCoverageSummary,
   syncBudget,
   syncBusy,
   syncError,
@@ -62,6 +71,7 @@ export const SyncReviewSection: React.FC<SyncReviewSectionProps> = ({
   setSyncMessage,
   syncResult,
   onRunSyncAnalysis,
+  onCancelSyncAnalysis,
   onApplyModelSyncProposal,
   onApplyManuscriptSyncPatch,
 }) => {
@@ -100,21 +110,53 @@ export const SyncReviewSection: React.FC<SyncReviewSectionProps> = ({
           Model → Manuscript (Sync Manuscript Patches)
         </label>
       </div>
+      {syncCoverageSummary && (
+        <p className="text-[11px] text-gray-700 dark:text-gray-300">
+          Coverage: {syncCoverageSummary}
+        </p>
+      )}
       <p className="text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
         Preflight: {syncBudget.inputChars.toLocaleString()} / {syncBudget.maxInputChars.toLocaleString()} chars · ~{syncBudget.estimatedInputTokens.toLocaleString()} / {syncBudget.maxInputTokens.toLocaleString()} est. tokens. Omitted facts in one scene never auto-delete canonical facts.
       </p>
-      <button
-        type="button"
-        disabled={syncBusy || !aiConfigured || !syncBudget.withinLimit || sectionCount === 0}
-        onClick={onRunSyncAnalysis}
-        className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-45"
-      >
-        {syncBusy
-          ? 'Analyzing sync proposals…'
-          : syncDirection === 'manuscript-to-model'
-            ? 'Analyze Manuscript Changes'
-            : 'Generate Scoped Manuscript Patches'}
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        {syncSegmentCount > 1 && setSyncSegmentIndex && (
+          <select
+            aria-label="Select sync segment"
+            value={syncSegmentIndex}
+            onChange={(e) => setSyncSegmentIndex(Number(e.target.value))}
+            className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950"
+          >
+            {Array.from({ length: syncSegmentCount }, (_, i) => (
+              <option key={i} value={i}>Segment {i + 1} of {syncSegmentCount}</option>
+            ))}
+          </select>
+        )}
+        <button
+          type="button"
+          disabled={syncBusy || !aiConfigured || !syncBudget.withinLimit || sectionCount === 0}
+          onClick={onRunSyncAnalysis}
+          className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-45"
+        >
+          {syncBusy
+            ? 'Analyzing sync proposals…'
+            : syncDirection === 'manuscript-to-model'
+              ? syncSegmentCount > 1
+                ? `Analyze Segment ${syncSegmentIndex + 1}/${syncSegmentCount} Changes`
+                : 'Analyze Manuscript Changes'
+              : syncSegmentCount > 1
+                ? `Generate Segment ${syncSegmentIndex + 1}/${syncSegmentCount} Patches`
+                : 'Generate Scoped Manuscript Patches'}
+        </button>
+        {syncBusy && onCancelSyncAnalysis && (
+          <button
+            type="button"
+            onClick={onCancelSyncAnalysis}
+            className="rounded border border-red-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800 dark:bg-gray-950 dark:text-red-300"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
       {syncError && <p role="alert" className="text-xs text-red-700 dark:text-red-300">{syncError}</p>}
       {syncMessage && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300">{syncMessage}</p>}
 

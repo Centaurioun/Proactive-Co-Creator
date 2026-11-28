@@ -22,11 +22,18 @@ import {
 import { AppApiError, classifyGeminiError } from './errors.ts';
 import { getGeminiClient } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
-import { withRetry } from './retry.ts';
-import { acquireAiSlot, AI_OPERATION_POLICIES, estimateTokensFromText, evaluateOperationBudget, reserveAggregateOperationUsage } from './aiBudget.ts';
+import { resolveAbortError, withRetry } from './retry.ts';
+import {
+  acquireAiSlot,
+  AI_OPERATION_POLICIES,
+  estimateTokensFromText,
+  evaluateOperationBudget,
+  maxAttemptsWithinOperationBudget,
+  reserveAggregateOperationUsage,
+  type AiOperation,
+} from './aiBudget.ts';
 import { getAiProviderRequestContext } from './providers/requestContext.ts';
 
-const TEXT_TIMEOUT_MS = 60_000;
 const IMAGE_TIMEOUT_MS = 60_000;
 const TARGET_IMAGE_COUNT = 4;
 const IMAGE_CONCURRENCY = 2;
@@ -52,7 +59,9 @@ function combineSignals(
 
   const onExternalAbort = () => {
     controller.abort(
-      externalSignal?.reason ?? new AppApiError('CANCELLED', 'The request was cancelled.', 499, false)
+      externalSignal?.reason instanceof AppApiError
+        ? externalSignal.reason
+        : new AppApiError('CANCELLED', 'The request was cancelled.', 499, false)
     );
   };
 
@@ -71,6 +80,107 @@ function combineSignals(
       externalSignal?.removeEventListener('abort', onExternalAbort);
     },
   };
+}
+
+interface BudgetedTextOperationParams {
+  operation: Exclude<AiOperation, 'image'>;
+  userInputChars: number;
+  contents: string;
+  config?: Record<string, unknown>;
+  defaultLowThinking?: boolean;
+  preferredAttempts?: number;
+  timeoutOverrideMs?: number;
+  signal?: AbortSignal;
+  clientOverride?: ReturnType<typeof getGeminiClient>;
+}
+
+async function runBudgetedTextOperation(params: BudgetedTextOperationParams) {
+  const policy = AI_OPERATION_POLICIES[params.operation];
+  if (params.userInputChars > policy.maxInputChars) {
+    throw new AppApiError(
+      'VALIDATION_ERROR',
+      `Input size (${params.userInputChars.toLocaleString()} chars) exceeds the ${policy.maxInputChars.toLocaleString()}-character limit for ${params.operation}.`,
+      400,
+      false
+    );
+  }
+  const providerCtx = getAiProviderRequestContext();
+  const selectedModel = providerCtx?.selection.modelId ?? policy.model ?? GEMINI_MODELS.text;
+  const estimatedInputTokens = estimateTokensFromText(params.contents);
+  const budget = evaluateOperationBudget({
+    operation: params.operation,
+    model: selectedModel,
+    inputChars: params.userInputChars,
+    estimatedInputTokens,
+    maxInputTokens: policy.maxInputTokens,
+    maxOutputTokens: policy.maxOutputTokens,
+  });
+  if (!budget.ok) {
+    throw new AppApiError(
+      'VALIDATION_ERROR',
+      budget.reason ?? `The ${params.operation} request exceeds its application budget.`,
+      400,
+      false
+    );
+  }
+  if (params.signal?.aborted) {
+    throw resolveAbortError(params.signal);
+  }
+  const slot = acquireAiSlot(params.operation);
+  if (!slot.ok) {
+    throw new AppApiError('RATE_LIMITED', slot.reason, 429, true);
+  }
+
+  const timeoutMs = Math.min(
+    params.timeoutOverrideMs ?? policy.timeoutMs,
+    policy.maxAggregateElapsedMs
+  );
+  const { signal: reqSignal, cleanup } = combineSignals(params.signal, timeoutMs);
+  const operationKey = randomUUID();
+  const budgetMaxAttempts = maxAttemptsWithinOperationBudget(
+    policy,
+    budget.inputTokens,
+    params.preferredAttempts ?? 3
+  );
+  const maxAttempts = maxAttemptsForRequest(Math.max(1, budgetMaxAttempts));
+  const hasExplicitReasoning = Boolean(
+    providerCtx?.selection.reasoningLevel && providerCtx.selection.reasoningLevel !== 'default'
+  );
+
+  try {
+    const ai = params.clientOverride ?? getGeminiClient();
+    const requestConfig: Record<string, unknown> = {
+      ...(params.config ?? {}),
+      abortSignal: reqSignal,
+      maxOutputTokens: policy.maxOutputTokens,
+      ...(params.defaultLowThinking && !hasExplicitReasoning
+        ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+        : {}),
+    };
+    return await withRetry(
+      () => {
+        const aggregate = reserveAggregateOperationUsage({
+          policy,
+          operationKey,
+          inputTokens: budget.inputTokens,
+        });
+        if (!aggregate.ok) {
+          throw new AppApiError('RATE_LIMITED', aggregate.reason, 429, false);
+        }
+        return ai.models.generateContent({
+          model: selectedModel,
+          contents: params.contents,
+          config: requestConfig,
+        });
+      },
+      { maxAttempts, signal: reqSignal }
+    );
+  } catch (err) {
+    throw classifyWithSignal(err, reqSignal);
+  } finally {
+    cleanup();
+    slot.release();
+  }
 }
 
 async function runWithConcurrency<T>(
@@ -107,9 +217,9 @@ async function runWithConcurrency<T>(
 export async function analyzeBeliefGraph(
   prompt: string,
   mode: GenerationMode,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientOverride?: ReturnType<typeof getGeminiClient>,
 ): Promise<BeliefState> {
-  const ai = getGeminiClient();
 
   let specificInstructions: string;
   if (mode === 'image') {
@@ -185,45 +295,36 @@ OUTPUT JSON:`;
     required: ['source', 'target', 'label', 'presence_in_prompt'],
   };
 
-  const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
-  try {
-    const response = await withRetry(
-      () =>
-        ai.models.generateContent({
-          model: GEMINI_MODELS.text,
-          contents: generationPrompt,
-          config: {
-            abortSignal: reqSignal,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                entities: { type: Type.ARRAY, items: entitySchema },
-                relationships: { type: Type.ARRAY, items: relationshipSchema },
-              },
-              required: ['entities', 'relationships'],
-            },
-          },
-        }),
-      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
-    );
+  const response = await runBudgetedTextOperation({
+    operation: 'analyze',
+    userInputChars: prompt.length,
+    contents: generationPrompt,
+    defaultLowThinking: true,
+    signal,
+    clientOverride,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          entities: { type: Type.ARRAY, items: entitySchema },
+          relationships: { type: Type.ARRAY, items: relationshipSchema },
+        },
+        required: ['entities', 'relationships'],
+      },
+    },
+  });
 
-    const text = response.text;
-    if (!text || !text.trim()) {
-      throw new AppApiError(
-        'INVALID_RESPONSE',
-        'Model returned an empty belief graph response.',
-        502,
-        false
-      );
-    }
-    return parseAndValidateBeliefGraph(text, prompt);
-  } catch (err) {
-    throw classifyWithSignal(err, reqSignal);
-  } finally {
-    cleanup();
+  const text = response.text;
+  if (!text || !text.trim()) {
+    throw new AppApiError(
+      'INVALID_RESPONSE',
+      'Model returned an empty belief graph response.',
+      502,
+      false
+    );
   }
+  return parseAndValidateBeliefGraph(text, prompt);
 }
 
 export async function generateClarificationsList(
@@ -231,9 +332,9 @@ export async function generateClarificationsList(
   askedQuestions: string[],
   mode: GenerationMode,
   signal?: AbortSignal,
-  confirmedFacts: string[] = []
+  confirmedFacts: string[] = [],
+  clientOverride?: ReturnType<typeof getGeminiClient>,
 ): Promise<Clarification[]> {
-  const ai = getGeminiClient();
 
   const imagePrompt = `You are an expert in visual scene planning and text-to-image prompting. Your goal is to help a user refine their scene by asking adaptive, high-impact clarifying questions.`;
 
@@ -257,58 +358,49 @@ User Prompt: ${JSON.stringify(prompt)}
 
 Return a JSON array of objects.`;
 
-  const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
-  try {
-    const response = await withRetry(
-      () =>
-        ai.models.generateContent({
-          model: GEMINI_MODELS.text,
-          contents: finalPrompt,
-          config: {
-            abortSignal: reqSignal,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  question: { type: Type.STRING },
-                  options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  targetType: { type: Type.STRING, enum: ['entity_attribute', 'relationship', 'story_bible', 'general'], nullable: true },
-                  targetEntityName: { type: Type.STRING, nullable: true },
-                  targetAttributeName: { type: Type.STRING, nullable: true },
-                  targetStoryField: {
-                    type: Type.STRING,
-                    enum: ['genre', 'tone', 'narrativePerspective', 'intendedAudience', 'setting', 'themes', 'centralConflict', 'pacing', 'continuityRules', 'explicitExclusions', 'visualStyle', 'cameraAndLighting'],
-                    nullable: true,
-                  },
-                  category: { type: Type.STRING, enum: ['character', 'setting', 'plot', 'tone', 'visual', 'general'], nullable: true },
-                  impact: { type: Type.STRING, nullable: true },
-                },
-                required: ['question', 'options'],
-              },
+  const response = await runBudgetedTextOperation({
+    operation: 'clarify',
+    userInputChars: prompt.length,
+    contents: finalPrompt,
+    defaultLowThinking: true,
+    signal,
+    clientOverride,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            question: { type: Type.STRING },
+            options: { type: Type.ARRAY, items: { type: Type.STRING } },
+            targetType: { type: Type.STRING, enum: ['entity_attribute', 'relationship', 'story_bible', 'general'], nullable: true },
+            targetEntityName: { type: Type.STRING, nullable: true },
+            targetAttributeName: { type: Type.STRING, nullable: true },
+            targetStoryField: {
+              type: Type.STRING,
+              enum: ['genre', 'tone', 'narrativePerspective', 'intendedAudience', 'setting', 'themes', 'centralConflict', 'pacing', 'continuityRules', 'explicitExclusions', 'visualStyle', 'cameraAndLighting'],
+              nullable: true,
             },
+            category: { type: Type.STRING, enum: ['character', 'setting', 'plot', 'tone', 'visual', 'general'], nullable: true },
+            impact: { type: Type.STRING, nullable: true },
           },
-        }),
-      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
-    );
+          required: ['question', 'options'],
+        },
+      },
+    },
+  });
 
-    const text = response.text;
-    if (!text || !text.trim()) {
-      throw new AppApiError(
-        'INVALID_RESPONSE',
-        'Model returned an empty clarification response.',
-        502,
-        false
-      );
-    }
-    return parseAndValidateClarifications(text);
-  } catch (err) {
-    throw classifyWithSignal(err, reqSignal);
-  } finally {
-    cleanup();
+  const text = response.text;
+  if (!text || !text.trim()) {
+    throw new AppApiError(
+      'INVALID_RESPONSE',
+      'Model returned an empty clarification response.',
+      502,
+      false
+    );
   }
+  return parseAndValidateClarifications(text);
 }
 
 export async function interpretBatchEditInstruction(
@@ -324,9 +416,9 @@ export async function interpretBatchEditInstruction(
     }>;
     relationships: Array<{ id?: string; source: string; target: string; label: string }>;
   },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientOverride?: ReturnType<typeof getGeminiClient>,
 ): Promise<BatchEditProposalResult> {
-  const ai = getGeminiClient();
 
   const systemPrompt = `You are a precision structured-editing compiler for a creative story workspace.
 Convert the user's natural-language batch edit instruction into a list of structured operations against the current entities, attributes, relationships, and story bible fields.
@@ -352,99 +444,90 @@ ${JSON.stringify(context, null, 2)}
 
 User Batch Instruction: ${JSON.stringify(instruction)}`;
 
-  const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
-  try {
-    const response = await withRetry(
-      () =>
-        ai.models.generateContent({
-          model: GEMINI_MODELS.text,
-          contents: systemPrompt,
-          config: {
-            abortSignal: reqSignal,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: 'application/json',
-            responseSchema: {
+  const response = await runBudgetedTextOperation({
+    operation: 'batch-edit',
+    userInputChars: instruction.length + context.prompt.length,
+    contents: systemPrompt,
+    defaultLowThinking: true,
+    signal,
+    clientOverride,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          operations: {
+            type: Type.ARRAY,
+            items: {
               type: Type.OBJECT,
               properties: {
-                operations: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      type: {
-                        type: Type.STRING,
-                        enum: ['set_attribute', 'add_attribute', 'add_entity', 'rename_entity', 'exclude_entity', 'add_relationship', 'update_relationship', 'remove_relationship', 'update_story_bible'],
-                      },
-                      summary: { type: Type.STRING },
-                      entityName: { type: Type.STRING, nullable: true },
-                      newEntityName: { type: Type.STRING, nullable: true },
-                      entityCategory: { type: Type.STRING, enum: ['character', 'location', 'object', 'event', 'group', 'scene'], nullable: true },
-                      attributeName: { type: Type.STRING, nullable: true },
-                      nextValue: { type: Type.STRING, nullable: true },
-                      sourceEntityName: { type: Type.STRING, nullable: true },
-                      targetEntityName: { type: Type.STRING, nullable: true },
-                      storyField: {
-                        type: Type.STRING,
-                        enum: ['genre', 'tone', 'narrativePerspective', 'intendedAudience', 'setting', 'themes', 'centralConflict', 'pacing', 'continuityRules', 'explicitExclusions', 'visualStyle', 'cameraAndLighting'],
-                        nullable: true,
-                      },
-                    },
-                    required: ['type', 'summary'],
-                  },
+                type: {
+                  type: Type.STRING,
+                  enum: ['set_attribute', 'add_attribute', 'add_entity', 'rename_entity', 'exclude_entity', 'add_relationship', 'update_relationship', 'remove_relationship', 'update_story_bible'],
                 },
-                ambiguities: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      phrase: { type: Type.STRING },
-                      reason: { type: Type.STRING },
-                      candidates: { type: Type.ARRAY, items: { type: Type.STRING } },
-                      clarifyingQuestion: { type: Type.STRING },
-                    },
-                    required: ['phrase', 'reason', 'candidates', 'clarifyingQuestion'],
-                  },
-                },
-                warnings: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-                unhandledClauses: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
+                summary: { type: Type.STRING },
+                entityName: { type: Type.STRING, nullable: true },
+                newEntityName: { type: Type.STRING, nullable: true },
+                entityCategory: { type: Type.STRING, enum: ['character', 'location', 'object', 'event', 'group', 'scene'], nullable: true },
+                attributeName: { type: Type.STRING, nullable: true },
+                nextValue: { type: Type.STRING, nullable: true },
+                sourceEntityName: { type: Type.STRING, nullable: true },
+                targetEntityName: { type: Type.STRING, nullable: true },
+                storyField: {
+                  type: Type.STRING,
+                  enum: ['genre', 'tone', 'narrativePerspective', 'intendedAudience', 'setting', 'themes', 'centralConflict', 'pacing', 'continuityRules', 'explicitExclusions', 'visualStyle', 'cameraAndLighting'],
+                  nullable: true,
                 },
               },
-              required: ['operations', 'ambiguities', 'warnings'],
+              required: ['type', 'summary'],
             },
           },
-        }),
-      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
-    );
+          ambiguities: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                phrase: { type: Type.STRING },
+                reason: { type: Type.STRING },
+                candidates: { type: Type.ARRAY, items: { type: Type.STRING } },
+                clarifyingQuestion: { type: Type.STRING },
+              },
+              required: ['phrase', 'reason', 'candidates', 'clarifyingQuestion'],
+            },
+          },
+          warnings: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+          unhandledClauses: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          },
+        },
+        required: ['operations', 'ambiguities', 'warnings'],
+      },
+    },
+  });
 
-    const text = response.text;
-    if (!text || !text.trim()) {
-      throw new AppApiError(
-        'INVALID_RESPONSE',
-        'Model returned an empty batch-edit interpretation.',
-        502,
-        false
-      );
-    }
-    return parseAndValidateBatchEditResponse(text, instruction);
-  } catch (err) {
-    throw classifyWithSignal(err, reqSignal);
-  } finally {
-    cleanup();
+  const text = response.text;
+  if (!text || !text.trim()) {
+    throw new AppApiError(
+      'INVALID_RESPONSE',
+      'Model returned an empty batch-edit interpretation.',
+      502,
+      false
+    );
   }
+  return parseAndValidateBatchEditResponse(text, instruction);
 }
 
 export async function refinePromptText(
   originalPrompt: string,
   clarifications: ClarificationAnswer[],
   graphUpdates: GraphUpdate[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientOverride?: ReturnType<typeof getGeminiClient>,
 ): Promise<string> {
-  const ai = getGeminiClient();
   let updatesPromptSection = '';
 
   if (graphUpdates.length > 0) {
@@ -499,43 +582,33 @@ Do not add any extra explanations, just return the updated prompt string.
 
 Updated Prompt:`;
 
-  const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
-  try {
-    const response = await withRetry(
-      () =>
-        ai.models.generateContent({
-          model: GEMINI_MODELS.text,
-          contents: prompt,
-          config: {
-            abortSignal: reqSignal,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          },
-        }),
-      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
-    );
+  const response = await runBudgetedTextOperation({
+    operation: 'polish',
+    userInputChars: originalPrompt.length,
+    contents: prompt,
+    defaultLowThinking: true,
+    signal,
+    clientOverride,
+  });
 
-    const refined = response.text?.trim();
-    if (!refined) {
-      throw new AppApiError(
-        'INVALID_RESPONSE',
-        'Model returned an empty refined prompt.',
-        502,
-        false
-      );
-    }
-    return refined;
-  } catch (err) {
-    throw classifyWithSignal(err, reqSignal);
-  } finally {
-    cleanup();
+  const refined = response.text?.trim();
+  if (!refined) {
+    throw new AppApiError(
+      'INVALID_RESPONSE',
+      'Model returned an empty refined prompt.',
+      502,
+      false
+    );
   }
+  return refined;
 }
 
 export async function generateStoryText(
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientOverride?: ReturnType<typeof getGeminiClient>,
+  timeoutOverrideMs?: number,
 ): Promise<string> {
-  const ai = getGeminiClient();
   const storyGenerationPrompt = `Based on the following structured story brief and creative constraints, write a vivid, engaging, well-structured story.
 Respect every confirmed character trait, relationship, setting detail, tone, and explicit exclusion.
 
@@ -543,35 +616,27 @@ Story Brief: ${JSON.stringify(prompt)}
 
 Story:`;
 
-  const { signal: reqSignal, cleanup } = combineSignals(signal, TEXT_TIMEOUT_MS);
-  try {
-    const response = await withRetry(
-      () =>
-        ai.models.generateContent({
-          model: GEMINI_MODELS.text,
-          contents: storyGenerationPrompt,
-          config: {
-            abortSignal: reqSignal,
-          },
-        }),
-      { maxAttempts: maxAttemptsForRequest(3), signal: reqSignal }
-    );
+  const response = await runBudgetedTextOperation({
+    operation: 'story',
+    userInputChars: prompt.length,
+    contents: storyGenerationPrompt,
+    defaultLowThinking: false,
+    preferredAttempts: 2,
+    timeoutOverrideMs,
+    signal,
+    clientOverride,
+  });
 
-    const text = response.text?.trim();
-    if (!text) {
-      throw new AppApiError(
-        'INVALID_RESPONSE',
-        'Model returned an empty story response.',
-        502,
-        false
-      );
-    }
-    return text;
-  } catch (err) {
-    throw classifyWithSignal(err, reqSignal);
-  } finally {
-    cleanup();
+  const text = response.text?.trim();
+  if (!text) {
+    throw new AppApiError(
+      'INVALID_RESPONSE',
+      'Model returned an empty story response.',
+      502,
+      false
+    );
   }
+  return text;
 }
 
 export async function generateImagesBatch(

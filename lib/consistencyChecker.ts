@@ -253,53 +253,10 @@ function checkTraitContradictions(
   }
 }
 
-function checkSettingAndCoreBible(
+function checkCoreBibleReadiness(
   snapshot: ProjectSnapshot,
   issues: ConsistencyIssue[]
 ): void {
-  const confirmedBibleSetting =
-    snapshot.storyBible.setting.status === 'confirmed'
-      ? snapshot.storyBible.setting.value.trim()
-      : '';
-  const locationEntities = snapshot.entities.filter(
-    (e) => !e.excluded && e.category === 'location' && e.status === 'confirmed'
-  );
-  if (confirmedBibleSetting && locationEntities.length > 0) {
-    const bibleSettingLower = confirmedBibleSetting.toLowerCase();
-    const matchesAnyLocation = locationEntities.some((loc) => {
-      const locLower = loc.name.toLowerCase();
-      return bibleSettingLower.includes(locLower) || locLower.includes(bibleSettingLower);
-    });
-    if (!matchesAnyLocation) {
-      const targets: ConsistencyIssueTarget[] = [
-        {
-          id: 'target_bible_setting',
-          kind: 'story_bible',
-          label: 'Edit Primary Setting',
-          storyField: 'setting',
-        },
-        ...locationEntities
-          .filter((loc): loc is Entity & { id: string } => Boolean(loc.id))
-          .map((loc) => ({
-            id: `target_entity_${loc.id}`,
-            kind: 'entity' as const,
-            label: `Inspect ${loc.name}`,
-            entityId: loc.id,
-          })),
-      ];
-      issues.push({
-        id: 'issue_setting_mismatch',
-        severity: 'warning',
-        category: 'setting_conflict',
-        title: 'Story Bible setting differs from confirmed Location node',
-        description: `Story Bible setting is "${confirmedBibleSetting}", while the graph has confirmed location "${locationEntities[0].name}".`,
-        affectedEntityIds: locationEntities.map((l) => l.id ?? l.name),
-        targets,
-        suggestedFix: 'Align the Location node name or update the Story Bible setting.',
-      });
-    }
-  }
-
   const requiredCoreFields: Array<{ key: 'genre' | 'tone' | 'setting'; label: string }> = [
     { key: 'genre', label: 'Genre' },
     { key: 'tone', label: 'Tone' },
@@ -309,11 +266,12 @@ function checkSettingAndCoreBible(
     (f) => snapshot.storyBible[f.key].status !== 'confirmed' || !snapshot.storyBible[f.key].value.trim()
   );
   if (unconfirmedCore.length > 0) {
+    const noun = unconfirmedCore.length === 1 ? 'property' : 'properties';
     issues.push({
       id: 'issue_unresolved_core_bible',
       severity: 'warning',
       category: 'unresolved_decision',
-      title: `${unconfirmedCore.length} core Story Bible property(${unconfirmedCore.map((u) => u.label).join(', ')}) awaiting confirmation`,
+      title: `${unconfirmedCore.length} core Story Bible ${noun} (${unconfirmedCore.map((u) => u.label).join(', ')}) awaiting confirmation`,
       description: `Confirming ${unconfirmedCore.map((u) => u.label).join(', ')} in the Decision Inbox or Story Bible locks them into the refined prompt.`,
       affectedEntityIds: [],
       targets: unconfirmedCore.map((f) => ({
@@ -329,12 +287,11 @@ function checkSettingAndCoreBible(
 
 /**
  * Lightweight deterministic consistency checker for the Story Bible and Belief Graph.
- * Detects:
+ * Detects structurally verifiable issues (semantic setting contradictions belong in AI Semantic Diagnostics):
  * 1. Conflicting character traits (e.g., attribute contradicts entity description or another attribute).
- * 2. Incompatible setting information (Story Bible setting vs Location entity).
- * 3. Contradictory relationships.
- * 4. Violated explicit exclusions (an excluded entity is still referenced in active story elements).
- * 5. Unresolved core story-level decisions.
+ * 2. Contradictory or broken confirmed relationships.
+ * 3. Violated explicit exclusions (an excluded entity is still referenced in active story elements).
+ * 4. Unresolved core story-level decisions.
  */
 export function evaluateProjectConsistency(snapshot: ProjectSnapshot): ConsistencyIssue[] {
   const issues: ConsistencyIssue[] = [];
@@ -343,7 +300,7 @@ export function evaluateProjectConsistency(snapshot: ProjectSnapshot): Consisten
   checkRelationshipEndpoints(snapshot, entityIds, issues);
   checkViolatedExclusions(snapshot, issues);
   checkTraitContradictions(snapshot, issues);
-  checkSettingAndCoreBible(snapshot, issues);
+  checkCoreBibleReadiness(snapshot, issues);
 
   return issues;
 }

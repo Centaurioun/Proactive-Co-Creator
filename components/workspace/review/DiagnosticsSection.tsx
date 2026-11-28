@@ -31,12 +31,18 @@ interface SemanticAnalysisPanelProps {
   setDiagScope: (scope: 'full' | 'scene' | 'entity' | 'changed') => void;
   diagTargetId: string;
   setDiagTargetId: (id: string) => void;
+  diagSegmentIndex?: number;
+  setDiagSegmentIndex?: (index: number) => void;
+  diagSegmentCount?: number;
+  diagCoverageSummary?: string;
+  diagOmittedCount?: number;
   diagBusy: boolean;
   diagBudget: ClientBudgetDisclosure;
   diagError: string;
   diagMessage: string;
   onResetDiagnosticScope: () => void;
   onRunSemanticDiagnostics: () => void;
+  onCancelSemanticDiagnostics?: () => void;
 }
 
 const SemanticAnalysisPanel: React.FC<SemanticAnalysisPanelProps> = ({
@@ -47,12 +53,17 @@ const SemanticAnalysisPanel: React.FC<SemanticAnalysisPanelProps> = ({
   setDiagScope,
   diagTargetId,
   setDiagTargetId,
+  diagSegmentIndex = 0,
+  setDiagSegmentIndex,
+  diagSegmentCount = 1,
+  diagCoverageSummary,
   diagBusy,
   diagBudget,
   diagError,
   diagMessage,
   onResetDiagnosticScope,
   onRunSemanticDiagnostics,
+  onCancelSemanticDiagnostics,
 }) => (
   <div className="space-y-2.5 rounded border border-gray-200 bg-gray-50/70 p-3 text-xs dark:border-gray-800 dark:bg-gray-900/60">
     <h3 className="font-semibold">Analyze Consistency (AI Semantic Pass)</h3>
@@ -113,15 +124,47 @@ const SemanticAnalysisPanel: React.FC<SemanticAnalysisPanelProps> = ({
           </select>
         </label>
       )}
+      {diagSegmentCount > 1 && setDiagSegmentIndex && (
+        <label className="space-y-1">
+          <span className="block font-medium">Segment</span>
+          <select
+            value={diagSegmentIndex}
+            onChange={(e) => setDiagSegmentIndex(Number(e.target.value))}
+            className="rounded border border-gray-300 bg-white px-2 py-1 text-xs dark:border-gray-700 dark:bg-gray-950"
+          >
+            {Array.from({ length: diagSegmentCount }, (_, i) => (
+              <option key={i} value={i}>Segment {i + 1} of {diagSegmentCount}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <button
         type="button"
         disabled={diagBusy || !aiConfigured || !diagBudget.withinLimit || ((diagScope === 'scene' || diagScope === 'entity') && !diagTargetId)}
         onClick={onRunSemanticDiagnostics}
         className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-45"
       >
-        {diagBusy ? 'Analyzing…' : 'Analyze Consistency with AI'}
+        {diagBusy
+          ? 'Analyzing…'
+          : diagSegmentCount > 1
+            ? `Analyze Segment ${diagSegmentIndex + 1}/${diagSegmentCount} with AI`
+            : 'Analyze Consistency with AI'}
       </button>
+      {diagBusy && onCancelSemanticDiagnostics && (
+        <button
+          type="button"
+          onClick={onCancelSemanticDiagnostics}
+          className="rounded border border-red-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800 dark:bg-gray-950 dark:text-red-300"
+        >
+          Cancel
+        </button>
+      )}
     </div>
+    {diagCoverageSummary && (
+      <p className="text-[11px] text-gray-700 dark:text-gray-300">
+        Coverage: {diagCoverageSummary}
+      </p>
+    )}
     <p className="text-[11px] tabular-nums text-gray-600 dark:text-gray-400">
       Preflight: {diagBudget.inputChars.toLocaleString()} / {diagBudget.maxInputChars.toLocaleString()} chars · ~{diagBudget.estimatedInputTokens.toLocaleString()} / {diagBudget.maxInputTokens.toLocaleString()} est. tokens.
     </p>
@@ -234,8 +277,17 @@ const IssueRegistryCard: React.FC<IssueRegistryCardProps> = ({
       {issue.anchors.map((anchor, index) => (
         <blockquote key={index} className="whitespace-pre-wrap break-words border-l-2 pl-3">
           {anchor.excerpt}
-          <span className="mt-1 block text-[11px] text-gray-600 dark:text-gray-400">
-            Characters {anchor.start}–{anchor.end} · {anchor.sourceId.slice(0, 8)} · {anchor.version}
+          <span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-600 dark:text-gray-400">
+            <span>Characters {anchor.start}–{anchor.end} · {anchor.sourceId.slice(0, 12)} · {anchor.version}</span>
+            {onNavigateTarget && (
+              <button
+                type="button"
+                onClick={() => onNavigateIssueTarget(anchor.sourceId)}
+                className="font-semibold text-blue-700 underline hover:text-blue-900 dark:text-blue-300"
+              >
+                Open excerpt
+              </button>
+            )}
           </span>
         </blockquote>
       ))}
@@ -385,6 +437,11 @@ interface DiagnosticsSectionProps {
   setDiagScope: (scope: 'full' | 'scene' | 'entity' | 'changed') => void;
   diagTargetId: string;
   setDiagTargetId: (id: string) => void;
+  diagSegmentIndex?: number;
+  setDiagSegmentIndex?: (index: number) => void;
+  diagSegmentCount?: number;
+  diagCoverageSummary?: string;
+  diagOmittedCount?: number;
   diagBusy: boolean;
   diagBudget: ClientBudgetDisclosure;
   diagError: string;
@@ -393,6 +450,7 @@ interface DiagnosticsSectionProps {
   onRunLocalDiagnostics?: () => void;
   onResetDiagnosticScope: () => void;
   onRunSemanticDiagnostics: () => void;
+  onCancelSemanticDiagnostics?: () => void;
   dispositionFilter: 'all' | NarrativeIssue['disposition'];
   setDispositionFilter: (filter: 'all' | NarrativeIssue['disposition']) => void;
   fixError: string;
@@ -433,6 +491,11 @@ export const DiagnosticsSection: React.FC<DiagnosticsSectionProps> = ({
   setDiagScope,
   diagTargetId,
   setDiagTargetId,
+  diagSegmentIndex,
+  setDiagSegmentIndex,
+  diagSegmentCount,
+  diagCoverageSummary,
+  diagOmittedCount,
   diagBusy,
   diagBudget,
   diagError,
@@ -441,6 +504,7 @@ export const DiagnosticsSection: React.FC<DiagnosticsSectionProps> = ({
   onRunLocalDiagnostics,
   onResetDiagnosticScope,
   onRunSemanticDiagnostics,
+  onCancelSemanticDiagnostics,
   dispositionFilter,
   setDispositionFilter,
   fixError,
@@ -512,12 +576,18 @@ export const DiagnosticsSection: React.FC<DiagnosticsSectionProps> = ({
         setDiagScope={setDiagScope}
         diagTargetId={diagTargetId}
         setDiagTargetId={setDiagTargetId}
+        diagSegmentIndex={diagSegmentIndex}
+        setDiagSegmentIndex={setDiagSegmentIndex}
+        diagSegmentCount={diagSegmentCount}
+        diagCoverageSummary={diagCoverageSummary}
+        diagOmittedCount={diagOmittedCount}
         diagBusy={diagBusy}
         diagBudget={diagBudget}
         diagError={diagError}
         diagMessage={diagMessage}
         onResetDiagnosticScope={onResetDiagnosticScope}
         onRunSemanticDiagnostics={onRunSemanticDiagnostics}
+        onCancelSemanticDiagnostics={onCancelSemanticDiagnostics}
       />
 
       <div className="space-y-3">

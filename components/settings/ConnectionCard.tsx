@@ -229,9 +229,9 @@ export function ConnectionCard({
           onChange={onGeminiKeyInputChange}
           onSubmit={onSaveGeminiKey}
           onRemove={onRemoveGeminiKey}
-          saveLabel="Save key"
+          saveLabel="Save & Verify"
           removeLabel="Remove key"
-          helpText="The key is kept in this server session’s memory and cleared when the server restarts. It is never saved in browser storage or on disk."
+          helpText="Kept in server session memory only (never saved in browser storage or on disk). Save & Verify stores the key and performs a metadata-only model catalog lookup — no AI generation call is made."
           busy={busy}
         />
       )}
@@ -244,9 +244,9 @@ export function ConnectionCard({
           onChange={onOpenAiKeyInputChange}
           onSubmit={onSaveOpenAiKey}
           onRemove={onRemoveOpenAiKey}
-          saveLabel="Save API key"
+          saveLabel="Save & Verify"
           removeLabel="Remove API key"
-          helpText="This key is held in server memory only and cleared when the server restarts. OpenAI API use is billed separately from a ChatGPT plan. Saving the key does not make a provider request; catalog refresh and AI use require your explicit action."
+          helpText="Held in server memory only and cleared when the server restarts. OpenAI API billing is separate from a ChatGPT plan. Save & Verify performs a metadata-only model catalog lookup — no AI inference call is made."
           busy={busy}
         />
       )}

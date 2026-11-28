@@ -3,8 +3,8 @@ import { z } from 'zod';
 const nonBlank = (maximum: number) => z.string().min(1).max(maximum).refine(value => value.trim().length > 0, 'Must not be blank.');
 
 export const ExtractionEvidenceSchema = z.strictObject({
-  start: z.number().int().nonnegative(),
-  end: z.number().int().positive(),
+  start: z.number().int().nonnegative().optional(),
+  end: z.number().int().positive().optional(),
   quote: z.string().min(1).max(1200),
 });
 

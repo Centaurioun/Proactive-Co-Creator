@@ -16,17 +16,21 @@ const storyFieldEnum = z.enum([
 ]);
 
 const compactEntitySchema = z.object({
-  id: z.string().min(1).max(120),
+  id: z.string().min(1).max(240),
   name: z.string().min(1).max(160),
   category: z.string().max(40).optional(),
   description: z.string().max(1_000).optional(),
   excluded: z.boolean().optional(),
   status: z.string().max(40).optional(),
+  epistemicKind: z.string().max(40).optional(),
+  epistemicSource: z.string().max(240).optional(),
   attributes: z.array(z.object({
-    id: z.string().max(120).optional(),
+    id: z.string().max(240).optional(),
     name: z.string().min(1).max(120),
     value: z.string().max(500),
     status: z.string().max(40).optional(),
+    epistemicKind: z.string().max(40).optional(),
+    epistemicSource: z.string().max(240).optional(),
   })).max(40),
 });
 
@@ -89,9 +93,9 @@ export const SemanticDiagnosticFindingSchema = z.object({
   severity: z.enum(['error', 'warning']),
   certainty: z.enum(['confirmed', 'inferred', 'possible']),
   targetKind: z.enum(['entity', 'relationship', 'story_bible', 'section']),
-  targetId: z.string().max(120).optional(),
+  targetId: z.string().max(240).optional(),
   storyField: storyFieldEnum.optional(),
-  sectionId: z.string().max(120).optional(),
+  sectionId: z.string().max(240).optional(),
   evidenceQuote: z.string().max(400).optional(),
   suggestedAction: z.string().max(400).optional(),
 });
@@ -208,7 +212,7 @@ export const WritingAssistRequestSchema = z.object({
   projectId: z.string().min(1).max(120),
   baseRevision: z.number().int().positive(),
   manuscriptVersionId: z.string().max(120).optional(),
-  sectionId: z.string().min(1).max(120),
+  sectionId: z.string().min(1).max(240),
   sectionTitle: z.string().min(1).max(200),
   action: z.enum(['continue', 'rewrite', 'clarity', 'shorten', 'expand', 'dialogue', 'alternatives', 'custom']),
   customInstruction: z.string().max(600).optional(),
@@ -221,6 +225,32 @@ export const WritingAssistRequestSchema = z.object({
   })).max(30),
   confirmedStoryBible: z.record(z.string(), z.string().max(500)),
   styleGuidance: z.array(z.string().max(300)).max(10).optional(),
+  sceneMetadata: z.object({
+    kind: z.enum(['chapter', 'scene']),
+    chapterTitle: z.string().max(200).optional(),
+    pov: z.string().max(160).optional(),
+    location: z.string().max(160).optional(),
+    chronology: z.string().max(160).optional(),
+    purpose: z.string().max(300).optional(),
+    synopsis: z.string().max(500).optional(),
+  }).optional(),
+  precedingSceneContext: z.object({
+    sectionId: z.string().max(240),
+    title: z.string().max(200),
+    excerpt: z.string().max(1_500),
+  }).optional(),
+  relevantRelationships: z.array(z.object({
+    source: z.string().max(160),
+    target: z.string().max(160),
+    label: z.string().max(160),
+    epistemicKind: z.string().max(40).optional(),
+  })).max(20).optional(),
+  epistemicNotes: z.array(z.object({
+    subject: z.string().max(160),
+    kind: z.string().max(40),
+    detail: z.string().max(300),
+  })).max(15).optional(),
+  explicitExclusions: z.array(z.string().max(160)).max(25).optional(),
 });
 
 export const WritingAssistProposalSchema = z.object({

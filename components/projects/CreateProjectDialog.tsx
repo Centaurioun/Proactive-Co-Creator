@@ -4,13 +4,18 @@ interface CreateProjectDialogProps {
   open: boolean;
   pending?: boolean;
   onCancel: () => void;
-  onCreate: (name: string, initialPrompt: string) => Promise<boolean>;
+  onCreate: (
+    name: string,
+    initialPrompt: string,
+    options?: { includeStarterExcerpt?: boolean }
+  ) => Promise<boolean>;
 }
 
 /** Direct, cancellable entry to a new narrative project. Persistence stays App-owned. */
 export default function CreateProjectDialog({ open, pending = false, onCancel, onCreate }: CreateProjectDialogProps) {
   const [name, setName] = useState('');
   const [idea, setIdea] = useState('');
+  const [includeStarterExcerpt, setIncludeStarterExcerpt] = useState(false);
   const [error, setError] = useState('');
   const nameRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
@@ -35,10 +40,13 @@ export default function CreateProjectDialog({ open, pending = false, onCancel, o
     }
     setError('');
     try {
-      const created = await onCreate(projectName, idea.trim());
+      const created = includeStarterExcerpt
+        ? await onCreate(projectName, idea.trim(), { includeStarterExcerpt: true })
+        : await onCreate(projectName, idea.trim());
       if (created) {
         setName('');
         setIdea('');
+        setIncludeStarterExcerpt(false);
         setError('');
       } else setError('The project was not created. Your current workspace is still open.');
     } catch (cause) {
@@ -50,6 +58,7 @@ export default function CreateProjectDialog({ open, pending = false, onCancel, o
     if (pending) return;
     setName('');
     setIdea('');
+    setIncludeStarterExcerpt(false);
     setError('');
     onCancel();
     requestAnimationFrame(() => previousFocusRef.current?.focus());
@@ -87,6 +96,20 @@ export default function CreateProjectDialog({ open, pending = false, onCancel, o
           </label>
           <label className="block text-sm font-medium" htmlFor="create-project-premise">Premise <span className="font-normal text-pcc-muted">(optional)</span>
             <textarea id="create-project-premise" rows={4} maxLength={4000} value={idea} onChange={event => setIdea(event.target.value)} disabled={pending} className="mt-1 w-full resize-y rounded-md border border-pcc-line bg-pcc-canvas p-3 dark:border-pcc-dark-line dark:bg-pcc-dark-canvas" />
+          </label>
+          <label className="flex items-start gap-2.5 text-sm text-pcc-ink dark:text-pcc-dark-ink" htmlFor="create-project-starter">
+            <input
+              id="create-project-starter"
+              type="checkbox"
+              checked={includeStarterExcerpt}
+              onChange={(event) => setIncludeStarterExcerpt(event.target.checked)}
+              disabled={pending}
+              className="mt-0.5 h-4 w-4 rounded border-pcc-line text-pcc-action focus:ring-pcc-focus"
+            />
+            <span>
+              Start with an opening Chapter 1 scene{' '}
+              <span className="text-pcc-muted dark:text-pcc-dark-muted">(optional)</span>
+            </span>
           </label>
           {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
           <div className="flex justify-end gap-2 pt-2">

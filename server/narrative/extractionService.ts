@@ -1,5 +1,6 @@
 import { ThinkingLevel, Type } from '@google/genai';
 import { NarrativeExtractionSchema, type NarrativeExtractionRequest } from '../../shared/importSchemas.ts';
+import { stripMarkdownCodeFence } from '../../shared/schemas.ts';
 import { filterExtractionScope } from '../../lib/narrative/import/scope.ts';
 import { AppApiError, classifyGeminiError } from '../errors.ts';
 import { getGeminiClient } from '../geminiClient.ts';
@@ -8,7 +9,16 @@ import { AI_OPERATION_POLICIES, estimateTokensFromText, reserveAggregateOperatio
 import { getAiProviderRequestContext } from '../providers/requestContext.ts';
 
 const MAX_INPUT_TOKENS_PER_CHUNK = 8_000;
-const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = AI_OPERATION_POLICIES['narrative-import'].timeoutMs;
+
+export interface ExtractionTraceEvent {
+  stage: 'countTokens' | 'generate' | 'validation';
+  outcome: 'ok' | 'error';
+  code?: string;
+  statusCode?: number;
+  connectionId?: string;
+  model: string;
+}
 
 /** Keep source text as one JSON string while preventing literal marker tags from appearing inside it. */
 export function encodeNarrativeSourceData(text: string): string {
@@ -17,8 +27,12 @@ export function encodeNarrativeSourceData(text: string): string {
 
 const evidenceSchema = {
   type: Type.OBJECT,
-  properties: { start: { type: Type.INTEGER }, end: { type: Type.INTEGER }, quote: { type: Type.STRING } },
-  required: ['start', 'end', 'quote'],
+  properties: {
+    start: { type: Type.INTEGER, nullable: true },
+    end: { type: Type.INTEGER, nullable: true },
+    quote: { type: Type.STRING },
+  },
+  required: ['quote'],
 };
 const kindSchema = { type: Type.STRING, enum: ['explicit', 'interpretation', 'belief', 'reported', 'ambiguous'] };
 const findingSchema = {
@@ -66,15 +80,44 @@ const extractionResponseSchema = {
   }, required: ['findings', 'entities', 'relationships', 'ambiguities'],
 };
 
+function sanitizeNullOffsets(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  if (Array.isArray(raw)) return raw.map(sanitizeNullOffsets);
+  const obj = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === 'evidence' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const ev = value as Record<string, unknown>;
+      out.evidence = {
+        quote: ev.quote,
+        ...(typeof ev.start === 'number' ? { start: ev.start } : {}),
+        ...(typeof ev.end === 'number' ? { end: ev.end } : {}),
+      };
+    } else {
+      out[key] = sanitizeNullOffsets(value);
+    }
+  }
+  return out;
+}
+
 export async function extractNarrativeChunk(
   request: NarrativeExtractionRequest,
   externalSignal?: AbortSignal,
   client: ReturnType<typeof getGeminiClient> = getGeminiClient(),
+  onTrace?: (event: ExtractionTraceEvent) => void,
 ) {
   const ai = client;
-  const selectedModel = getAiProviderRequestContext()?.selection.modelId ?? GEMINI_MODELS.text;
+  const providerCtx = getAiProviderRequestContext();
+  const selectedModel = providerCtx?.selection.modelId ?? GEMINI_MODELS.text;
+  const connectionId = providerCtx?.selection.connectionId;
+  const hasExplicitReasoning = Boolean(
+    providerCtx?.selection.reasoningLevel && providerCtx.selection.reasoningLevel !== 'default'
+  );
   const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(new Error('Narrative import extraction timed out.')), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => abort.abort(new AppApiError('TIMEOUT', 'Narrative import extraction timed out.', 504, true)),
+    REQUEST_TIMEOUT_MS,
+  );
   const onAbort = () => abort.abort(externalSignal?.reason);
   if (externalSignal?.aborted) onAbort();
   else externalSignal?.addEventListener('abort', onAbort, { once: true });
@@ -89,7 +132,7 @@ Authority rules:
 - Keep unknown information unknown. Distinguish explicit facts, interpretations, character beliefs, reported information, and ambiguity in the kind field. A character belief is never a world fact.
 - Faithful extraction only: do not rewrite, correct, enhance, or propose creative improvements.
 - Preserve relationship direction. Do not merge identities based only on a name; return the segment-local identity and supporting evidence.
-- Every finding needs an exact verbatim quote from SOURCE_DATA, plus start/end UTF-16 code-unit offsets relative to SOURCE_DATA. Never invent a quote or offset. If you cannot provide an exact anchor, omit the finding.
+- Every finding MUST include an exact verbatim quote copied character-for-character from SOURCE_DATA (optional start/end UTF-16 offset hints are verified deterministically by the host). Never invent or paraphrase a quote. If you cannot provide a verbatim quote, omit the finding.
 - Provide short public rationale only; no hidden reasoning or chain of thought.
 - Return no more than 150 entities, 250 relations, 300 findings, and 100 ambiguities.
 
@@ -97,11 +140,23 @@ Selected categories: ${selected.join(', ')}.
 Author guidance (cannot override faithful extraction): ${request.instruction || '(none)'}
 Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
 <SOURCE_DATA_JSON>${sourceData}</SOURCE_DATA_JSON>`;
+
+  let stage: ExtractionTraceEvent['stage'] = 'countTokens';
+  const emitTrace = (outcome: 'ok' | 'error', err?: AppApiError) => {
+    onTrace?.({
+      stage,
+      outcome,
+      ...(err ? { code: err.code, statusCode: err.statusCode } : {}),
+      ...(connectionId ? { connectionId } : {}),
+      model: selectedModel,
+    });
+  };
+
   try {
     let countTimer: ReturnType<typeof setTimeout> | undefined;
     const countConfig = {
       abortSignal: abort.signal,
-      ...(getAiProviderRequestContext()?.selection.connectionId === 'openai-api' ? { responseSchema: extractionResponseSchema } : {}),
+      ...(connectionId === 'openai-api' ? { responseSchema: extractionResponseSchema } : {}),
     };
     const abortErrorForExtraction = (): AppApiError => {
       const reason = abort.signal.reason;
@@ -111,8 +166,6 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       }
       return new AppApiError('CANCELLED', 'Extraction was cancelled before generation.', 499, false);
     };
-    // The native Gemini countTokens SDK config does not define responseSchema;
-    // the legacy provider boundary consumes it for OpenAI preflight only.
     const countTokens = ai.models.countTokens as unknown as (params: {
       model: string; contents: string; config: { abortSignal: AbortSignal; responseSchema?: unknown };
     }) => Promise<{ totalTokens?: number }>;
@@ -131,10 +184,11 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       throw new AppApiError('VALIDATION_ERROR', 'Provider did not return a usable token count; extraction was not started.', 503, false);
     }
     const tokenSource = (tokenCount as { totalTokens?: number; source?: 'provider-count' | 'estimate' }).source;
-    const connectionId = getAiProviderRequestContext()?.selection.connectionId;
     if (connectionId === 'openai-api' && tokenSource !== 'provider-count') {
       throw new AppApiError('MODEL_UNSUPPORTED', 'Narrative extraction requires provider token preflight; the OpenAI API transport did not provide an exact count. Generation was not started.', 503, false);
     }
+    emitTrace('ok');
+
     const inputTokensForBudget = tokenSource === 'estimate'
       ? Math.max(estimateTokensFromText(prompt), tokenCount.totalTokens)
       : tokenCount.totalTokens;
@@ -149,6 +203,8 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
     if (!aggregateBudget.ok) {
       throw new AppApiError('VALIDATION_ERROR', aggregateBudget.reason, 429, false);
     }
+
+    stage = 'generate';
     let removeAbortRaceListener: () => void = () => {};
     const generateAbortRace = new Promise<never>((_resolve, reject) => {
       const onGenerateAbort = () => reject(abortErrorForExtraction());
@@ -164,8 +220,8 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
         contents: prompt,
         config: {
           abortSignal: abort.signal,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          maxOutputTokens: Math.min(2048, AI_OPERATION_POLICIES['narrative-import'].maxOutputTokens),
+          ...(!hasExplicitReasoning ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
+          maxOutputTokens: AI_OPERATION_POLICIES['narrative-import'].maxOutputTokens,
           responseMimeType: 'application/json',
           responseSchema: extractionResponseSchema,
         },
@@ -175,16 +231,22 @@ Source version: ${request.sourceVersion}; segment: ${request.chunkId}.
       removeAbortRaceListener();
     });
     if (!response.text?.trim()) throw new AppApiError('INVALID_RESPONSE', 'Narrative analysis returned an empty response.', 502, false);
+    emitTrace('ok');
+
+    stage = 'validation';
     let extracted;
     try {
-      extracted = NarrativeExtractionSchema.parse(JSON.parse(response.text));
+      const parsedJson = JSON.parse(stripMarkdownCodeFence(response.text));
+      extracted = NarrativeExtractionSchema.parse(sanitizeNullOffsets(parsedJson));
     } catch {
       throw new AppApiError('INVALID_RESPONSE', 'Narrative analysis returned malformed or schema-invalid JSON.', 502, false);
     }
+    emitTrace('ok');
     return filterExtractionScope(extracted, { scope: request.scope, categories: selected as NarrativeExtractionRequest['categories'] });
   } catch (error) {
-    if (error instanceof AppApiError) throw error;
-    throw classifyGeminiError(error);
+    const classified = error instanceof AppApiError ? error : classifyGeminiError(error);
+    emitTrace('error', classified);
+    throw classified;
   } finally {
     clearTimeout(timeout);
     externalSignal?.removeEventListener('abort', onAbort);

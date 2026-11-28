@@ -11,6 +11,8 @@ import { runGuardedBackupOperation } from './hub/backupOperations';
 import { ProjectLibrarySection } from './hub/ProjectLibrarySection';
 import { ExportAndArchiveSection } from './hub/ExportAndArchiveSection';
 import { BrowserBackupsSection } from './hub/BrowserBackupsSection';
+import { RecoveryAssistantSection } from './hub/RecoveryAssistantSection';
+import type { HydrationWriteGate } from '../../lib/controller/projectListSync';
 
 interface Props {
   project: CreativeProject;
@@ -31,8 +33,16 @@ interface Props {
   onToggleAutoBackup?: (enabled: boolean) => void;
   onResumeWorkspace?: () => void;
   onOpenProject?: (projectId: string) => void;
-  onCreateNewProject?: (name: string, initialPrompt: string) => Promise<boolean>;
+  onCreateNewProject?: (
+    name: string,
+    initialPrompt: string,
+    options?: { includeStarterExcerpt?: boolean }
+  ) => Promise<boolean>;
   historyContent?: ReactNode;
+  hydrationGate?: HydrationWriteGate;
+  hasStorageAlert?: boolean;
+  onExportJsonBackup?: () => void;
+  onOpenReviewSync?: () => void;
 }
 
 export default function ProjectHub({
@@ -56,6 +66,10 @@ export default function ProjectHub({
   onOpenProject,
   onCreateNewProject,
   historyContent,
+  hydrationGate,
+  hasStorageAlert,
+  onExportJsonBackup,
+  onOpenReviewSync,
 }: Props) {
   const [backups, setBackups] = useState<ProjectBackup[]>([]);
   const [message, setMessage] = useState('');
@@ -161,6 +175,14 @@ export default function ProjectHub({
 
         {activeHubView === 'recovery' && (
           <>
+            <RecoveryAssistantSection
+              project={project}
+              backupCount={backups.length}
+              hydrationGate={hydrationGate}
+              hasStorageAlert={hasStorageAlert}
+              onExportJsonBackup={onExportJsonBackup}
+              onOpenReviewSync={onOpenReviewSync}
+            />
             <ExportAndArchiveSection
               projectId={project.id}
               savedProjects={savedProjects}

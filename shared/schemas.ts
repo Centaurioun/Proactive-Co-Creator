@@ -466,12 +466,6 @@ function normalizeBatchEditPayload(raw: unknown): unknown {
         const op = entry as Record<string, unknown>;
         const rawCategory = nonEmptyString(op.entityCategory)?.toLowerCase();
         const normalizedCategory = rawCategory ? ENTITY_CATEGORY_MAP[rawCategory] : undefined;
-        let nextValue = nonEmptyString(op.nextValue);
-        let targetEntityName = nonEmptyString(op.targetEntityName);
-        if (op.type === 'update_story_bible' && !nextValue && targetEntityName) {
-          nextValue = targetEntityName;
-          targetEntityName = undefined;
-        }
         return {
           ...op,
           summary: nonEmptyString(op.summary) ?? op.summary,
@@ -479,9 +473,9 @@ function normalizeBatchEditPayload(raw: unknown): unknown {
           newEntityName: nonEmptyString(op.newEntityName),
           entityCategory: normalizedCategory,
           attributeName: nonEmptyString(op.attributeName),
-          nextValue,
+          nextValue: nonEmptyString(op.nextValue),
           sourceEntityName: nonEmptyString(op.sourceEntityName),
-          targetEntityName,
+          targetEntityName: nonEmptyString(op.targetEntityName),
           storyField: nonEmptyString(op.storyField),
         };
       })
@@ -490,6 +484,59 @@ function normalizeBatchEditPayload(raw: unknown): unknown {
   const warnings = Array.isArray(record.warnings) ? record.warnings : [];
   const unhandledClauses = Array.isArray(record.unhandledClauses) ? record.unhandledClauses : [];
   return { operations, ambiguities, warnings, unhandledClauses };
+}
+
+function missingBatchOperationFields(op: {
+  type: string;
+  entityName?: string;
+  newEntityName?: string;
+  entityCategory?: EntityCategory;
+  attributeName?: string;
+  nextValue?: string;
+  sourceEntityName?: string;
+  targetEntityName?: string;
+  storyField?: string;
+}): string[] {
+  switch (op.type) {
+    case 'set_attribute':
+    case 'add_attribute':
+      return [
+        ...(!op.entityName ? ['entityName'] : []),
+        ...(!op.attributeName ? ['attributeName'] : []),
+        ...(!op.nextValue ? ['nextValue'] : []),
+      ];
+    case 'add_entity':
+      return [
+        ...(!op.entityName ? ['entityName'] : []),
+        ...(!op.entityCategory ? ['entityCategory'] : []),
+      ];
+    case 'rename_entity':
+      return [
+        ...(!op.entityName ? ['entityName'] : []),
+        ...(!op.newEntityName ? ['newEntityName'] : []),
+      ];
+    case 'exclude_entity':
+      return !op.entityName ? ['entityName'] : [];
+    case 'add_relationship':
+    case 'update_relationship':
+      return [
+        ...(!op.sourceEntityName ? ['sourceEntityName'] : []),
+        ...(!op.targetEntityName ? ['targetEntityName'] : []),
+        ...(!op.nextValue ? ['nextValue'] : []),
+      ];
+    case 'remove_relationship':
+      return [
+        ...(!op.sourceEntityName ? ['sourceEntityName'] : []),
+        ...(!op.targetEntityName ? ['targetEntityName'] : []),
+      ];
+    case 'update_story_bible':
+      return [
+        ...(!op.storyField || !VALID_STORY_FIELDS.has(op.storyField as keyof StoryBibleFields) ? ['storyField'] : []),
+        ...(!op.nextValue ? ['nextValue'] : []),
+      ];
+    default:
+      return ['type'];
+  }
 }
 
 export function parseAndValidateBatchEditResponse(
@@ -512,35 +559,62 @@ export function parseAndValidateBatchEditResponse(
     );
   }
 
-  const operations = validated.data.operations.map((op, index) => ({
-    id: `op_${Date.now()}_${index}`,
-    type: op.type,
-    summary: op.summary,
-    entityName: op.entityName,
-    newEntityName: op.newEntityName,
-    entityCategory: op.entityCategory,
-    attributeName: op.attributeName,
-    nextValue: op.nextValue,
-    sourceEntityName: op.sourceEntityName,
-    targetEntityName: op.targetEntityName,
-    storyField:
-      op.storyField && VALID_STORY_FIELDS.has(op.storyField as keyof StoryBibleFields)
-        ? (op.storyField as keyof StoryBibleFields)
-        : undefined,
-    destructive: op.type === 'exclude_entity' || op.type === 'remove_relationship',
-    selected: true,
-  }));
+  const validOperations: BatchEditProposalResult['operations'] = [];
+  const rejectedWarnings: string[] = [];
+  const rejectedClauses: string[] = [];
+
+  validated.data.operations.forEach((op, index) => {
+    const missing = missingBatchOperationFields(op);
+    if (missing.length > 0) {
+      rejectedWarnings.push(
+        `Rejected malformed "${op.type}" operation ("${op.summary}"): missing required field(s) ${missing.join(', ')}.`
+      );
+      rejectedClauses.push(op.summary);
+      return;
+    }
+    validOperations.push({
+      id: `op_${Date.now()}_${index}`,
+      type: op.type,
+      summary: op.summary,
+      entityName: op.entityName,
+      newEntityName: op.newEntityName,
+      entityCategory: op.entityCategory,
+      attributeName: op.attributeName,
+      nextValue: op.nextValue,
+      sourceEntityName: op.sourceEntityName,
+      targetEntityName: op.targetEntityName,
+      storyField:
+        op.storyField && VALID_STORY_FIELDS.has(op.storyField as keyof StoryBibleFields)
+          ? (op.storyField as keyof StoryBibleFields)
+          : undefined,
+      destructive: op.type === 'exclude_entity' || op.type === 'remove_relationship',
+      selected: true,
+    });
+  });
+
+  if (
+    validated.data.operations.length > 0 &&
+    validOperations.length === 0 &&
+    validated.data.ambiguities.length === 0
+  ) {
+    throw new Error(
+      `INVALID_RESPONSE: All proposed batch edit operations were malformed (${rejectedWarnings.join(' ')}).`
+    );
+  }
+
+  const warnings = [...validated.data.warnings, ...rejectedWarnings];
+  const unhandledClauses = [...validated.data.unhandledClauses, ...rejectedClauses];
 
   return {
     proposalId: `batch_ai_${Date.now()}`,
     instruction,
-    operations,
+    operations: validOperations,
     ambiguities: validated.data.ambiguities,
-    warnings: validated.data.warnings,
-    unhandledClauses: validated.data.unhandledClauses,
+    warnings,
+    unhandledClauses,
     coverageComplete:
-      validated.data.unhandledClauses.length === 0 &&
+      unhandledClauses.length === 0 &&
       validated.data.ambiguities.length === 0 &&
-      operations.length > 0,
+      validOperations.length > 0,
   };
 }

@@ -101,8 +101,9 @@ export function applyWritingSelectionEdit(params: {
 }
 
 /**
- * Extracts strictly confirmed canonical context and confirmed non-conflicting style guidance
- * for AI Writing Assistant requests. Unattributed beliefs, reported claims, and pending items are excluded.
+ * Extracts strictly confirmed canonical context, bounded scene metadata, preceding scene excerpt,
+ * confirmed relationships, explicit exclusions, and separately labeled epistemic notes
+ * for AI Writing Assistant requests. Beliefs and reported claims are never merged into confirmed world facts.
  */
 export function extractConfirmedWritingContext(
   project: CreativeProject,
@@ -111,6 +112,23 @@ export function extractConfirmedWritingContext(
   confirmedEntities: Array<{ name: string; summary: string }>;
   confirmedStoryBible: Record<string, string>;
   styleGuidance: string[];
+  sceneMetadata?: {
+    kind: 'chapter' | 'scene';
+    chapterTitle?: string;
+    pov?: string;
+    location?: string;
+    chronology?: string;
+    purpose?: string;
+    synopsis?: string;
+  };
+  precedingSceneContext?: {
+    sectionId: string;
+    title: string;
+    excerpt: string;
+  };
+  relevantRelationships: Array<{ source: string; target: string; label: string; epistemicKind?: string }>;
+  epistemicNotes: Array<{ subject: string; kind: string; detail: string }>;
+  explicitExclusions: string[];
 } {
   const confirmedEntities = project.snapshot.entities
     .filter((e) => !e.excluded && e.status === 'confirmed' && e.epistemicKind !== 'belief' && e.epistemicKind !== 'reported')
@@ -141,10 +159,120 @@ export function extractConfirmedWritingContext(
     }
   }
 
-  // Include confirmed style observations relevant to the whole manuscript or this exact section
+  // Separately collect belief/reported epistemic notes so AI treats them as character perspective, never settled truth
+  const epistemicNotes: Array<{ subject: string; kind: string; detail: string }> = [];
+  for (const entity of project.snapshot.entities) {
+    if (entity.excluded) continue;
+    if (entity.epistemicKind === 'belief' || entity.epistemicKind === 'reported') {
+      epistemicNotes.push({
+        subject: entity.name.slice(0, 160),
+        kind: entity.epistemicKind,
+        detail: (entity.description || `${entity.epistemicKind} claim`).slice(0, 300),
+      });
+    }
+    for (const attr of entity.attributes) {
+      if (attr.epistemicKind === 'belief' || attr.epistemicKind === 'reported') {
+        const val = attr.confirmedValue ?? attr.value[0]?.name ?? '';
+        if (val) {
+          epistemicNotes.push({
+            subject: entity.name.slice(0, 160),
+            kind: attr.epistemicKind,
+            detail: `${attr.name}: ${val}`.slice(0, 300),
+          });
+        }
+      }
+    }
+    if (epistemicNotes.length >= 15) break;
+  }
+
+  // Confirmed relationships involving non-excluded entities
+  const excludedNames = new Set(
+    project.snapshot.entities.filter((e) => e.excluded).map((e) => e.name.toLowerCase())
+  );
+  const relevantRelationships = project.snapshot.relationships
+    .filter(
+      (r) =>
+        r.status === 'confirmed' &&
+        !excludedNames.has(r.source.toLowerCase()) &&
+        !excludedNames.has(r.target.toLowerCase())
+    )
+    .slice(0, 16)
+    .map((r) => ({
+      source: r.source.slice(0, 160),
+      target: r.target.slice(0, 160),
+      label: r.label.slice(0, 160),
+      ...(r.epistemicKind ? { epistemicKind: r.epistemicKind } : {}),
+    }));
+
+  // Explicit exclusions from excluded entities + Story Bible explicitExclusions
+  const bibleExclusions = (project.snapshot.storyBible.explicitExclusions?.value ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const explicitExclusions = Array.from(
+    new Set([
+      ...project.snapshot.entities.filter((e) => e.excluded).map((e) => e.name.trim()).filter(Boolean),
+      ...bibleExclusions,
+    ])
+  ).slice(0, 25);
+
+  // Active manuscript sections for current scene metadata and immediately preceding scene excerpt
   const activeVersion = project.narrative?.versions.find(
     (v) => v.id === project.snapshot.manuscriptVersionId
   );
+  const sectionByVersionId = new Map(
+    (project.narrative?.sectionVersions ?? []).map((sv) => [sv.id, sv.section])
+  );
+  const orderedSections = (activeVersion?.sectionVersionIds ?? [])
+    .map((id) => sectionByVersionId.get(id))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s));
+
+  const currentIdx = orderedSections.findIndex((s) => s.id === sectionId);
+  const currentSection = currentIdx >= 0 ? orderedSections[currentIdx] : undefined;
+  let sceneMetadata:
+    | {
+        kind: 'chapter' | 'scene';
+        chapterTitle?: string;
+        pov?: string;
+        location?: string;
+        chronology?: string;
+        purpose?: string;
+        synopsis?: string;
+      }
+    | undefined;
+  if (currentSection) {
+    const parentChapter = currentSection.chapterId
+      ? orderedSections.find((s) => s.id === currentSection.chapterId)
+      : undefined;
+    sceneMetadata = {
+      kind: currentSection.kind,
+      ...(parentChapter?.title ? { chapterTitle: parentChapter.title.slice(0, 200) } : {}),
+      ...(currentSection.pov?.trim() ? { pov: currentSection.pov.trim().slice(0, 160) } : {}),
+      ...(currentSection.location?.trim() ? { location: currentSection.location.trim().slice(0, 160) } : {}),
+      ...(currentSection.chronology?.trim() ? { chronology: currentSection.chronology.trim().slice(0, 160) } : {}),
+      ...(currentSection.purpose?.trim() ? { purpose: currentSection.purpose.trim().slice(0, 300) } : {}),
+      ...(currentSection.synopsis?.trim() ? { synopsis: currentSection.synopsis.trim().slice(0, 500) } : {}),
+    };
+  }
+
+  let precedingSceneContext: { sectionId: string; title: string; excerpt: string } | undefined;
+  if (currentIdx > 0) {
+    for (let i = currentIdx - 1; i >= 0; i -= 1) {
+      const prev = orderedSections[i];
+      const trimmed = prev.text.trim();
+      if (!trimmed) continue;
+      let start = Math.max(0, trimmed.length - 1_200);
+      while (start < trimmed.length && !isTextBoundary(trimmed, start)) start += 1;
+      precedingSceneContext = {
+        sectionId: prev.id,
+        title: (prev.title || prev.kind).slice(0, 200),
+        excerpt: trimmed.slice(start),
+      };
+      break;
+    }
+  }
+
+  // Include confirmed style observations relevant to the whole manuscript or this exact section
   const styleGuidance = (activeVersion?.styleProfile?.observations ?? [])
     .filter(
       (obs) =>
@@ -154,5 +282,14 @@ export function extractConfirmedWritingContext(
     .slice(0, 8)
     .map((obs) => `${obs.trait} (${obs.interpretation}): ${obs.value}`);
 
-  return { confirmedEntities, confirmedStoryBible, styleGuidance };
+  return {
+    confirmedEntities,
+    confirmedStoryBible,
+    styleGuidance,
+    ...(sceneMetadata ? { sceneMetadata } : {}),
+    ...(precedingSceneContext ? { precedingSceneContext } : {}),
+    relevantRelationships,
+    epistemicNotes: epistemicNotes.slice(0, 15),
+    explicitExclusions,
+  };
 }

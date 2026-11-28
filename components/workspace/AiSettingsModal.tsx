@@ -77,7 +77,7 @@ const AiSettingsModal: React.FC<AiSettingsModalProps> = ({ isOpen, onClose, chil
         role="dialog"
         aria-modal="true"
         aria-labelledby="ai-settings-title"
-        className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-pcc-line bg-pcc-surface p-4 text-pcc-ink shadow-xl dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink sm:p-6"
+        className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-pcc-line bg-pcc-surface p-4 text-pcc-ink shadow-xl dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink sm:p-6"
       >
         <header className="mb-4 flex items-center justify-between gap-3">
           <h2 id="ai-settings-title" className="font-display text-lg font-bold">

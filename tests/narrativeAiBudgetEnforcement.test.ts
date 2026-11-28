@@ -218,7 +218,7 @@ describe('narrative AI budget enforcement', () => {
     assert.deepEqual(preflight?.input, generation?.input);
     assert.equal(preflight?.instructions, generation?.instructions);
     assert.ok(typeof preflight?.instructions === 'string' && preflight.instructions.includes('conforms to this response schema'));
-    assert.equal(generation?.max_output_tokens, 2048);
+    assert.equal(generation?.max_output_tokens, 4096);
 
     requests.length = 0;
     count = 8_001;

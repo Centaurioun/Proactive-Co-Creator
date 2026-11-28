@@ -15,14 +15,21 @@ export interface RetryOptions {
   random?: () => number;
 }
 
+export function resolveAbortError(signal?: AbortSignal): AppApiError {
+  if (signal?.aborted && signal.reason instanceof AppApiError) {
+    return signal.reason;
+  }
+  return new AppApiError('CANCELLED', 'The request was cancelled.', 499, false);
+}
+
 export function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
-    return Promise.reject(new AppApiError('CANCELLED', 'The request was cancelled.', 499, false));
+    return Promise.reject(resolveAbortError(signal));
   }
   return new Promise((resolve, reject) => {
     const onAbort = () => {
       clearTimeout(timer);
-      reject(new AppApiError('CANCELLED', 'The request was cancelled.', 499, false));
+      reject(resolveAbortError(signal));
     };
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
@@ -80,19 +87,19 @@ export async function withRetry<T>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (options.signal?.aborted) {
-      throw new AppApiError('CANCELLED', 'The request was cancelled.', 499, false);
+      throw resolveAbortError(options.signal);
     }
 
     try {
       const value = await fn();
       if (options.signal?.aborted) {
-        throw new AppApiError('CANCELLED', 'The request was cancelled.', 499, false);
+        throw resolveAbortError(options.signal);
       }
       return value;
     } catch (error) {
       lastError = error;
       if (options.signal?.aborted) {
-        throw new AppApiError('CANCELLED', 'The request was cancelled.', 499, false);
+        throw resolveAbortError(options.signal);
       }
 
       if (attempt >= maxAttempts || !isRetryableGeminiError(error)) {

@@ -117,7 +117,17 @@ export default function WritingAssistantPanel({
   );
 
   const confirmedContext = useMemo(
-    () => (section ? extractConfirmedWritingContext(project, section.id) : { confirmedEntities: [], confirmedStoryBible: {}, styleGuidance: [] }),
+    () =>
+      section
+        ? extractConfirmedWritingContext(project, section.id)
+        : {
+            confirmedEntities: [],
+            confirmedStoryBible: {},
+            styleGuidance: [],
+            relevantRelationships: [],
+            epistemicNotes: [],
+            explicitExclusions: [],
+          },
     [project, section]
   );
 
@@ -137,6 +147,11 @@ export default function WritingAssistantPanel({
       confirmedEntities: confirmedContext.confirmedEntities,
       confirmedStoryBible: confirmedContext.confirmedStoryBible,
       styleGuidance: confirmedContext.styleGuidance,
+      ...(confirmedContext.sceneMetadata ? { sceneMetadata: confirmedContext.sceneMetadata } : {}),
+      ...(confirmedContext.precedingSceneContext ? { precedingSceneContext: confirmedContext.precedingSceneContext } : {}),
+      ...(confirmedContext.relevantRelationships.length > 0 ? { relevantRelationships: confirmedContext.relevantRelationships } : {}),
+      ...(confirmedContext.epistemicNotes.length > 0 ? { epistemicNotes: confirmedContext.epistemicNotes } : {}),
+      ...(confirmedContext.explicitExclusions.length > 0 ? { explicitExclusions: confirmedContext.explicitExclusions } : {}),
     };
   }, [project.id, project.revision, project.snapshot.manuscriptVersionId, section, action, customInstruction, validatedSelection, confirmedContext]);
 
@@ -260,7 +275,7 @@ export default function WritingAssistantPanel({
       </summary>
       <div className="mt-3 space-y-3 text-xs">
         <p className="text-gray-600 dark:text-gray-300">
-          Requests use only confirmed entities ({confirmedContext.confirmedEntities.length}), confirmed Story Bible fields ({Object.keys(confirmedContext.confirmedStoryBible).length}), and confirmed non-conflicting style notes ({confirmedContext.styleGuidance.length}). Unattributed beliefs and reported claims are excluded. Nothing edits your manuscript until you apply a proposal.
+          Bounded context: {confirmedContext.confirmedEntities.length} confirmed entit{confirmedContext.confirmedEntities.length === 1 ? 'y' : 'ies'}, {Object.keys(confirmedContext.confirmedStoryBible).length} Story Bible field(s), {confirmedContext.relevantRelationships.length} relationship(s), {confirmedContext.explicitExclusions.length} exclusion(s), {confirmedContext.styleGuidance.length} style note(s){confirmedContext.precedingSceneContext ? ', preceding scene excerpt' : ''}{confirmedContext.epistemicNotes.length > 0 ? `, and ${confirmedContext.epistemicNotes.length} separately labeled belief/reported note(s)` : ''}. Nothing edits your manuscript until you apply a proposal.
         </p>
 
         {!aiConfigured && (
