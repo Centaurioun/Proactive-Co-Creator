@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { WritingAssistProposalSchema, WritingAssistRequestSchema } from './narrativeAiSchemas.ts';
+import { creativeLockSchema, unifiedProposalSchema } from './unifiedProposalTypes.ts';
 
 const id = z.string().min(1);
 const offset = z.number().int().nonnegative();
@@ -214,4 +215,6 @@ export const narrativeSchema = z.strictObject({
     reason: z.string(),
     artifact: artifactAnchorSchema.optional(),
   })),
+  creativeLocks: z.array(creativeLockSchema).optional(),
+  unifiedProposals: z.array(unifiedProposalSchema).optional(),
 });

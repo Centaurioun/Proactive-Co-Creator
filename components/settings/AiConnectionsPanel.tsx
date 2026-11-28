@@ -33,6 +33,8 @@ import type {
 import { CONNECTION_LABELS, ConnectionCard, SETTINGS_BUTTON_CLASS } from './ConnectionCard';
 import { ModelPreferencesSection } from './ModelPreferencesSection';
 import { OperationOverridesSection } from './OperationOverridesSection';
+import { EmbeddingsSearchSettingsTab } from './EmbeddingsSearchSettingsTab';
+import type { CreativeProject } from '../../shared/types';
 
 const BASE = '/api/ai/provider-hub';
 const VALID_CONNECTION_IDS = new Set<AiConnectionId>(['gemini-managed', 'gemini-personal', 'chatgpt-plan', 'openai-api']);
@@ -77,7 +79,11 @@ function readLocalStoredPreferences(fallback: ProviderPreferences): ProviderPref
   }
 }
 
-export default function AiConnectionsPanel() {
+export interface AiConnectionsPanelProps {
+  project?: CreativeProject | null;
+}
+
+export default function AiConnectionsPanel({ project }: AiConnectionsPanelProps) {
   const [activeTab, setActiveTab] = useState<AiSettingsTabId>('overview');
   const [status, setStatus] = useState<ProviderHubStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -734,21 +740,9 @@ export default function AiConnectionsPanel() {
           </div>
 
           <div
-            id="ai-settings-panel-embeddings"
-            role="tabpanel"
-            aria-labelledby="ai-settings-tab-embeddings"
             hidden={activeTab !== 'embeddings'}
-            className="rounded border border-dashed border-pcc-line bg-pcc-canvas p-5 dark:border-pcc-dark-line dark:bg-pcc-dark-canvas"
           >
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              Embeddings &amp; Semantic Search
-            </h3>
-            <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">
-              Not yet implemented — scheduled for WP02.
-            </p>
-            <p className="mt-1.5 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
-              Dedicated embedding provider configuration, local manuscript indexing, and semantic memory retrieval will be introduced in Work Package 02. No background embedding jobs or network calls are active in this version.
-            </p>
+            <EmbeddingsSearchSettingsTab project={project} />
           </div>
 
           <div

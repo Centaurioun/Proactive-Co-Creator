@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ManuscriptSection } from '../../shared/narrativeTypes';
 import type { CreativeProject } from '../../shared/types';
 import type { WritingAssistAction, WritingAssistProposal } from '../../shared/narrativeAiSchemas';
+import type { UnifiedProposal } from '../../shared/unifiedProposalTypes';
 import { buildClientBudgetDisclosure } from '../../lib/narrative/aiBudgetClient';
+import { buildUnifiedProposalFromWritingAssist } from '../../lib/narrative/proposals/unifiedProposalEngine';
 import {
   applyWritingSelectionEdit,
   computeTextDigest,
@@ -60,6 +62,8 @@ interface WritingAssistantPanelProps {
     rationale: string;
     assumptions: string[];
   }) => void;
+  onOpenContextInspector?: (sectionId?: string) => void;
+  onReviewUnifiedProposal?: (proposal: UnifiedProposal) => void;
 }
 
 export default function WritingAssistantPanel({
@@ -72,6 +76,8 @@ export default function WritingAssistantPanel({
   onReplaceOrInsert,
   onCreateSceneFromProposal,
   onSaveAlternative,
+  onOpenContextInspector,
+  onReviewUnifiedProposal,
 }: WritingAssistantPanelProps) {
   const [action, setAction] = useState<WritingAssistAction>('continue');
   const [customInstruction, setCustomInstruction] = useState('');
@@ -269,7 +275,7 @@ export default function WritingAssistantPanel({
   };
 
   return (
-    <details className="mb-4 rounded-lg border border-blue-200 bg-blue-50/30 p-3 dark:border-blue-900/60 dark:bg-blue-950/20">
+    <details open className="mb-4 rounded-lg border border-blue-200 bg-blue-50/30 p-3 dark:border-blue-900/60 dark:bg-blue-950/20">
       <summary className="cursor-pointer font-semibold text-sm text-gray-900 dark:text-gray-100">
         AI Writing Assistant (Selection-Aware · Review Before Applying)
       </summary>
@@ -361,6 +367,16 @@ export default function WritingAssistantPanel({
           >
             {loading ? 'Generating proposals…' : `Generate ${activeOption?.label ?? 'AI'} Proposals`}
           </button>
+          {onOpenContextInspector && (
+            <button
+              type="button"
+              data-testid="writing-assist-inspect-context-btn"
+              className={workspaceButton}
+              onClick={() => onOpenContextInspector(section?.id)}
+            >
+              Inspect Context &amp; Locks
+            </button>
+          )}
           {generated && (
             <button type="button" className={workspaceButton} onClick={() => setGenerated(null)}>
               Dismiss Proposals
@@ -405,6 +421,27 @@ export default function WritingAssistantPanel({
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-1.5 pt-1">
+                  {onReviewUnifiedProposal && section && (
+                    <button
+                      type="button"
+                      data-testid="review-in-unified-proposal-engine-btn"
+                      disabled={isStale || disabled}
+                      onClick={() => {
+                        const unified = buildUnifiedProposalFromWritingAssist({
+                          project,
+                          sectionId: section.id,
+                          selectionStart: generated.start,
+                          selectionEnd: generated.end,
+                          proposal,
+                          actionLabel: activeOption?.label ?? generated.action,
+                        });
+                        onReviewUnifiedProposal(unified);
+                      }}
+                      className="rounded border border-indigo-600 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-800 hover:bg-indigo-100 disabled:opacity-40 dark:border-indigo-500 dark:bg-indigo-950/40 dark:text-indigo-200"
+                    >
+                      Review in Proposal Engine (E3)
+                    </button>
+                  )}
                   {generated.selectedText && (
                     <button
                       type="button"

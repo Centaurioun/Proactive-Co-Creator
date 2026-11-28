@@ -137,8 +137,21 @@ function buildEpistemicSourceMap(project: Pick<CreativeProject, 'narrative'>): M
 export function buildReviewModelPayload(project: Pick<CreativeProject, 'snapshot' | 'narrative'>) {
   const snapshot = project.snapshot;
   const epistemicSources = buildEpistemicSourceMap(project);
-  const entities = snapshot.entities
-    .filter((e) => e.category !== 'scene')
+
+  // Rank entities so active, non-excluded entities with attributes/descriptions take priority
+  // over unconfirmed stubs when fitting within the request schema's 80-entity transport cap.
+  const allNonSceneEntities = snapshot.entities.filter((e) => e.category !== 'scene');
+  const sortedEntities = [...allNonSceneEntities].sort((a, b) => {
+    const aEx = a.excluded ? 1 : 0;
+    const bEx = b.excluded ? 1 : 0;
+    if (aEx !== bEx) return aEx - bEx;
+    const aConf = a.status === 'confirmed' ? 1 : 0;
+    const bConf = b.status === 'confirmed' ? 1 : 0;
+    if (aConf !== bConf) return bConf - aConf;
+    return (b.attributes?.length ?? 0) - (a.attributes?.length ?? 0);
+  });
+
+  const entities = sortedEntities
     .slice(0, 80)
     .map((e) => {
       const entityId = e.id ?? e.name;
@@ -173,7 +186,18 @@ export function buildReviewModelPayload(project: Pick<CreativeProject, 'snapshot
       };
     });
 
-  const relationships = snapshot.relationships.slice(0, 100).map((r) => ({
+  const includedEntityNames = new Set(entities.map((e) => e.name.toLowerCase()));
+  const sortedRelationships = [...snapshot.relationships].sort((a, b) => {
+    const aScore =
+      (includedEntityNames.has(a.source.toLowerCase()) ? 1 : 0) +
+      (includedEntityNames.has(a.target.toLowerCase()) ? 1 : 0);
+    const bScore =
+      (includedEntityNames.has(b.source.toLowerCase()) ? 1 : 0) +
+      (includedEntityNames.has(b.target.toLowerCase()) ? 1 : 0);
+    return bScore - aScore;
+  });
+
+  const relationships = sortedRelationships.slice(0, 100).map((r) => ({
     id: r.id,
     sourceId: r.sourceId,
     targetId: r.targetId,

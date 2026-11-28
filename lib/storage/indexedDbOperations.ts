@@ -4,7 +4,15 @@
  */
 
 import type { CreativeProject } from '../../shared/types.ts';
-import { IDB_NAME, IDB_STORE, IMPORT_CHECKPOINT_STORE, type DurableWriteOptions, type StorageSaveResult } from './constants.ts';
+import {
+  IDB_NAME,
+  IDB_STORE,
+  IMPORT_CHECKPOINT_STORE,
+  NARRATIVE_INDEX_STORE,
+  NARRATIVE_VECTOR_STORE,
+  type DurableWriteOptions,
+  type StorageSaveResult,
+} from './constants.ts';
 import { evaluateCasConflict, mergeIntentIds } from './casPolicy.ts';
 
 export function getIndexedDb(): { factory?: IDBFactory; error?: string } {
@@ -17,6 +25,39 @@ export function getIndexedDb(): { factory?: IDBFactory; error?: string } {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+function upgradeProjectDatabase(database: IDBDatabase): void {
+  if (!database.objectStoreNames.contains(IDB_STORE)) {
+    database.createObjectStore(IDB_STORE, { keyPath: 'id' });
+  }
+  if (!database.objectStoreNames.contains(IMPORT_CHECKPOINT_STORE)) {
+    database.createObjectStore(IMPORT_CHECKPOINT_STORE, { keyPath: 'id' });
+  }
+  if (!database.objectStoreNames.contains(NARRATIVE_INDEX_STORE)) {
+    database.createObjectStore(NARRATIVE_INDEX_STORE, { keyPath: 'projectId' });
+  }
+  if (!database.objectStoreNames.contains(NARRATIVE_VECTOR_STORE)) {
+    database.createObjectStore(NARRATIVE_VECTOR_STORE, { keyPath: 'id' });
+  }
+}
+
+export function getDb(): Promise<IDBDatabase> {
+  const { factory, error } = getIndexedDb();
+  if (!factory) {
+    return Promise.reject(new Error(error || 'IndexedDB is unavailable in this environment.'));
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const request = factory.open(IDB_NAME, 3);
+      request.onupgradeneeded = () => upgradeProjectDatabase(request.result);
+      request.onerror = () => reject(request.error || new Error('Could not open IndexedDB.'));
+      request.onblocked = () => reject(new Error('Another tab is blocking IndexedDB initialization.'));
+      request.onsuccess = () => resolve(request.result);
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 function withProjectDatabase<Result>(
@@ -43,13 +84,9 @@ function withProjectDatabase<Result>(
       finish(failed(message, quotaExceeded));
     };
     try {
-      const request = factory.open(IDB_NAME, 2);
+      const request = factory.open(IDB_NAME, 3);
       request.onupgradeneeded = () => {
-        const database = request.result;
-        if (!database.objectStoreNames.contains(IDB_STORE)) database.createObjectStore(IDB_STORE, { keyPath: 'id' });
-        if (!database.objectStoreNames.contains(IMPORT_CHECKPOINT_STORE)) {
-          database.createObjectStore(IMPORT_CHECKPOINT_STORE, { keyPath: 'id' });
-        }
+        upgradeProjectDatabase(request.result);
       };
       request.onerror = () => fail(request.error, 'Could not open IndexedDB.');
       request.onblocked = () => fail(undefined, 'Another tab is blocking IndexedDB initialization.');
@@ -85,8 +122,28 @@ export function readIdbProjects(factory: IDBFactory): Promise<ReadResult> {
 
 export function deleteIdbProject(factory: IDBFactory, projectId: string): Promise<{ ok: boolean; error?: string }> {
   return withProjectDatabase<{ ok: boolean; error?: string }>(factory, error => ({ ok: false, error }), (db, finish, fail) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const stores = [IDB_STORE];
+    if (db.objectStoreNames.contains(NARRATIVE_INDEX_STORE)) stores.push(NARRATIVE_INDEX_STORE);
+    if (db.objectStoreNames.contains(NARRATIVE_VECTOR_STORE)) stores.push(NARRATIVE_VECTOR_STORE);
+    const tx = db.transaction(stores, 'readwrite');
     const request = tx.objectStore(IDB_STORE).delete(projectId);
+    if (stores.includes(NARRATIVE_INDEX_STORE)) {
+      tx.objectStore(NARRATIVE_INDEX_STORE).delete(projectId);
+    }
+    if (stores.includes(NARRATIVE_VECTOR_STORE)) {
+      const vecStore = tx.objectStore(NARRATIVE_VECTOR_STORE);
+      const cursorReq = vecStore.openCursor();
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (cursor) {
+          const val = cursor.value as { projectId?: string; id?: string };
+          if (val?.projectId === projectId || (typeof val?.id === 'string' && val.id.startsWith(`${projectId}::`))) {
+            cursor.delete();
+          }
+          cursor.continue();
+        }
+      };
+    }
     request.onerror = () => fail(request.error, 'Could not delete the IndexedDB project.');
     tx.onerror = tx.onabort = () => fail(tx.error, 'IndexedDB delete transaction failed.');
     tx.oncomplete = () => finish({ ok: true });

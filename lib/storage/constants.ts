@@ -15,6 +15,8 @@ export const LOCAL_STORAGE_DELETED_IDS_KEY = 'proactive_co_creator_deleted_ids_v
 export const IDB_NAME = 'proactive_co_creator_db_v2';
 export const IDB_STORE = 'projects';
 export const IMPORT_CHECKPOINT_STORE = 'analysis-checkpoints';
+export const NARRATIVE_INDEX_STORE = 'narrative-memory-index';
+export const NARRATIVE_VECTOR_STORE = 'narrative-vector-store';
 
 export interface DurableWriteOptions {
   expectedPersistedRevision?: number;

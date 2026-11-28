@@ -21,6 +21,7 @@ import {
   shouldOpenAdoptionOnPropChange,
 } from './manuscriptEditorHelpers';
 import type { WritingAssistAction } from '../../shared/narrativeAiSchemas';
+import type { UnifiedProposal } from '../../shared/unifiedProposalTypes';
 import type { DraftFlushResult } from '../../lib/controller/navigationFlush';
 import type { HydrationWriteGate } from '../../lib/controller/projectListSync';
 
@@ -75,6 +76,8 @@ interface Props {
   onExportDraft: (sections: ManuscriptSection[]) => void;
   flushDraftRef?: React.MutableRefObject<(() => Promise<DraftFlushResult>) | null>;
   hydrationGate?: HydrationWriteGate;
+  onOpenContextInspector?: (sectionId?: string) => void;
+  onReviewUnifiedProposal?: (proposal: UnifiedProposal) => void;
 }
 
 function deriveManuscriptMetadata(
@@ -117,6 +120,8 @@ export default function ManuscriptEditor({
   onExportDraft,
   flushDraftRef,
   hydrationGate,
+  onOpenContextInspector,
+  onReviewUnifiedProposal,
 }: Props) {
   const [selectedId, setSelectedId] = useState(focusedSectionId ?? '');
   const [prevFocusedSectionId, setPrevFocusedSectionId] = useState(focusedSectionId);
@@ -471,6 +476,8 @@ export default function ManuscriptEditor({
                   setSelectionRange({ start: 0, end: 0 });
                 }}
                 onSaveAlternative={(alt) => onSaveWritingAlternative?.(alt)}
+                onOpenContextInspector={onOpenContextInspector}
+                onReviewUnifiedProposal={onReviewUnifiedProposal}
               />
             </div>
           </div>

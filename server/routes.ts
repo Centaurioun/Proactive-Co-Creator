@@ -56,6 +56,7 @@ import { AppApiError, classifyGeminiError } from './errors.ts';
 import { hasConfiguredGeminiKey } from './geminiClient.ts';
 import { GEMINI_MODELS } from './models.ts';
 import { createProviderHubRouter, resolveClientSelection, type ProviderHubRouterOptions } from './providerHubRoutes.ts';
+import { createEmbeddingRouter } from './embeddings/embeddingRoutes.ts';
 import { getAiProviderRequestContext, runWithAiProviderContext } from './providers/requestContext.ts';
 import { CAPABILITY_POLICY_VERSION, assertModelOperation, assertProviderOperation, assertReasoningSelection } from './providers/policy.ts';
 import {
@@ -369,7 +370,12 @@ export function createApiRouter(
   });
 
   router.use(async (req, res, next) => {
-    if (req.path === '/health' || req.path === '/ai/capabilities' || req.path.startsWith('/ai/provider-hub/')) {
+    if (
+      req.path === '/health' ||
+      req.path === '/ai/capabilities' ||
+      req.path.startsWith('/ai/provider-hub/') ||
+      req.path.startsWith('/ai/embeddings/')
+    ) {
       next();
       return;
     }
@@ -393,6 +399,7 @@ export function createApiRouter(
   });
 
   router.use('/ai/provider-hub', createProviderHubRouter(options.chatGptProviderHubTestInjection));
+  router.use('/ai/embeddings', createEmbeddingRouter());
 
   registerJsonPostRoute(router, '/analyze', AnalyzeRequestSchema, 'Invalid analysis request.', async (data, signal) => ({
     graph: await handlers.analyzeBeliefGraph(data.prompt, data.mode, signal),

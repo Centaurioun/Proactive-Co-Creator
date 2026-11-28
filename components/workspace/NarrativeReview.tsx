@@ -21,6 +21,11 @@ import {
 import { computeSnapshotDigest } from '../../lib/historyEngine';
 import { manuscriptSections } from '../../lib/narrative/manuscriptModel';
 import { computeSyncFreshness } from '../../lib/narrative/sync/syncProposals';
+import type { UnifiedProposal } from '../../shared/unifiedProposalTypes';
+import {
+  buildUnifiedProposalFromDiagnosticFix,
+  buildUnifiedProposalFromSyncItems,
+} from '../../lib/narrative/proposals/unifiedProposalEngine';
 import {
   requestDiagnosticFixSuggestions,
   requestNarrativeSyncAnalysis,
@@ -85,6 +90,8 @@ interface Props {
   resumeProposalReview?: PendingProposalReview;
   onClearResumedProposalReview?: () => void;
   autoAnalysisCallsUsed?: number;
+  onOpenContextInspector?: () => void;
+  onReviewUnifiedProposal?: (proposal: UnifiedProposal) => void;
 }
 
 const DEFAULT_AUTO_PREFS: NonNullable<NarrativeRecords['automationPreferences']> = {
@@ -117,6 +124,8 @@ export default function NarrativeReview({
   resumeProposalReview,
   onClearResumedProposalReview,
   autoAnalysisCallsUsed = 0,
+  onOpenContextInspector,
+  onReviewUnifiedProposal,
 }: Props) {
   const currentProjectRef = useRef(project);
   const mountedRef = useRef(true);
@@ -449,6 +458,56 @@ export default function NarrativeReview({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {onOpenContextInspector && (
+              <button
+                type="button"
+                data-testid="review-open-context-inspector-btn"
+                className={workspaceButton}
+                onClick={onOpenContextInspector}
+              >
+                Context Inspector
+              </button>
+            )}
+            {onReviewUnifiedProposal && fixPanelIssueId && fixAlternativesByIssue[fixPanelIssueId] && (
+              <button
+                type="button"
+                data-testid="review-fix-in-proposal-engine-btn"
+                className="min-h-10 rounded-md border border-indigo-600 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-800 hover:bg-indigo-100 dark:border-indigo-500 dark:bg-indigo-950/50 dark:text-indigo-200"
+                onClick={() => {
+                  const issue = issues.find((i) => i.id === fixPanelIssueId);
+                  const entry = fixAlternativesByIssue[fixPanelIssueId];
+                  const selectedId = selectedFixIds[fixPanelIssueId];
+                  const alt = entry?.alternatives.find((a) => a.id === selectedId) ?? entry?.alternatives[0];
+                  if (issue && alt) {
+                    const unified = buildUnifiedProposalFromDiagnosticFix({
+                      project,
+                      issueTitle: issue.title,
+                      alternative: alt,
+                    });
+                    onReviewUnifiedProposal(unified);
+                  }
+                }}
+              >
+                Review Selected Fix in Proposal Engine (E3)
+              </button>
+            )}
+            {onReviewUnifiedProposal && syncResult && (syncResult.modelProposals.length > 0 || syncResult.manuscriptPatches.length > 0) && (
+              <button
+                type="button"
+                data-testid="review-sync-in-proposal-engine-btn"
+                className="min-h-10 rounded-md border border-indigo-600 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-800 hover:bg-indigo-100 dark:border-indigo-500 dark:bg-indigo-950/50 dark:text-indigo-200"
+                onClick={() => {
+                  const unified = buildUnifiedProposalFromSyncItems({
+                    project,
+                    modelProposals: syncResult.modelProposals,
+                    manuscriptPatches: syncResult.manuscriptPatches,
+                  });
+                  onReviewUnifiedProposal(unified);
+                }}
+              >
+                Review Sync Items in Proposal Engine (E3)
+              </button>
+            )}
             <button type="button" className={workspaceButton} onClick={openChecks}>Plan Checks ({consistencyIssues.length})</button>
             {openOpportunities && (
               <button type="button" className={workspaceButton} onClick={openOpportunities}>Creative Opportunities</button>

@@ -22,6 +22,14 @@ import InfoModal from './components/InfoModal';
 import OutputDisplay from './components/OutputGallery';
 import PromptInput from './components/PromptInput';
 import WorkspaceBottomBar from './components/WorkspaceBottomBar';
+import { NarrativeSearchModal } from './components/workspace/NarrativeSearchModal';
+import { ContextInspectorModal } from './components/workspace/ContextInspectorModal';
+import { UnifiedProposalReviewModal } from './components/workspace/UnifiedProposalReviewModal';
+import type { CreativeLock, UnifiedProposal } from './shared/unifiedProposalTypes';
+import {
+  buildUnifiedProposalFromBatchEdit,
+  prepareUnifiedProposalAtomicCommit,
+} from './lib/narrative/proposals/unifiedProposalEngine';
 import { manuscriptSections, manuscriptText } from './lib/narrative/manuscriptModel';
 import { parseProjectBackup, registryReport, safeFilename } from './lib/narrative/recovery';
 import {
@@ -170,6 +178,12 @@ function App() {
     () => new Set()
   );
   const [isReviewModalOpen, setIsReviewModalOpen] = useState<boolean>(false);
+  const [showSearchModal, setShowSearchModal] = useState<boolean>(false);
+  const [showContextInspector, setShowContextInspector] = useState<boolean>(false);
+  const [activeUnifiedProposal, setActiveUnifiedProposal] = useState<UnifiedProposal | null>(null);
+  const [showUnifiedProposalModal, setShowUnifiedProposalModal] = useState<boolean>(false);
+  const [unifiedProposalInitialTab, setUnifiedProposalInitialTab] = useState<'diff' | 'changemap' | 'locks'>('diff');
+  const [lastUndoProposal, setLastUndoProposal] = useState<UnifiedProposal | null>(null);
   const [statusNotification, setStatusNotification] = useState<string | null>(null);
   const [storageAlert, setStorageAlert] = useState<StorageConflictAlert | null>(null);
 
@@ -794,6 +808,91 @@ function App() {
         : null,
   });
 
+  const handleOpenUnifiedProposalReview = useCallback(
+    (proposal: UnifiedProposal, initialTab: 'diff' | 'changemap' | 'locks' = 'diff') => {
+      if (
+        !shouldAllowNonDestructiveOverlay({
+          isCompositionPending: () => compositionPendingRef.current,
+          notify: setStatusNotification,
+        })
+      ) {
+        return;
+      }
+      setActiveUnifiedProposal(proposal);
+      setUnifiedProposalInitialTab(initialTab);
+      setShowUnifiedProposalModal(true);
+    },
+    []
+  );
+
+  const handleApplyUnifiedProposal = useCallback(
+    async (proposal: UnifiedProposal): Promise<{ ok: boolean; message?: string }> => {
+      const current = activeProjectRef.current;
+      const prepared = prepareUnifiedProposalAtomicCommit(current, undoStateRef.current, proposal);
+      if (!prepared.ok) {
+        return { ok: false, message: prepared.message };
+      }
+      hasLocalEditsSinceMountRef.current = true;
+      publishCurrentProject(prepared.project, prepared.undoHistory);
+      const nextSaved = savedProjectsRef.current.map((p) =>
+        p.id === prepared.project.id ? prepared.project : p
+      );
+      savedProjectsRef.current = nextSaved;
+      setSavedProjects(nextSaved);
+      setActiveUnifiedProposal(prepared.appliedProposal);
+      setLastUndoProposal(prepared.inverseProposal);
+      if (canWriteWorkspace()) {
+        await flushProjectDurably(prepared.project, {
+          expectedPersistedRevision: current.persistedRevision,
+          intentId: prepared.intentId,
+        });
+      }
+      setStatusNotification(
+        `Applied proposal "${proposal.title}" atomically (Revision #${prepared.project.revision}).`
+      );
+      return {
+        ok: true,
+        message: `Applied "${proposal.title}" at Revision #${prepared.project.revision}. Undo is ready if needed.`,
+      };
+    },
+    [canWriteWorkspace, flushProjectDurably, publishCurrentProject]
+  );
+
+  const handleSaveCreativeLocks = useCallback(
+    (locks: CreativeLock[]) => {
+      const current = activeProjectRef.current;
+      const nextRecords = {
+        ...(current.narrative ?? {
+          versions: [],
+          sectionVersions: [],
+          sources: [],
+          claims: [],
+          issues: [],
+          audit: [],
+        }),
+        creativeLocks: locks,
+      };
+      const updatedProject: CreativeProject = {
+        ...current,
+        updatedAt: Date.now(),
+        narrative: nextRecords,
+      };
+      hasLocalEditsSinceMountRef.current = true;
+      publishCurrentProject(updatedProject, undoStateRef.current);
+      const nextSaved = savedProjectsRef.current.map((p) =>
+        p.id === updatedProject.id ? updatedProject : p
+      );
+      savedProjectsRef.current = nextSaved;
+      setSavedProjects(nextSaved);
+      if (canWriteWorkspace()) {
+        void flushProjectDurably(updatedProject, {
+          expectedPersistedRevision: current.persistedRevision,
+        });
+      }
+    },
+    [canWriteWorkspace, flushProjectDurably, publishCurrentProject]
+  );
+
   return (
     <div
       className={`${
@@ -885,6 +984,66 @@ function App() {
         >
           AI settings
         </button>
+        <button
+          type="button"
+          data-testid="open-narrative-search-btn"
+          className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
+          onClick={() => {
+            if (
+              shouldAllowNonDestructiveOverlay({
+                isCompositionPending: () => compositionPendingRef.current,
+                notify: setStatusNotification,
+              })
+            ) {
+              setShowSearchModal(true);
+            }
+          }}
+          aria-haspopup="dialog"
+        >
+          Search &amp; Memory
+        </button>
+        <button
+          type="button"
+          data-testid="open-context-inspector-btn"
+          className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
+          onClick={() => {
+            if (
+              shouldAllowNonDestructiveOverlay({
+                isCompositionPending: () => compositionPendingRef.current,
+                notify: setStatusNotification,
+              })
+            ) {
+              setShowContextInspector(true);
+            }
+          }}
+          aria-haspopup="dialog"
+        >
+          Context Inspector
+        </button>
+        <button
+          type="button"
+          data-testid="open-unified-proposal-engine-btn"
+          className="min-h-11 rounded-md px-3 text-sm font-medium text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas"
+          onClick={() => {
+            if (
+              !shouldAllowNonDestructiveOverlay({
+                isCompositionPending: () => compositionPendingRef.current,
+                notify: setStatusNotification,
+              })
+            ) {
+              return;
+            }
+            if (!activeUnifiedProposal && stagedBatchPreview) {
+              const converted = buildUnifiedProposalFromBatchEdit(activeProject, stagedBatchPreview);
+              setActiveUnifiedProposal(converted);
+              setUnifiedProposalInitialTab('diff');
+            }
+            setShowUnifiedProposalModal(true);
+          }}
+          aria-haspopup="dialog"
+        >
+          Proposals &amp; Locks (E3)
+        </button>
         <div className="ml-auto flex flex-wrap justify-end gap-1 sm:hidden">
           <button
             type="button"
@@ -946,6 +1105,11 @@ function App() {
           canUndo={undoState.past.length > 0}
           canRedo={undoState.future.length > 0}
           enabled={hydrationGate === 'ready' && typeof window !== 'undefined' && Boolean(window.indexedDB)}
+          onOpenContextInspector={(secId) => {
+            if (secId) setFocusedSectionId(secId);
+            setShowContextInspector(true);
+          }}
+          onReviewUnifiedProposal={(proposal) => handleOpenUnifiedProposalReview(proposal, 'diff')}
         />
       </div>
 
@@ -998,6 +1162,8 @@ function App() {
                 }
                 setWorkspaceMode('write');
               }}
+              onOpenContextInspector={() => setShowContextInspector(true)}
+              onReviewUnifiedProposal={(proposal) => handleOpenUnifiedProposalReview(proposal, 'diff')}
             />
           </Suspense>
         </ChunkErrorBoundary>
@@ -1391,10 +1557,50 @@ function App() {
           returnLabel="Close"
         >
           <Suspense fallback={<LazyViewFallback label="AI settings" />}>
-            <AiConnectionsPanel />
+            <AiConnectionsPanel project={activeProject} />
           </Suspense>
         </ChunkErrorBoundary>
       </AiSettingsModal>
+
+      <NarrativeSearchModal
+        isOpen={showSearchModal}
+        onClose={() => setShowSearchModal(false)}
+        project={activeProject}
+        onJumpToSection={(sectionId) => {
+          setShowSearchModal(false);
+          navigateWithFlush(() => {
+            setFocusedSectionId(sectionId);
+            setWorkspaceMode('write');
+          });
+        }}
+        onOpenAiSettings={() => {
+          setShowSearchModal(false);
+          openAiSettingsModal();
+        }}
+      />
+
+      <ContextInspectorModal
+        isOpen={showContextInspector}
+        onClose={() => setShowContextInspector(false)}
+        project={activeProject}
+        activeSectionId={focusedSectionId ?? manuscriptSections(activeProject)[0]?.id}
+        onOpenLocksManager={() => {
+          setShowContextInspector(false);
+          setUnifiedProposalInitialTab('locks');
+          setShowUnifiedProposalModal(true);
+        }}
+      />
+
+      <UnifiedProposalReviewModal
+        isOpen={showUnifiedProposalModal}
+        onClose={() => setShowUnifiedProposalModal(false)}
+        project={activeProject}
+        proposal={activeUnifiedProposal}
+        lastUndoProposal={lastUndoProposal}
+        onApplyProposal={handleApplyUnifiedProposal}
+        onSaveLocks={handleSaveCreativeLocks}
+        initialTab={unifiedProposalInitialTab}
+      />
     </div>
   );
 }
