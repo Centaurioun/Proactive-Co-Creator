@@ -132,7 +132,7 @@ const AiOpportunityExplorer: React.FC<AiOpportunityExplorerProps> = ({
   const handleExplore = async () => {
     if (exploring) return;
     if (!aiConfigured) {
-      setExploreError('Server Gemini API key is not configured. Add a server key to run AI opportunity exploration.');
+      setExploreError('No AI provider is configured. Connect a provider in AI Settings to run AI opportunity exploration.');
       return;
     }
     if (selectedCategories.length === 0) {
@@ -206,7 +206,7 @@ const AiOpportunityExplorer: React.FC<AiOpportunityExplorerProps> = ({
       </h4>
       {!aiConfigured && (
         <p role="status" className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-          AI exploration is unavailable because the server Gemini API key is not configured. You can still record, stage, and review manual ideas below.
+          AI exploration is unavailable because no AI provider is currently connected. Configure a provider in AI Settings; you can still record, stage, and review manual ideas below.
         </p>
       )}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs">

@@ -29,13 +29,21 @@ test('unsupported providers fail closed instead of selecting another billing pat
   assert.throws(() => assertProviderOperation('openai-api', 'image'), /does not support image/);
 });
 
-test('ChatGPT plan text models are not advertised for PCC operations without enforced token budgets', () => {
+test('ChatGPT plan verified text models support bounded PCC text operations while image stays unsupported', () => {
   const model = describeChatGptModel({ id: 'gpt-6.2-sol', displayName: 'Sol' }, 'chatgpt-plan');
   assert.equal(model.textGeneration.state, 'supported');
-  assert.equal(model.operationCapabilities.writing?.state, 'unsupported');
-  assert.equal(model.operationCapabilities['narrative-import']?.state, 'unsupported');
-  assert.equal(hasSupportedOperation(model), false);
-  assert.throws(() => assertModelOperation(model, 'story'), /no verified capability/);
+  assert.equal(model.operationCapabilities.story?.state, 'supported');
+  assert.equal(model.operationCapabilities.writing?.state, 'supported');
+  assert.equal(model.operationCapabilities['narrative-import']?.state, 'supported');
+  assert.equal(model.operationCapabilities.diagnostics?.state, 'supported');
+  assert.equal(model.operationCapabilities.sync?.state, 'supported');
+  assert.equal(model.operationCapabilities.opportunities?.state, 'supported');
+  assert.equal(model.operationCapabilities.image?.state, 'unsupported');
+  assert.equal(model.outputLimit.state, 'unknown');
+  assert.equal(hasSupportedOperation(model), true);
+  assert.doesNotThrow(() => assertModelOperation(model, 'story'));
+  assert.doesNotThrow(() => assertModelOperation(model, 'diagnostics'));
+  assert.throws(() => assertModelOperation(model, 'image'), /no verified capability/);
 });
 
 test('OpenAI API operation capability requires exact known model policy', () => {
@@ -47,7 +55,7 @@ test('OpenAI API operation capability requires exact known model policy', () => 
   assert.equal(hasSupportedOperation(unknown), false);
 });
 
-test('all ten historically observed account slugs have exact API evidence while account catalog and SIWC eligibility stay distinct', () => {
+test('all ten historically observed account slugs have exact API evidence while keeping ChatGPT outputLimit distinct from OpenAI API', () => {
   assert.equal(new Set(observedAccountSlugs).size, 10);
   for (const slug of observedAccountSlugs) {
     const accountModel = describeChatGptModel({ id: slug, displayName: slug }, 'chatgpt-plan');
@@ -65,10 +73,10 @@ test('all ten historically observed account slugs have exact API evidence while 
     assert.equal(accountModel.structuredOutput.state, 'supported');
     assert.equal(accountModel.contextLimit.state, 'supported');
     assert.equal(accountModel.outputLimit.state, 'unknown');
-    assert.equal(accountModel.operationCapabilities.story?.state, 'unsupported');
-    assert.ok(accountModel.operationCapabilities.story?.state === 'unsupported');
-    assert.ok(accountModel.operationCapabilities.story.evidence.some(item => item.reference.endsWith('/preview-limitations')));
-    assert.equal(hasSupportedOperation(accountModel), false);
+    assert.equal(accountModel.operationCapabilities.story?.state, 'supported');
+    assert.equal(accountModel.operationCapabilities.diagnostics?.state, 'supported');
+    assert.equal(accountModel.operationCapabilities.image?.state, 'unsupported');
+    assert.equal(hasSupportedOperation(accountModel), true);
 
     assert.ok(apiModel.availability.state === 'supported');
     assert.equal(apiModel.availability.evidence[0]?.source, 'account-catalog');
@@ -83,6 +91,6 @@ test('unknown exact account slugs stay default-only and do not gain transport or
   assert.equal(model.textGeneration.state, 'unknown');
   assert.equal(model.reasoning.state, 'unknown');
   assert.deepEqual(getSupportedReasoningLevels(model), ['default']);
-  assert.equal(model.operationCapabilities.story?.state, 'unsupported');
+  assert.equal(model.operationCapabilities.story?.state, 'unknown');
   assert.equal(hasSupportedOperation(model), false);
 });

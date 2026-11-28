@@ -108,29 +108,36 @@ test('normal Story gives an explicit provider override precedence over the saved
   }
 });
 
-test('normal Story rejects nonqualified ChatGPT default reasoning without transport or provider fallback', async () => {
+test('normal Story forwards documented ChatGPT non-default reasoning with exact model and action identity', async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
   installPreferences(JSON.stringify({ defaultConnectionId: 'chatgpt-plan', defaultTextModelId: 'gpt-6-luna', defaultReasoningLevel: 'medium' }));
-  let calls = 0;
-  globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+  let observedHeaders: Headers | undefined;
+  globalThis.fetch = async (_input, init) => {
+    observedHeaders = new Headers(init?.headers);
+    return new Response(JSON.stringify({ story: 'Medium reasoning story.' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
   try {
-    await assert.rejects(() => generateStoryFromPrompt('Synthetic story.', undefined, 'ui-story-action-0003'), /GPT-6 Luna with Default reasoning/);
-    assert.equal(calls, 0);
+    const res = await generateStoryFromPrompt('Synthetic story.', undefined, 'ui-story-action-0003');
+    assert.equal(res.story, 'Medium reasoning story.');
+    assert.equal(observedHeaders?.get('x-pcc-ai-connection'), 'chatgpt-plan');
+    assert.equal(observedHeaders?.get('x-pcc-ai-model'), 'gpt-6-luna');
+    assert.equal(observedHeaders?.get('x-pcc-ai-reasoning'), 'medium');
+    assert.equal(observedHeaders?.get('x-pcc-story-request-id'), 'ui-story-action-0003');
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
   }
 });
 
-test('normal Story rejects an incomplete ChatGPT default instead of silently selecting a model or reasoning level', async () => {
+test('normal Story rejects an incomplete ChatGPT default instead of silently selecting a model', async () => {
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
   installPreferences(JSON.stringify({ defaultConnectionId: 'chatgpt-plan' }));
   let calls = 0;
   globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
   try {
-    await assert.rejects(() => generateStoryFromPrompt('Synthetic story.', undefined, 'ui-story-action-0004'), /Choose an account model and reasoning level explicitly/);
+    await assert.rejects(() => generateStoryFromPrompt('Synthetic story.', undefined, 'ui-story-action-0004'), /Choose an account model explicitly/);
     assert.equal(calls, 0);
   } finally {
     globalThis.fetch = originalFetch;

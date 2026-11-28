@@ -232,10 +232,10 @@ export async function runImportAnalysisSession(params: AnalysisSessionParams): P
     deps = defaultProductionDeps(), callbacks,
   } = params;
 
-  if (!providerPlanContext || !providerPlanContext.operationEligible || providerPlanContext.connectionId === 'chatgpt-plan') {
+  if (!providerPlanContext || !providerPlanContext.operationEligible) {
     try {
       callbacks.setRequestError(
-        'Narrative import requires a currently verified eligible non-ChatGPT provider selection. Refresh provider status and review the plan before retrying.',
+        'Narrative import requires a currently verified eligible provider selection. Refresh provider status and review the plan before retrying.',
       );
     } finally {
       callbacks.onCompleteSession();

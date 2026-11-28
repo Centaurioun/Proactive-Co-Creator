@@ -196,6 +196,15 @@ const BeliefGraph: React.FC<BeliefGraphProps> = ({
         onChangeDisplayMode={setDisplayMode}
       />
 
+      {error && !isLoading && (
+        <div
+          className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200"
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+
       {isLoading && (
         <div
           className="absolute inset-0 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xs flex items-center justify-center z-50"

@@ -445,6 +445,7 @@ export async function runBudgetedJsonOperation<T>(params: {
   }
 
   let cleanup: () => void = () => {};
+  let reqSignal: AbortSignal | undefined;
   try {
     const ai: NarrativeAiClientLike = params.clientFactory?.() ?? params.client ?? (getGeminiClient() as unknown as NarrativeAiClientLike);
     const providerCtx = getAiProviderRequestContext();
@@ -452,7 +453,7 @@ export async function runBudgetedJsonOperation<T>(params: {
     const connectionId = providerCtx?.selection.connectionId;
     const combined = combineSignals(params.signal, Math.min(policy.timeoutMs, policy.maxAggregateElapsedMs));
     cleanup = combined.cleanup;
-    const reqSignal = combined.signal;
+    reqSignal = combined.signal;
     if (typeof ai.models.countTokens !== 'function') {
       throw new AppApiError('VALIDATION_ERROR', 'This operation is unavailable because provider token counting is not supported.', 503, false);
     }
@@ -570,6 +571,9 @@ export async function runBudgetedJsonOperation<T>(params: {
 
     return { data: validated, usage };
   } catch (err) {
+    if (!(err instanceof AppApiError) && reqSignal?.aborted && reqSignal.reason instanceof AppApiError) {
+      throw reqSignal.reason;
+    }
     throw classifyGeminiError(err);
   } finally {
     cleanup();

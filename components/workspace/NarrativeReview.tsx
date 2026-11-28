@@ -221,7 +221,7 @@ export default function NarrativeReview({
 
   const runSemanticDiagnostics = () => {
     if (!aiConfigured) {
-      setDiagError('Server Gemini API key is not configured. Use Run Local Checks or configure server AI credentials.');
+      setDiagError('No AI provider is configured. Use Run Local Checks or connect a provider in AI Settings.');
       return;
     }
     if (!onRunSemanticDiagnostics) return;
@@ -280,7 +280,7 @@ export default function NarrativeReview({
 
   const requestAiFixesForIssue = (issue: NarrativeIssue) => {
     if (!aiConfigured) {
-      setFixError('Server Gemini API key is not configured. Deterministic local fixes remain available above.');
+      setFixError('No AI provider is configured. Connect a provider in AI Settings; deterministic local fixes remain available above.');
       return;
     }
     setFixError('');
@@ -344,7 +344,7 @@ export default function NarrativeReview({
       return;
     }
     if (!aiConfigured) {
-      setSyncError('Server Gemini API key is not configured. Manuscript ↔ Model AI sync requires server credentials.');
+      setSyncError('No AI provider is configured. Connect an AI provider in AI Settings to run Manuscript ↔ Model sync.');
       return;
     }
     const context = captureProposalReviewContext(project);

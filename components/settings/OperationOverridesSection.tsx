@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   isCatalogSelectable,
-  isChatGptStoryModelSelectable,
   PROVIDER_PREFERENCE_OPERATIONS,
   supportedReasoningLevels,
   type CatalogRefreshPhase,
@@ -29,12 +28,9 @@ export interface OperationOverridesSectionProps {
 
 function isModelEligibleForOverride(
   operation: string,
-  connectionId: AiConnectionId,
+  _connectionId: AiConnectionId,
   model: AiModelDescriptor,
 ): boolean {
-  if (operation === 'story' && connectionId === 'chatgpt-plan') {
-    return isChatGptStoryModelSelectable(model, 'default');
-  }
   const capability = model.operationCapabilities[operation as AiOperation];
   return model.availability.state === 'supported' && capability?.state === 'supported' && capability.value === true;
 }
@@ -65,17 +61,16 @@ export function OperationOverridesSection({
             <div key={operation} className="space-y-2 rounded border border-gray-200 p-2 dark:border-gray-700">
               {operation === 'story' && (() => {
                 const connectionId = override?.connectionId ?? preferences.defaultConnectionId;
-                const modelId = override?.modelId ?? preferences.defaultTextModelId ?? 'provider default';
+                const modelId = override?.modelId ?? preferences.defaultTextModelId ?? (connectionId === 'gemini-managed' ? 'provider default' : '');
                 const reasoning = override?.reasoningLevel ?? preferences.defaultReasoningLevel ?? 'default';
-                const chatGptQualified = connectionId === 'chatgpt-plan' && modelId === 'gpt-6-luna' && reasoning === 'default';
                 return (
                   <p className="text-xs text-gray-600 dark:text-gray-300">
-                    Effective Story route: {CONNECTION_LABELS[connectionId]} · {modelId} · reasoning {reasoning}.{' '}
+                    Effective Story route: {CONNECTION_LABELS[connectionId]} · {modelId || 'model not selected'} · reasoning {reasoning}.{' '}
                     {connectionId === 'chatgpt-plan'
-                      ? chatGptQualified
-                        ? 'Qualified only through the trusted synthetic test adapter; production ChatGPT inference is disabled.'
-                        : 'Unavailable: only GPT-6 Luna with Default reasoning is within the current Story qualification; no provider fallback will occur.'
-                      : 'Production availability follows this provider’s configuration; no provider fallback will occur.'}
+                      ? modelId
+                        ? 'Uses your ChatGPT plan with bounded single-flight execution; no provider fallback will occur.'
+                        : 'Select a verified ChatGPT account model above; no model substitution or provider fallback will occur.'
+                      : 'Availability follows this provider’s configuration; no provider fallback will occur.'}
                   </p>
                 );
               })()}
@@ -121,7 +116,7 @@ export function OperationOverridesSection({
                     <select
                       id={`override-reasoning-${operation}`}
                       className={SETTINGS_INPUT_CLASS}
-                      disabled={busy || !chosenModel || (operation === 'story' && override.connectionId === 'chatgpt-plan')}
+                      disabled={busy || !chosenModel}
                       value={reasoningLevels.includes(override.reasoningLevel ?? 'default') ? override.reasoningLevel ?? 'default' : 'default'}
                       onChange={event => onSelectOverrideReasoning(operation, event.target.value as AiReasoningLevel)}
                     >

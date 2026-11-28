@@ -217,10 +217,10 @@ export function validateStoryProviderSelection(
       reason: 'ChatGPT Story is disabled unless the local development server is started with its Story activation flag.',
     };
   }
-  if (selection.modelId !== 'gpt-6-luna' || (selection.reasoningLevel ?? 'default') !== 'default') {
+  if (!selection.modelId) {
     return {
       ok: false,
-      reason: 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no substitution or provider fallback is available.',
+      reason: 'Choose a verified ChatGPT account model explicitly in AI Settings; no substitution or provider fallback is available.',
     };
   }
   return { ok: true };
@@ -275,15 +275,6 @@ function applyOperationProviderHeaders(
   const connectionId = operation === 'image' ? 'gemini-managed' : override?.connectionId ?? preferences.defaultConnectionId;
   const modelId = override?.modelId ?? (operation === 'image' ? undefined : preferences.defaultTextModelId);
   const reasoning = override?.reasoningLevel ?? preferences.defaultReasoningLevel;
-  if (operation === 'story' && connectionId === 'chatgpt-plan' &&
-    (modelId !== 'gpt-6-luna' || (reasoning ?? 'default') !== 'default')) {
-    throw new ClientApiError(
-      'MODEL_UNSUPPORTED',
-      'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no other model, reasoning level, or provider fallback is available.',
-      false,
-      422,
-    );
-  }
   if (connectionId) providerHeaders['x-pcc-ai-connection'] = connectionId;
   if (modelId) providerHeaders['x-pcc-ai-model'] = modelId;
   if (operation !== 'image' && reasoning && reasoning !== 'default') {
@@ -469,11 +460,8 @@ export async function generateStoryFromPrompt(
   const effectiveStoryConnection = selected.connectionId;
   if (effectiveStoryConnection === 'chatgpt-plan') {
     if (!requestId) throw new ClientApiError('VALIDATION_ERROR', 'A stable identity is required for this ChatGPT story action.', false, 400);
-    if (!selected.modelId || !selected.reasoningLevel) {
-      throw new ClientApiError('MODEL_UNSUPPORTED', 'Choose an account model and reasoning level explicitly for ChatGPT Story; no default substitution is available.', false, 422);
-    }
-    if (selected.modelId !== 'gpt-6-luna' || selected.reasoningLevel !== 'default') {
-      throw new ClientApiError('MODEL_UNSUPPORTED', 'ChatGPT Story is qualified only for GPT-6 Luna with Default reasoning; no model substitution or provider fallback is available.', false, 422);
+    if (!selected.modelId) {
+      throw new ClientApiError('MODEL_UNSUPPORTED', 'Choose an account model explicitly for ChatGPT Story; no default substitution is available.', false, 422);
     }
   }
   const data = await postJson<{ story: string; usage?: { inputTokens?: number; outputTokens?: number; source: 'provider-observed' | 'estimate' | 'unknown' } }>(

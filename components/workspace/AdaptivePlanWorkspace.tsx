@@ -53,7 +53,7 @@ function reviewLabel(status?: string, epistemicKind?: string): string {
 }
 
 const tabButtonClass =
-  'min-h-9 rounded-lg border border-pcc-line bg-pcc-surface px-2.5 text-xs font-semibold text-pcc-ink shadow-sm hover:border-blue-300 hover:text-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink dark:hover:border-blue-700 dark:hover:text-blue-300';
+  'inline-flex min-h-9 items-center rounded-lg border border-pcc-line bg-pcc-surface px-2.5 text-xs font-semibold text-pcc-ink shadow-sm hover:border-blue-300 hover:text-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-pcc-dark-line dark:bg-pcc-dark-surface dark:text-pcc-dark-ink dark:hover:border-blue-700 dark:hover:text-blue-300';
 
 const AdaptivePlanWorkspace: React.FC<AdaptivePlanWorkspaceProps> = ({
   projectName,

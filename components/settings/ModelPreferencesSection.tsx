@@ -88,7 +88,7 @@ export function ModelPreferencesSection({
           onChange={event => onSavePreferences({
             ...preferences,
             defaultTextModelId: event.target.value === '__provider_default__' || !event.target.value ? undefined : event.target.value,
-            defaultReasoningLevel: preferences.defaultConnectionId === 'chatgpt-plan' ? undefined : 'default',
+            defaultReasoningLevel: 'default',
           })}
         >
           {preferences.defaultConnectionId === 'gemini-managed' && <option value="__provider_default__">Gemini provider default</option>}
@@ -107,24 +107,21 @@ export function ModelPreferencesSection({
         <select
           id="default-reasoning"
           className={SETTINGS_INPUT_CLASS}
-          value={preferences.defaultConnectionId === 'chatgpt-plan'
-            ? (preferences.defaultReasoningLevel ?? '')
-            : supportedReasoning.includes(preferences.defaultReasoningLevel ?? 'default') ? preferences.defaultReasoningLevel ?? 'default' : 'default'}
+          value={supportedReasoning.includes(preferences.defaultReasoningLevel ?? 'default') ? preferences.defaultReasoningLevel ?? 'default' : 'default'}
           disabled={busy || !defaultCatalogSelectable || (preferences.defaultConnectionId === 'chatgpt-plan' && !selectedModel)}
           onChange={event => onSavePreferences({
             ...preferences,
-            defaultReasoningLevel: event.target.value ? event.target.value as AiReasoningLevel : undefined,
+            defaultReasoningLevel: event.target.value ? event.target.value as AiReasoningLevel : 'default',
           })}
         >
-          {preferences.defaultConnectionId === 'chatgpt-plan' && !preferences.defaultReasoningLevel && <option value="">Choose a reasoning level explicitly</option>}
           {preferences.defaultConnectionId === 'chatgpt-plan' && preferences.defaultReasoningLevel && !supportedReasoning.includes(preferences.defaultReasoningLevel) && (
             <option value={preferences.defaultReasoningLevel}>Saved reasoning unavailable · choose again</option>
           )}
           {supportedReasoning.map(level => <option key={level} value={level}>{level}</option>)}
         </select>
-        {preferences.defaultConnectionId === 'chatgpt-plan' && (!preferences.defaultTextModelId || !preferences.defaultReasoningLevel) && (
+        {preferences.defaultConnectionId === 'chatgpt-plan' && !preferences.defaultTextModelId && (
           <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">
-            ChatGPT is selected as the default connection. Choose an account model and reasoning level explicitly; no model or reasoning fallback will be applied.
+            ChatGPT is selected as the default connection. Choose an account model explicitly; no model fallback will be applied.
           </p>
         )}
         {selectedModel?.reasoning.state !== 'supported' && (
@@ -135,7 +132,7 @@ export function ModelPreferencesSection({
       <fieldset className="space-y-2 rounded border border-gray-200 p-3 dark:border-gray-700">
         <legend className="px-1 text-sm font-medium text-gray-800 dark:text-gray-100">ChatGPT plan model preference</legend>
         <p className="text-xs text-gray-600 dark:text-gray-300">
-          This preference is available independently of the default provider and does not send a request. Select ChatGPT plan under Default connection to route Story through ChatGPT; inference still requires the local Story activation gate and the qualified model/reasoning pair.
+          This preference is saved independently of the default provider and does not send a request. Select ChatGPT plan under Default connection or per-operation overrides to route supported text and narrative operations through your ChatGPT plan.
         </p>
         {!chatGptConnection || chatGptConnection.state !== 'connected' ? (
           <p className="text-sm text-gray-700 dark:text-gray-200">Connect ChatGPT to choose a model from your account catalog.</p>
@@ -170,8 +167,8 @@ export function ModelPreferencesSection({
                 {chatGptReasoningLevels.map(level => <option key={level} value={level}>{level}</option>)}
               </select>
             </div>
-            <p className="text-xs text-amber-800 dark:text-amber-200">
-              Reasoning choices reflect general model documentation, not SIWC compatibility. For ChatGPT plan, only Default is currently qualified for the bounded story operation; this preference alone does not make other levels executable.
+            <p className="text-xs text-gray-600 dark:text-gray-300">
+              Documented reasoning levels are selectable for verified models. ChatGPT plan supports text and structured narrative operations (excluding image generation) with local token estimates, single-attempt execution, and no automatic cross-provider fallback.
             </p>
             <p className="text-xs text-gray-600 dark:text-gray-300">
               Catalog order is preserved. Models without verified text-generation capability are not selectable. Missing or stale saved models are shown without automatic substitution.

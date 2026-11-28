@@ -28,7 +28,7 @@ export const AutoAnalysisSettingsSection: React.FC<AutoAnalysisSettingsSectionPr
       When explicitly enabled, runs a debounced semantic consistency check after edits within strict scope and session call caps. Never auto-edits your manuscript or canon.
     </p>
     {!aiConfigured && (
-      <p className="text-amber-800 dark:text-amber-300">Disabled because server AI credentials are not configured.</p>
+      <p className="text-amber-800 dark:text-amber-300">Disabled because no AI provider is currently connected in AI Settings.</p>
     )}
     <div className="flex flex-wrap items-center gap-4">
       <label className="flex items-center gap-1.5 font-medium">

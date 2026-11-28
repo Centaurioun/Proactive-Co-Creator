@@ -211,7 +211,7 @@ export function ConnectionCard({
                 <p>Reasoning registry: {model.reasoning.state === 'supported' ? supportedReasoningLevels(model.reasoning).join(', ') : 'Default only (explicit reasoning unverified or unsupported)'}</p>
                 {connection.id === 'chatgpt-plan' && (
                   <p className="text-gray-600 dark:text-gray-300">
-                    Registry metadata is informational; SIWC execution has not been live-qualified. PCC inference remains blocked by the current subscription budget policy.
+                    Verified ChatGPT plan models support PCC text and structured narrative operations (single-attempt, local token preflight). Image generation remains Gemini Managed only.
                   </p>
                 )}
                 <ModelCapabilityList model={model} />
@@ -256,8 +256,8 @@ export function ConnectionCard({
           <p className="text-xs text-gray-700 dark:text-gray-200">
             ChatGPT plan access uses your existing ChatGPT plan and is subject to OpenAI’s plan limits and terms. It is separate from OpenAI API billing; this app does not promise unlimited usage.
           </p>
-          <p className="text-xs text-amber-800 dark:text-amber-200">
-            ChatGPT inference is disabled unless the local development server is explicitly started with its trusted Story activation setting. Only GPT-6 Luna with Default reasoning is qualified for Story; all other ChatGPT operations remain blocked. The activation setting is off by default.
+          <p className="text-xs text-gray-600 dark:text-gray-300">
+            Verified account models support text and structured narrative operations with documented reasoning levels, no automatic retries, and no cross-provider billing fallback. Image generation remains Gemini Managed only.
           </p>
           {connection.state === 'connected' ? (
             <button type="button" className={SETTINGS_BUTTON_CLASS} disabled={busy} onClick={onDisconnectChatGpt}>Disconnect ChatGPT</button>

@@ -111,13 +111,10 @@ const OutputDisplay: React.FC<OutputDisplayProps> = ({
   }
 
   const chatGptStorySelected = mode === 'story' && storyProviderSelection.connectionId === 'chatgpt-plan';
-  const chatGptStoryQualified = storyProviderSelection.modelId === 'gpt-6-luna' && storyProviderSelection.reasoningLevel === 'default';
-  const chatGptStoryBlocked = chatGptStorySelected && (!chatGptStoryLocalActivation || !chatGptStoryQualified);
+  const chatGptStoryBlocked = chatGptStorySelected && (!chatGptStoryLocalActivation || !storyProviderSelection.modelId);
   const chatGptStoryBlockReason = !chatGptStoryLocalActivation
-    ? 'ChatGPT Story is disabled for this local server process.'
-    : !storyProviderSelection.modelId || !storyProviderSelection.reasoningLevel
-      ? 'Choose the account model and reasoning level explicitly in AI settings.'
-      : 'Only GPT-6 Luna with Default reasoning is qualified for ChatGPT Story.';
+    ? 'ChatGPT Story is disabled for this server process.'
+    : 'Choose a verified ChatGPT account model in AI Settings before generating a story.';
 
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const lightboxDialogRef = useRef<HTMLDivElement | null>(null);

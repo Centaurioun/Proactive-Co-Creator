@@ -36,8 +36,8 @@ test('lists the account catalog without claiming unverified model capabilities',
   ]);
   assert.deepEqual(models[0].availability.state, 'supported');
   assert.deepEqual(models[0].textGeneration.state, 'unknown');
-  assert.deepEqual(models[0].operationCapabilities.story?.state, 'unsupported');
-  assert.deepEqual(models[0].operationCapabilities.analyze?.state, 'unsupported');
+  assert.deepEqual(models[0].operationCapabilities.story?.state, 'unknown');
+  assert.deepEqual(models[0].operationCapabilities.analyze?.state, 'unknown');
   assert.deepEqual(models[0].reasoning.state, 'unknown');
   assert.deepEqual(models[0].structuredOutput.state, 'unknown');
   assert.deepEqual(urls, ['https://api.openai.com/v1/models']);
@@ -225,7 +225,10 @@ test('bounded story transport rejects a body that differs from its prepared plan
   }), /does not match its approved serialized plan/);
   await assert.rejects(adapter.generateStoryText(request({ reasoningLevel: 'high' }), '{}', {
     maxStreamBytes: 256 * 1024, maxAcceptedOutputBytes: 16 * 1024, maxStreamEvents: 4_096,
-  }), /default-reasoning/);
+  }), /does not match its approved serialized plan/);
+  await assert.rejects(adapter.generateStoryText(request({ reasoningLevel: 'minimal' }), '{}', {
+    maxStreamBytes: 256 * 1024, maxAcceptedOutputBytes: 16 * 1024, maxStreamEvents: 4_096,
+  }), /not verified/);
   assert.equal(calls, 0);
 });
 

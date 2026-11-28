@@ -10,6 +10,10 @@ export const PROVIDER_PREFERENCE_OPERATIONS = [
   ['image', 'Image generation'],
   ['narrative-import', 'Narrative import'],
   ['writing', 'Writing assistance'],
+  ['diagnostics', 'Diagnostics & fixes'],
+  ['sync', 'Narrative sync'],
+  ['opportunities', 'Opportunities'],
+  ['import-enhance', 'Import enhancements'],
 ] as const;
 
 export function safeEvidenceHref(reference: string): string | undefined {
@@ -47,13 +51,24 @@ export function catalogPhasesForStatusRefresh(
 }
 
 export function isChatGptStoryModelSelectable(
-  model: { id: string; availability: { state: string }; textGeneration: { state: string } },
+  model: {
+    id: string;
+    availability: { state: string };
+    textGeneration: { state: string };
+    reasoning?: Pick<AiCapability<readonly AiReasoningLevel[]>, 'state'> & { value?: unknown };
+    operationCapabilities?: Partial<Record<AiOperation, { state: string; value?: unknown }>>;
+  },
   preferredReasoning?: string,
 ): boolean {
-  return model.id === 'gpt-6-luna' &&
-    model.availability.state === 'supported' &&
-    model.textGeneration.state === 'supported' &&
-    (preferredReasoning ?? 'default') === 'default';
+  if (model.availability.state !== 'supported' || model.textGeneration.state !== 'supported') {
+    return false;
+  }
+  const storyCap = model.operationCapabilities?.story;
+  if (storyCap && (storyCap.state !== 'supported' || storyCap.value !== true)) {
+    return false;
+  }
+  const targetReasoning = (preferredReasoning ?? 'default') as AiReasoningLevel;
+  return supportedReasoningLevels(model.reasoning).includes(targetReasoning);
 }
 
 export function buildDefaultConnectionPreferences(
@@ -63,17 +78,21 @@ export function buildDefaultConnectionPreferences(
 ): { ok: true; preferences: ProviderPreferences } | { ok: false; error: string } {
   if (connectionId === 'chatgpt-plan') {
     const preferredModelId = preferences.preferredTextModelsByConnection?.['chatgpt-plan'];
-    const preferredModel = models.find(model => model.id === preferredModelId && isSelectableTextPreferenceModel(model));
+    const preferredModel = models.find(model => model.id === preferredModelId && isEligibleTextModel(model))
+      ?? models.find(isEligibleTextModel)
+      ?? models.find(model => model.id === preferredModelId && isSelectableTextPreferenceModel(model));
     const preferredReasoning = preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'];
-    const reasoningIsValid = Boolean(preferredModel && preferredReasoning &&
-      supportedReasoningLevels(preferredModel.reasoning).includes(preferredReasoning));
+    const resolvedReasoning: AiReasoningLevel = preferredModel && preferredReasoning &&
+      supportedReasoningLevels(preferredModel.reasoning).includes(preferredReasoning)
+      ? preferredReasoning
+      : 'default';
     return {
       ok: true,
       preferences: {
         ...preferences,
         defaultConnectionId: connectionId,
-        defaultTextModelId: reasoningIsValid ? preferredModel!.id : undefined,
-        defaultReasoningLevel: reasoningIsValid ? preferredReasoning : undefined,
+        defaultTextModelId: preferredModel?.id,
+        defaultReasoningLevel: preferredModel ? resolvedReasoning : undefined,
       },
     };
   }
@@ -97,11 +116,12 @@ export function isModelSupportedForOperation(
   preferredChatGptReasoning?: string,
 ): boolean {
   if (!model || model.availability.state !== 'supported') return false;
-  if (operation === 'story' && connectionId === 'chatgpt-plan') {
-    return isChatGptStoryModelSelectable(model, preferredChatGptReasoning);
-  }
   const opCap = model.operationCapabilities[operation as AiOperation];
-  return opCap?.state === 'supported' && opCap.value === true;
+  if (!(opCap?.state === 'supported' && opCap.value === true)) return false;
+  if (connectionId === 'chatgpt-plan' && preferredChatGptReasoning) {
+    return supportedReasoningLevels(model.reasoning).includes(preferredChatGptReasoning as AiReasoningLevel);
+  }
+  return true;
 }
 
 /** The inspected catalog never changes the active connection's model options. */

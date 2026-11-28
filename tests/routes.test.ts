@@ -298,15 +298,16 @@ async function createSrbStoryTestSetup(modelId: string) {
       });
       assert.equal(duplicate.status, 409);
 
-      const unqualifiedReasoning = await fetch(`${server.baseUrl}/api/generate/story`, {
+      const unsupportedReasoning = await fetch(`${server.baseUrl}/api/generate/story`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json', Origin: server.baseUrl,
-          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-ai-reasoning': 'high',
+          'x-pcc-ai-connection': 'chatgpt-plan', 'x-pcc-ai-model': modelId, 'x-pcc-ai-reasoning': 'minimal',
+          'x-pcc-story-request-id': 'route-story-request-0002',
         },
         body: JSON.stringify({ prompt: 'A fox finds a silver key.' }),
       });
-      assert.equal(unqualifiedReasoning.status, 422);
+      assert.equal(unsupportedReasoning.status, 422);
       assert.deepEqual(getCounts(), { transportCalls: 1, fallbackCalls: 0 });
     } finally {
       await server.close();

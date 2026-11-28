@@ -26,13 +26,19 @@ import { withRetry } from './retry.ts';
 import { acquireAiSlot, AI_OPERATION_POLICIES, estimateTokensFromText, evaluateOperationBudget, reserveAggregateOperationUsage } from './aiBudget.ts';
 import { getAiProviderRequestContext } from './providers/requestContext.ts';
 
-const TEXT_TIMEOUT_MS = 45_000;
+const TEXT_TIMEOUT_MS = 60_000;
 const IMAGE_TIMEOUT_MS = 60_000;
 const TARGET_IMAGE_COUNT = 4;
 const IMAGE_CONCURRENCY = 2;
 
 function maxAttemptsForRequest(defaultMaxAttempts: number): number {
   return getAiProviderRequestContext()?.selection.connectionId === 'chatgpt-plan' ? 1 : defaultMaxAttempts;
+}
+
+function classifyWithSignal(err: unknown, signal?: AbortSignal): AppApiError {
+  if (err instanceof AppApiError) return err;
+  if (signal?.aborted && signal.reason instanceof AppApiError) return signal.reason;
+  return classifyGeminiError(err);
 }
 
 function combineSignals(
@@ -214,7 +220,7 @@ OUTPUT JSON:`;
     }
     return parseAndValidateBeliefGraph(text, prompt);
   } catch (err) {
-    throw classifyGeminiError(err);
+    throw classifyWithSignal(err, reqSignal);
   } finally {
     cleanup();
   }
@@ -299,7 +305,7 @@ Return a JSON array of objects.`;
     }
     return parseAndValidateClarifications(text);
   } catch (err) {
-    throw classifyGeminiError(err);
+    throw classifyWithSignal(err, reqSignal);
   } finally {
     cleanup();
   }
@@ -426,7 +432,7 @@ User Batch Instruction: ${JSON.stringify(instruction)}`;
     }
     return parseAndValidateBatchEditResponse(text, instruction);
   } catch (err) {
-    throw classifyGeminiError(err);
+    throw classifyWithSignal(err, reqSignal);
   } finally {
     cleanup();
   }
@@ -519,7 +525,7 @@ Updated Prompt:`;
     }
     return refined;
   } catch (err) {
-    throw classifyGeminiError(err);
+    throw classifyWithSignal(err, reqSignal);
   } finally {
     cleanup();
   }
@@ -562,7 +568,7 @@ Story:`;
     }
     return text;
   } catch (err) {
-    throw classifyGeminiError(err);
+    throw classifyWithSignal(err, reqSignal);
   } finally {
     cleanup();
   }
@@ -633,7 +639,7 @@ export async function generateImagesBatch(
         ),
       };
     } catch (err) {
-      const classified = classifyGeminiError(err);
+      const classified = classifyWithSignal(err, slotSignal);
       if (classified.code === 'CANCELLED' || classified.code === 'MISSING_API_KEY' || classified.code === 'AUTH_ERROR') {
         throw classified;
       }

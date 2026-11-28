@@ -105,30 +105,37 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
 
   useEffect(() => {
     let cancelled = false;
-    void fetchAiCapabilities()
-      .then((cap) => {
-        if (!cancelled) {
-          setAiConfigured(Boolean(cap.configured));
+    const refreshAvailability = async () => {
+      try {
+        const [cap, hubRes] = await Promise.all([
+          fetchAiCapabilities().catch(() => null),
+          fetch('/api/ai/provider-hub/status').then(r => (r.ok ? r.json() : null)).catch(() => null),
+        ]);
+        if (cancelled) return;
+        const connections = Array.isArray((hubRes as { connections?: unknown } | null)?.connections)
+          ? (hubRes as { connections: Array<{ state?: string }> }).connections
+          : [];
+        const anyProviderReady = connections.some(
+          (conn) => conn?.state === 'connected' || conn?.state === 'available'
+        );
+        setAiConfigured(Boolean(cap?.configured) || anyProviderReady);
+        if (cap) {
           setChatGptStoryLocalActivation(cap.chatGptStoryLocalActivation === true);
           chatGptStoryLocalActivationRef.current = cap.chatGptStoryLocalActivation === true;
         }
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) setAiConfigured(false);
-      });
-    return () => {
-      cancelled = true;
+      }
     };
-  }, []);
-
-  useEffect(() => {
     const refreshStorySelection = () => {
       setStoryProviderSelection(readSafeStoryProviderSelection());
+      void refreshAvailability();
     };
     window.addEventListener('pcc:ai-preferences-changed', refreshStorySelection);
     window.addEventListener('storage', refreshStorySelection);
     refreshStorySelection();
     return () => {
+      cancelled = true;
       window.removeEventListener('pcc:ai-preferences-changed', refreshStorySelection);
       window.removeEventListener('storage', refreshStorySelection);
     };
@@ -298,7 +305,7 @@ export function useAiPlanActions(deps: UseAiPlanActionsDeps) {
       onError: (projectId, mode, err) => {
         const message = getReadableErrorMessage(
           err,
-          `Failed to generate ${mode}. Check your server API key configuration.`
+          `Failed to generate ${mode}. Check your AI connection settings.`
         );
         setGalleryErrors((prev) => ({
           ...prev,

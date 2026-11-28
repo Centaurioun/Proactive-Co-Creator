@@ -93,15 +93,19 @@ test('model listing maps only SDK-reported supported actions and reasoning suppo
       transport: 'gemini-api-models-list', modelSlug: 'gemini-text',
     }],
   });
-  assert.deepEqual(models[0].reasoning, {
-    state: 'unknown', reason: 'The catalog thinking boolean does not identify supported levels for this exact model.',
-  });
+  assert.equal(models[0].reasoning.state, 'supported');
+  if (models[0].reasoning.state === 'supported') {
+    assert.deepEqual(models[0].reasoning.value, ['minimal', 'low', 'medium', 'high', 'extra-high']);
+  }
   assert.deepEqual(models[0].contextLimit, { state: 'supported', value: 16_000, evidence: models[0].contextLimit.state === 'supported' ? models[0].contextLimit.evidence : [] });
   assert.deepEqual(models[0].outputLimit, { state: 'supported', value: 2_000, evidence: models[0].outputLimit.state === 'supported' ? models[0].outputLimit.evidence : [] });
+  assert.equal(models[0].structuredOutput.state, 'supported');
   assert.equal(models[0].operationCapabilities.story?.state, 'supported');
-  assert.equal(models[0].operationCapabilities.writing?.state, 'unknown');
-  assert.equal(models[0].operationCapabilities.analyze?.state, 'unknown');
-  assert.equal(models[0].capabilityPolicyVersion, '2026-11-26.3');
+  assert.equal(models[0].operationCapabilities.writing?.state, 'supported');
+  assert.equal(models[0].operationCapabilities.analyze?.state, 'supported');
+  assert.equal(models[0].operationCapabilities.diagnostics?.state, 'supported');
+  assert.equal(models[0].operationCapabilities.sync?.state, 'supported');
+  assert.equal(models[0].capabilityPolicyVersion, '2026-11-27.1');
   assert.equal(models[1].imageGeneration.state, 'supported');
   assert.equal(models[1].operationCapabilities.image?.state, 'unsupported');
   assert.equal(models[2].textGeneration.state, 'unknown');

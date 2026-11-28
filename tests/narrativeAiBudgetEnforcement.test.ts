@@ -84,7 +84,7 @@ describe('narrative AI budget enforcement', () => {
     assert.equal(generated, false);
   });
 
-  it('fails closed for ChatGPT plan narrative operations when only an estimated token count is available', async () => {
+  it('fails closed for OpenAI API narrative operations when only an estimated token count is available', async () => {
     let generated = false;
     const client: NarrativeAiClientLike = {
       models: {
@@ -93,12 +93,12 @@ describe('narrative AI budget enforcement', () => {
       },
     };
     await assert.rejects(() => runWithAiProviderContext({
-      selection: { connectionId: 'chatgpt-plan', modelId: 'gpt-6.2-sol' }, operation: 'writing',
+      selection: { connectionId: 'openai-api', modelId: 'gpt-6.2-sol' }, operation: 'writing',
     }, () => runBudgetedJsonOperation({ operation: 'writing', prompt: 'Synthetic prompt', parse: value => value, client })), /exact count.*Generation was not started/i);
     assert.equal(generated, false);
   });
 
-  it('fails closed for ChatGPT plan narrative extraction when only an estimated token count is available', async () => {
+  it('fails closed for OpenAI API narrative extraction when only an estimated token count is available', async () => {
     let generated = false;
     const client = {
       models: {
@@ -107,12 +107,47 @@ describe('narrative AI budget enforcement', () => {
       },
     } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
     await assert.rejects(() => runWithAiProviderContext({
-      selection: { connectionId: 'chatgpt-plan', modelId: 'gpt-6.2-sol' }, operation: 'narrative-import',
+      selection: { connectionId: 'openai-api', modelId: 'gpt-6.2-sol' }, operation: 'narrative-import',
     }, () => extractNarrativeChunk({
       sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `e${Date.now().toString(16).padStart(63, '0')}`,
-      chunkId: 'chatgpt-plan-estimate', text: 'Synthetic narrative.', scope: 'complete', categories: [], instruction: '',
+      chunkId: 'openai-api-estimate', text: 'Synthetic narrative.', scope: 'complete', categories: [], instruction: '',
     }, undefined, client)), /exact count.*Generation was not started/i);
     assert.equal(generated, false);
+  });
+
+  it('allows conservative local estimate preflight for ChatGPT plan while enforcing zero automatic retries', async () => {
+    let attempts = 0;
+    const failingClient: NarrativeAiClientLike = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10, source: 'estimate' }),
+        generateContent: async () => {
+          attempts += 1;
+          throw new AppApiError('UPSTREAM_ERROR', 'Transient failure', 503, true);
+        },
+      },
+    };
+    await assert.rejects(() => runWithAiProviderContext({
+      selection: { connectionId: 'chatgpt-plan', modelId: 'gpt-6-luna' }, operation: 'writing',
+    }, () => runBudgetedJsonOperation({ operation: 'writing', prompt: 'Synthetic prompt', parse: value => value, client: failingClient })), /Transient failure/i);
+    assert.equal(attempts, 1, 'ChatGPT plan operations must never auto-retry');
+
+    let extractionCalls = 0;
+    const extractClient = {
+      models: {
+        countTokens: async () => ({ totalTokens: 10, source: 'estimate' }),
+        generateContent: async () => {
+          extractionCalls += 1;
+          return { text: JSON.stringify({ findings: [], entities: [], relationships: [], ambiguities: [] }) };
+        },
+      },
+    } as unknown as ReturnType<typeof import('../server/geminiClient.ts').getGeminiClient>;
+    await runWithAiProviderContext({
+      selection: { connectionId: 'chatgpt-plan', modelId: 'gpt-6-luna' }, operation: 'narrative-import',
+    }, () => extractNarrativeChunk({
+      sourceId: 'synthetic-source', sourceVersion: 'v1', digest: `c${Date.now().toString(16).padStart(63, '0')}`,
+      chunkId: 'chatgpt-plan-estimate-ok', text: 'Synthetic narrative.', scope: 'complete', categories: [], instruction: '',
+    }, undefined, extractClient));
+    assert.equal(extractionCalls, 1);
   });
 
   it('keeps Gemini native token counting within its documented config and applies schema at generation', async () => {

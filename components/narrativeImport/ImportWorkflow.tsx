@@ -121,7 +121,6 @@ function canStartImportAnalysis(params: {
 }): boolean {
   if (!params.aiConfigured || !params.source || params.busy) return false;
   if (params.sourceError || !params.providerPlanContext) return false;
-  if (params.providerPlanContext.connectionId === 'chatgpt-plan') return false;
   if (!params.providerPlanContext.operationEligible) return false;
   if (params.parsedHasFileRetentionGap && !params.confirmExtractedOnly) return false;
   return params.scope !== 'selective' || params.categories.length > 0;
@@ -387,11 +386,16 @@ export default function ImportWorkflow({
     const onStorage = (event: StorageEvent) => {
       if (event.key === PROVIDER_PREFERENCES_STORAGE_KEY || event.key === null) void refreshPlanContext();
     };
+    const onPreferencesChanged = () => {
+      void refreshPlanContext();
+    };
     window.addEventListener('storage', onStorage);
+    window.addEventListener('pcc:ai-preferences-changed', onPreferencesChanged);
     return () => {
       current = false;
       activeAbort?.abort();
       window.removeEventListener('storage', onStorage);
+      window.removeEventListener('pcc:ai-preferences-changed', onPreferencesChanged);
     };
   }, []);
 
@@ -1056,14 +1060,18 @@ function AnalysisPlanBanner({
   providerPlanContext: ImportProviderPlanContext | null;
 }) {
   if (!plan) return null;
-  const blockedChatGpt = providerPlanContext?.connectionId === 'chatgpt-plan';
+  const ineligibleModel = Boolean(providerPlanContext && !providerPlanContext.operationEligible);
   return (
     <div className="space-y-1 rounded border border-gray-200 p-3 text-sm dark:border-gray-700" aria-label="Local analysis plan">
       <p className="font-medium">Automatic analysis plan</p>
       <p>{plan.chunks.length} suggested source segment(s) · {plan.scheduledRequests} scheduled request(s) covering {sourceLength - plan.unplannedChars} character units in this pass, within the {MAX_EXTRACTION_CALLS}-call total ceiling.</p>
       <p>{formatProviderPlanSummary(providerPlanContext)}</p>
-      {blockedChatGpt && <p role="status" className="text-amber-800 dark:text-amber-200">ChatGPT narrative import remains blocked. The approved ChatGPT SRB pilot is mock-only for the separate story operation; no import inference or billing fallback is available.</p>}
-      {providerPlanContext === null && <p role="status" className="text-amber-800 dark:text-amber-200">Provider selection could not be verified. Refresh provider status before starting analysis.</p>}
+      {ineligibleModel && providerPlanContext && (
+        <p role="status" className="text-amber-800 dark:text-amber-200">
+          The selected model ({providerPlanContext.modelId}) is not currently verified for narrative import. Refresh the model catalog or choose a supported model in AI Settings.
+        </p>
+      )}
+      {providerPlanContext === null && <p role="status" className="text-amber-800 dark:text-amber-200">Provider selection could not be verified. Refresh provider status in AI Settings before starting analysis.</p>}
       <p>Adaptive local estimate: up to {plan.limits.payloadTokenBudget.toLocaleString()} source tokens per segment, with {plan.limits.envelopeReserveTokens.toLocaleString()} reserved for instructions and schema. A supported model context limit is used when the account catalog provides one; otherwise the conservative narrative-import limit applies. The server remains authoritative and blocks transports that cannot meet operation preflight.</p>
       {!plan.completeWithinCallBudget && <p className="text-amber-800 dark:text-amber-200">The current limits permit only partial source coverage: {plan.unplannedChars.toLocaleString()} source character units remain outside the scheduled segments. The original manuscript is preserved.</p>}
       <p className="text-xs text-gray-600 dark:text-gray-300">The plan is pinned to this source digest, narrative-import task, current provider preference snapshot, and the displayed policy limits when analysis starts. A provider change stops remaining segments. Estimates do not guarantee quota, cost, or semantic completeness.</p>
@@ -1110,7 +1118,7 @@ function AnalysisStatusNotices({
 }) {
   return (
     <>
-      {!aiConfigured && <p role="status">Analysis is unavailable because the server Gemini API key is not configured. Local source preview remains available.</p>}
+      {!aiConfigured && <p role="status">Analysis is unavailable because no AI provider is currently connected. Configure a provider in AI Settings; local source preview remains available.</p>}
       {busy && <p role="status" aria-live="polite">{progress} · {callsUsed}/{MAX_EXTRACTION_CALLS} requests used</p>}
       {cancelled && <p className="text-sm">Analysis was cancelled. Completed segment results remain available for review.</p>}
       {requestError && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{requestError}</p>}

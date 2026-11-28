@@ -145,7 +145,7 @@ export function createStage2EnhancementController(
       if (!aiConfigured) {
         emit({
           ...state,
-          error: 'Server Gemini API key is not configured. Stage 2 enhancements require server AI credentials.',
+          error: 'No AI provider is configured. Connect an AI provider in AI Settings to run Stage 2 enhancements.',
         });
         return false;
       }

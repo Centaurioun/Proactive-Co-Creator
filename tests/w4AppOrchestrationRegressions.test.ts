@@ -114,13 +114,12 @@ describe('W4 App Orchestration & Workspace Regressions', () => {
       'pcc.ai.providerPreferences.v1',
       JSON.stringify({
         defaultConnectionId: 'chatgpt-plan',
-        defaultTextModelId: 'gpt-6-luna',
       })
     );
-    const missingReasoning = mod.resolveStoryProviderPreflight(true);
-    assert.equal(missingReasoning.ok, false);
-    if (!missingReasoning.ok) {
-      assert.match(missingReasoning.errorMessage, /explicitly/i);
+    const missingModel = mod.resolveStoryProviderPreflight(true);
+    assert.equal(missingModel.ok, false);
+    if (!missingModel.ok) {
+      assert.match(missingModel.errorMessage, /explicitly/i);
     }
 
     mockLocalStorage.setItem(
@@ -128,7 +127,6 @@ describe('W4 App Orchestration & Workspace Regressions', () => {
       JSON.stringify({
         defaultConnectionId: 'chatgpt-plan',
         defaultTextModelId: 'gpt-6-luna',
-        defaultReasoningLevel: 'default',
       })
     );
     assert.equal(mod.resolveStoryProviderPreflight(false).ok, false);

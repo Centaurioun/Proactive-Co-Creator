@@ -488,13 +488,15 @@ function App() {
         setClarificationErrors((prev) => ({ ...prev, [originProject.id]: null }));
       },
       onAnalysisError: (projectId, err) => {
+        const message = getReadableErrorMessage(
+          err,
+          'Could not reach AI analysis service; local plan preserved.'
+        );
         setAnalysisErrors((prev) => ({
           ...prev,
-          [projectId]: getReadableErrorMessage(
-            err,
-            'Could not reach AI analysis service; local plan preserved.'
-          ),
+          [projectId]: message,
         }));
+        setStatusNotification(message);
       },
       onClarificationError: (projectId, err) => {
         setClarificationErrors((prev) => ({

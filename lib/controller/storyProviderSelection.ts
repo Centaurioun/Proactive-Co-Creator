@@ -34,11 +34,11 @@ export function resolveStoryProviderPreflight(
           'ChatGPT Story is disabled for this local server process. No provider request was sent.',
       };
     }
-    if (!selected.modelId || !selected.reasoningLevel) {
+    if (!selected.modelId) {
       return {
         ok: false,
         errorMessage:
-          'Choose the ChatGPT account model and reasoning level explicitly in AI settings. No provider request was sent.',
+          'Choose a verified ChatGPT account model explicitly in AI Settings. No provider request was sent.',
       };
     }
     const validation = validateStoryProviderSelection(selected, localActivation);

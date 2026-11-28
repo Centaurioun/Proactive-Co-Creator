@@ -207,7 +207,7 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
   return (
     <div
       style={{ touchAction: 'none' }}
-      className="flex-1 w-full min-h-0 cursor-move active:cursor-grabbing relative flex flex-col"
+      className="flex-1 w-full min-h-[260px] lg:min-h-0 cursor-move active:cursor-grabbing relative flex flex-col"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerEnd}
@@ -216,7 +216,7 @@ const GraphCanvas: React.FC<GraphCanvasProps> = ({
     >
       <div
         ref={containerElementRef}
-        className="relative bg-gray-50/50 dark:bg-gray-950/60 w-full flex-1 min-h-0 overflow-hidden"
+        className="relative bg-gray-50/50 dark:bg-gray-950/60 w-full flex-1 min-h-[260px] lg:min-h-0 overflow-hidden"
       >
         {data && (
           <div className="absolute top-2.5 right-3 flex items-center gap-1 z-30">

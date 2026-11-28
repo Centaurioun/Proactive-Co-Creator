@@ -241,8 +241,30 @@ function makeTimedSignal(signal: AbortSignal | undefined, timeoutMs: number): {
   };
 }
 
-function reasoningConfig(level: AiProviderRequest['reasoningLevel']): { thinkingLevel: string } | undefined {
+function supportsThinkingLevel(modelId: string): boolean {
+  const normalized = modelIdFromName(modelId).toLowerCase();
+  return !/^gemini-(1\.|2\.)/.test(normalized);
+}
+
+const GEMINI_25_THINKING_BUDGETS: Record<string, number> = {
+  none: 0,
+  minimal: 512,
+  low: 1024,
+  medium: 8192,
+  high: 16384,
+  'extra-high': 24576,
+  max: 24576,
+};
+
+function reasoningConfig(
+  modelId: string,
+  level: AiProviderRequest['reasoningLevel'],
+): { thinkingLevel: string } | { thinkingBudget: number } | undefined {
   if (!level || level === 'default') return undefined;
+  if (!supportsThinkingLevel(modelId)) {
+    const budget = GEMINI_25_THINKING_BUDGETS[level];
+    return budget !== undefined ? { thinkingBudget: budget } : undefined;
+  }
   return { thinkingLevel: level === 'extra-high' ? 'xhigh' : level };
 }
 
@@ -332,9 +354,17 @@ export function createGeminiAdapter(input: GeminiAdapterFactoryInput): AiProvide
         config.responseMimeType ??= 'application/json';
         config.responseSchema = request.responseSchema;
       }
-      const thinkingConfig = reasoningConfig(request.reasoningLevel);
-      if (thinkingConfig) config.thinkingConfig = thinkingConfig;
-      else if (request.thinkingConfig !== undefined) config.thinkingConfig = request.thinkingConfig;
+      const thinkingConfig = reasoningConfig(request.modelId, request.reasoningLevel);
+      if (thinkingConfig) {
+        config.thinkingConfig = thinkingConfig;
+      } else if (request.thinkingConfig !== undefined) {
+        const callerThinking = request.thinkingConfig as Record<string, unknown>;
+        if (!supportsThinkingLevel(request.modelId) && 'thinkingLevel' in callerThinking && !('thinkingBudget' in callerThinking)) {
+          // Omit Gemini 3+/4+-only thinkingLevel when targeting Gemini 1.x/2.x models.
+        } else {
+          config.thinkingConfig = request.thinkingConfig;
+        }
+      }
 
       try {
         const response = await Promise.race([

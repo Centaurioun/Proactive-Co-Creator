@@ -166,26 +166,28 @@ test('ChatGPT text-model preferences are saved independently from active routing
   }
 });
 
-test('ChatGPT Story override accepts only the saved GPT-6 Luna and Default combination', async () => {
+test('ChatGPT Story override accepts verified models with documented reasoning levels and rejects undocumented reasoning', async () => {
   const previousPreferences = getPreferences();
   const previousModels = getChatGptModels();
   try {
     setChatGptModels([describeChatGptModel({ id: 'gpt-6-luna', displayName: 'GPT-6 Luna' }, 'chatgpt-plan')]);
     await withServer(async (baseUrl) => {
-      const save = (reasoningLevel: string) => fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
+      const save = (overrideReasoning: string) => fetch(`${baseUrl}/api/ai/provider-hub/preferences`, {
         method: 'PUT', headers: { ...sameOrigin(baseUrl), 'content-type': 'application/json' },
         body: JSON.stringify({ preferences: {
           defaultConnectionId: 'gemini-managed',
           preferredTextModelsByConnection: { 'chatgpt-plan': 'gpt-6-luna' },
-          preferredReasoningLevelsByConnection: { 'chatgpt-plan': reasoningLevel },
-          operationOverrides: { story: { connectionId: 'chatgpt-plan', modelId: 'gpt-6-luna', reasoningLevel: 'default' } },
+          preferredReasoningLevelsByConnection: { 'chatgpt-plan': 'default' },
+          operationOverrides: { story: { connectionId: 'chatgpt-plan', modelId: 'gpt-6-luna', reasoningLevel: overrideReasoning } },
         } }),
       });
-      const qualified = await save('default');
-      assert.equal(qualified.status, 200, await qualified.clone().text());
-      const unqualified = await save('medium');
-      assert.equal(unqualified.status, 400);
-      assert.match(await unqualified.text(), /requires the saved GPT-6 Luna preference with Default reasoning/i);
+      const defaultOk = await save('default');
+      assert.equal(defaultOk.status, 200, await defaultOk.clone().text());
+      const mediumOk = await save('medium');
+      assert.equal(mediumOk.status, 200, await mediumOk.clone().text());
+      const unsupported = await save('minimal');
+      assert.equal(unsupported.status, 400);
+      assert.match(await unsupported.text(), /invalid|not verified|unsupported/i);
     });
   } finally {
     setChatGptModels(previousModels);

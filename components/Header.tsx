@@ -82,13 +82,13 @@ const Header: React.FC<HeaderProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-        {onNewProject && <button type="button" onClick={onNewProject} className="hidden min-h-11 rounded-md bg-pcc-action px-3 text-xs font-semibold text-white hover:bg-pcc-action-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex">+ New</button>}
-        {onOpenImport && <button type="button" disabled={importDisabled} onClick={onOpenImport} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45 sm:inline-flex dark:hover:bg-pcc-dark-canvas">Import</button>}
-        {onOpenProjects && <button type="button" onClick={onOpenProjects} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">Projects</button>}
-        <button type="button" onClick={onShowInfo} className="hidden min-h-11 rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">About</button>
+        {onNewProject && <button type="button" onClick={onNewProject} className="hidden min-h-11 items-center rounded-md bg-pcc-action px-3 text-xs font-semibold text-white hover:bg-pcc-action-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex">+ New</button>}
+        {onOpenImport && <button type="button" disabled={importDisabled} onClick={onOpenImport} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus disabled:opacity-45 sm:inline-flex dark:hover:bg-pcc-dark-canvas">Import</button>}
+        {onOpenProjects && <button type="button" onClick={onOpenProjects} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">Projects</button>}
+        <button type="button" onClick={onShowInfo} className="hidden min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus sm:inline-flex dark:hover:bg-pcc-dark-canvas">About</button>
         {onLoadSampleProject && (
           <details className="relative">
-            <summary className="min-h-11 cursor-pointer rounded-md px-2.5 py-3 text-xs text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas">Sample data</summary>
+            <summary className="inline-flex min-h-11 cursor-pointer list-none items-center rounded-md px-2.5 text-xs text-pcc-muted hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-muted dark:hover:bg-pcc-dark-canvas">Sample data</summary>
             <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-md border border-pcc-line bg-pcc-surface p-2 shadow-lg dark:border-pcc-dark-line dark:bg-pcc-dark-surface">
               <button type="button" onClick={() => { if (window.confirm('Replace the current workspace with the sample story plan?')) onLoadSampleProject(); }} className="min-h-11 w-full rounded px-2 text-left text-xs font-medium text-pcc-ink hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:text-pcc-dark-ink dark:hover:bg-pcc-dark-canvas">Reset Sample Plan…</button>
             </div>
@@ -98,7 +98,7 @@ const Header: React.FC<HeaderProps> = ({
         <button
           type="button"
           onClick={toggleDarkMode}
-          className="min-h-11 rounded-md border border-pcc-line px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line dark:hover:bg-pcc-dark-canvas"
+          className="inline-flex min-h-11 items-center rounded-md border border-pcc-line px-2.5 text-xs font-medium hover:bg-pcc-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pcc-focus dark:border-pcc-dark-line dark:hover:bg-pcc-dark-canvas"
           title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
           aria-pressed={isDarkMode}

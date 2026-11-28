@@ -405,14 +405,14 @@ test('W6-D08: early return on ineligible provider or budget cap invokes onComple
   await ineligible.run();
   assert.equal(ineligible.state().completedSessionCount, 1, 'onCompleteSession must run on ineligible provider early return');
   assert.equal(ineligible.state().busy, false);
-  assert.match(ineligible.state().requestError, /eligible non-ChatGPT provider/i);
+  assert.match(ineligible.state().requestError, /verified eligible provider/i);
 
-  const chatgptBlocked = makeHarness({
-    providerPlanContext: { ...sampleProviderContext, connectionId: 'chatgpt-plan' as unknown as ImportProviderPlanContext['connectionId'] },
+  const chatgptIneligible = makeHarness({
+    providerPlanContext: { ...sampleProviderContext, connectionId: 'chatgpt-plan', operationEligible: false },
   });
-  await chatgptBlocked.run();
-  assert.equal(chatgptBlocked.state().completedSessionCount, 1, 'onCompleteSession must run on chatgpt-plan early return');
-  assert.equal(chatgptBlocked.state().busy, false);
+  await chatgptIneligible.run();
+  assert.equal(chatgptIneligible.state().completedSessionCount, 1, 'onCompleteSession must run on ineligible chatgpt-plan early return');
+  assert.equal(chatgptIneligible.state().busy, false);
 
   const budgetCapped = makeHarness({ callsUsed: 12 });
   await budgetCapped.run();

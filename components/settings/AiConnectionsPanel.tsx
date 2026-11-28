@@ -122,6 +122,7 @@ export default function AiConnectionsPanel() {
         updateCatalogPhases(catalogPhasesForStatusRefresh(next.connections, catalogPhasesRef.current, preserveFreshPhases));
       }
       setPreferences(readLocalStoredPreferences(next.preferences));
+      window.dispatchEvent(new Event('pcc:ai-preferences-changed'));
     } catch (cause) {
       if (requestEpoch === statusEpoch.current) {
         setError(cause instanceof Error ? cause.message : 'Could not load AI connection status.');
@@ -285,29 +286,27 @@ export default function AiConnectionsPanel() {
 
   async function changeOverride(operation: string, connectionId: AiConnectionId) {
     if (!preferences) return;
-    if (operation === 'story' && connectionId === 'chatgpt-plan') {
-      const modelId = preferences.preferredTextModelsByConnection?.['chatgpt-plan'];
-      if (modelId !== 'gpt-6-luna' || (preferences.preferredReasoningLevelsByConnection?.['chatgpt-plan'] ?? 'default') !== 'default') {
-        setError('ChatGPT Story is available only after saving GPT-6 Luna and Default reasoning as the exact account preference.');
-        return;
-      }
-      const operationOverrides = { ...preferences.operationOverrides, story: { connectionId, modelId, reasoningLevel: 'default' as AiReasoningLevel } };
-      await savePreferences({ ...preferences, operationOverrides });
-      return;
-    }
     const models = await refreshModels(connectionId);
-    const model = models.find((item) => {
+    const preferredModelId = connectionId === 'chatgpt-plan'
+      ? preferences.preferredTextModelsByConnection?.['chatgpt-plan']
+      : undefined;
+    const isSupported = (item: AiModelDescriptor) => {
       const opCap = item.operationCapabilities[operation as AiOperation];
       return item.availability.state === 'supported' &&
         (operation === 'image' ? item.imageGeneration.state === 'supported' : item.textGeneration.state === 'supported') &&
         opCap?.state === 'supported' &&
         opCap.value === true;
-    });
+    };
+    const model = (preferredModelId ? models.find(item => item.id === preferredModelId && isSupported(item)) : undefined)
+      ?? models.find(isSupported);
     if (!model) {
       setError(`No verified ${operation === 'image' ? 'image' : 'text'} model is available for this connection. Refresh its catalog and try again.`);
       return;
     }
-    const operationOverrides = { ...preferences.operationOverrides, [operation]: { connectionId, modelId: model.id } };
+    const operationOverrides = {
+      ...preferences.operationOverrides,
+      [operation]: { connectionId, modelId: model.id, reasoningLevel: 'default' as AiReasoningLevel },
+    };
     await savePreferences({ ...preferences, operationOverrides });
   }
 
